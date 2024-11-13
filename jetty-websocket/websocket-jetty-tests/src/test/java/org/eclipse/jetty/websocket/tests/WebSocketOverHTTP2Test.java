@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -162,7 +162,7 @@ public class WebSocketOverHTTP2Test
         startClient(protocolFn);
 
         EventSocket wsEndPoint = new EventSocket();
-        URI uri = URI.create("ws://localhost:" + connector.getLocalPort() + "/ws/echo");
+        URI uri = URI.create("ws://localhost:" + connector.getLocalPort() + "/ws/echo/query?param=value");
         Session session = wsClient.connect(wsEndPoint, uri).get(5, TimeUnit.SECONDS);
 
         String text = "websocket";
@@ -382,6 +382,11 @@ public class WebSocketOverHTTP2Test
         protected void configure(JettyWebSocketServletFactory factory)
         {
             factory.addMapping("/ws/echo", (request, response) -> new EchoSocket());
+            factory.addMapping("/ws/echo/query", (request, response) ->
+            {
+                assertNotNull(request.getQueryString());
+                return new EchoSocket();
+            });
             factory.addMapping("/ws/null", (request, response) -> null);
             factory.addMapping("/ws/throw", (request, response) ->
             {
