@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,11 +13,13 @@
 
 package org.eclipse.jetty.http;
 
+import java.time.Instant;
 import java.util.Calendar;
 import java.util.GregorianCalendar;
 import java.util.TimeZone;
 
 import org.eclipse.jetty.util.StringUtil;
+import org.eclipse.jetty.util.thread.ThreadIdPool;
 
 /**
  * ThreadLocal Date formatters for HTTP style dates.
@@ -36,14 +38,7 @@ public class DateGenerator
     static final String[] MONTHS =
         {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan"};
 
-    private static final ThreadLocal<DateGenerator> __dateGenerator = new ThreadLocal<DateGenerator>()
-    {
-        @Override
-        protected DateGenerator initialValue()
-        {
-            return new DateGenerator();
-        }
-    };
+    private static final ThreadIdPool<DateGenerator> __dateGenerator = new ThreadIdPool<>();
 
     public static final String __01Jan1970 = DateGenerator.formatDate(0);
 
@@ -55,31 +50,18 @@ public class DateGenerator
      */
     public static String formatDate(long date)
     {
-        return __dateGenerator.get().doFormatDate(date);
+        return __dateGenerator.apply(DateGenerator::new, DateGenerator::doFormatDate, date);
     }
 
     /**
-     * Format "EEE, dd-MMM-yyyy HH:mm:ss 'GMT'" for cookies
+     * Format HTTP date "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
      *
-     * @param buf the buffer to put the formatted date into
-     * @param date the date in milliseconds
-     */
-    public static void formatCookieDate(StringBuilder buf, long date)
-    {
-        __dateGenerator.get().doFormatCookieDate(buf, date);
-    }
-
-    /**
-     * Format "EEE, dd-MMM-yyyy HH:mm:ss 'GMT'" for cookies
-     *
-     * @param date the date in milliseconds
+     * @param instant the date/time instant
      * @return the formatted date
      */
-    public static String formatCookieDate(long date)
+    public static String formatDate(Instant instant)
     {
-        StringBuilder buf = new StringBuilder(28);
-        formatCookieDate(buf, date);
-        return buf.toString();
+        return formatDate(instant.toEpochMilli());
     }
 
     private final StringBuilder buf = new StringBuilder(32);

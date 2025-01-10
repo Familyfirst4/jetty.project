@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,17 +14,21 @@
 package org.eclipse.jetty.ee9.nested;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.Enumeration;
 import java.util.EventListener;
 import java.util.List;
+import java.util.ListIterator;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Function;
 
 import jakarta.servlet.DispatcherType;
 import jakarta.servlet.ServletContext;
 import jakarta.servlet.ServletException;
+import jakarta.servlet.ServletRequest;
 import jakarta.servlet.SessionCookieConfig;
 import jakarta.servlet.SessionTrackingMode;
 import jakarta.servlet.http.HttpServletRequest;
@@ -39,13 +43,19 @@ import jakarta.servlet.http.HttpSessionEvent;
 import jakarta.servlet.http.HttpSessionIdListener;
 import jakarta.servlet.http.HttpSessionListener;
 import org.eclipse.jetty.http.HttpCookie;
+import org.eclipse.jetty.http.MetaData;
+import org.eclipse.jetty.server.HttpStream;
 import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.server.Session;
 import org.eclipse.jetty.session.AbstractSessionManager;
-import org.eclipse.jetty.session.Session;
+import org.eclipse.jetty.session.ManagedSession;
 import org.eclipse.jetty.session.SessionCache;
 import org.eclipse.jetty.session.SessionConfig;
 import org.eclipse.jetty.session.SessionIdManager;
 import org.eclipse.jetty.session.SessionManager;
+import org.eclipse.jetty.util.Callback;
+import org.eclipse.jetty.util.StringUtil;
+import org.eclipse.jetty.util.TypeUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -63,14 +73,64 @@ public class SessionHandler extends ScopedHandler implements SessionConfig.Mutab
 
     private ContextHandler _contextHandler;
 
+    /**
+     * Wrapper to ensure the correct lifecycle for all sessions in all
+     * contexts to which the request has been dispatched. When a response
+     * is about to be sent back to the client, all of the sessions are
+     * given the opportunity to persist themselves. When the response is
+     * finished being handled, then the sessions have their reference
+     * counts decremented, potentially leading to eviction from their cache,
+     * as appropriate to the configuration of that cache.
+     *
+     * This wrapper replaces the AbstractSessionManager.SessionStreamWrapper.
+     */
+    private static class SessionStreamWrapper extends HttpStream.Wrapper
+    {
+        private final ContextHandler.CoreContextRequest _request;
+        private final org.eclipse.jetty.server.Context _context;
+
+        public SessionStreamWrapper(HttpStream wrapped, ContextHandler.CoreContextRequest request)
+        {
+            super(wrapped);
+            _request = request;
+            _context = _request.getContext();
+        }
+
+        @Override
+        public void failed(Throwable x)
+        {
+             _request.completeSessions();
+            super.failed(x);
+        }
+
+        @Override
+        public void send(MetaData.Request metadataRequest, MetaData.Response metadataResponse, boolean last, ByteBuffer content, Callback callback)
+        {
+            if (metadataResponse != null)
+            {
+                // Write out all sessions
+                _request.commitSessions();
+            }
+            super.send(metadataRequest, metadataResponse, last, content, callback);
+        }
+
+        @Override
+        public void succeeded()
+        {
+            // Decrement usage count on all sessions
+             _request.completeSessions();
+            super.succeeded();
+        }
+    }
+
     public SessionHandler()
     {
         setSessionTrackingModes(DEFAULT_SESSION_TRACKING_MODES);
-        addBean(_sessionManager);
-        addBean(_cookieConfig);
-        addBean(_sessionListeners);
-        addBean(_sessionIdListeners);
-        addBean(_sessionAttributeListeners);
+        installBean(_sessionManager);
+        installBean(_cookieConfig);
+        installBean(_sessionListeners);
+        installBean(_sessionIdListeners);
+        installBean(_sessionAttributeListeners);
     }
 
     public SessionManager getSessionManager()
@@ -115,11 +175,48 @@ public class SessionHandler extends ScopedHandler implements SessionConfig.Mutab
         return _sessionManager.getSessionIdManager();
     }
 
+    protected void configureCookies()
+    {
+        if (_contextHandler == null)
+            return;
+
+        //configure the name of the session cookie set by an init param
+        String tmp = _contextHandler.getInitParameter(SessionConfig.__SessionCookieProperty);
+        if (tmp != null)
+            setSessionCookie(tmp);
+
+        //configure the name of the session id path param set by an init param
+        tmp = _contextHandler.getInitParameter(SessionConfig.__SessionIdPathParameterNameProperty);
+        if (tmp != null)
+            setSessionIdPathParameterName(tmp);
+
+        //configure checkRemoteSessionEncoding set by an init param
+        tmp = _contextHandler.getInitParameter(SessionConfig.__CheckRemoteSessionEncodingProperty);
+        if (tmp != null)
+            setCheckingRemoteSessionIdEncoding(Boolean.parseBoolean(tmp));
+
+        //configure the domain of the session cookie set by an init param
+        tmp = _contextHandler.getInitParameter(SessionConfig.__SessionDomainProperty);
+        if (tmp != null)
+            setSessionDomain(tmp);
+
+        //configure the path of the session cookie set by an init param
+        tmp = _contextHandler.getInitParameter(SessionConfig.__SessionPathProperty);
+        if (tmp != null)
+            setSessionPath(tmp);
+
+        //configure the max age of the session cookie set by an init param
+        tmp = _contextHandler.getInitParameter(SessionConfig.__MaxAgeProperty);
+        if (tmp != null)
+            setMaxCookieAge(Integer.parseInt(tmp.trim()));
+    }
+
     @Override
     protected void doStart() throws Exception
     {
         _contextHandler = ContextHandler.getCurrentContext().getContextHandler();
         super.doStart();
+        configureCookies();
     }
 
     /**
@@ -181,12 +278,12 @@ public class SessionHandler extends ScopedHandler implements SessionConfig.Mutab
     {
         if (_sessionManager.isUsingCookies())
         {
-            if (_sessionManager.isUsingURLs())
+            if (_sessionManager.isUsingUriParameters())
                 return Set.of(SessionTrackingMode.COOKIE, SessionTrackingMode.URL);
             return Set.of(SessionTrackingMode.COOKIE);
         }
 
-        if (_sessionManager.isUsingURLs())
+        if (_sessionManager.isUsingUriParameters())
             return Set.of(SessionTrackingMode.URL);
 
         return Collections.emptySet();
@@ -201,7 +298,7 @@ public class SessionHandler extends ScopedHandler implements SessionConfig.Mutab
             throw new IllegalArgumentException("sessionTrackingModes.SSL is not supported");
         }
         _sessionManager.setUsingCookies(sessionTrackingModes != null && sessionTrackingModes.contains(SessionTrackingMode.COOKIE));
-        _sessionManager.setUsingURLs(sessionTrackingModes != null && sessionTrackingModes.contains(SessionTrackingMode.URL));
+        _sessionManager.setUsingUriParameters(sessionTrackingModes != null && sessionTrackingModes.contains(SessionTrackingMode.URL));
     }
 
     @Override
@@ -277,6 +374,12 @@ public class SessionHandler extends ScopedHandler implements SessionConfig.Mutab
     }
 
     @Override
+    public boolean isPartitioned()
+    {
+        return _sessionManager.isPartitioned();
+    }
+
+    @Override
     public boolean isSecureCookies()
     {
         return _sessionManager.isSecureCookies();
@@ -295,9 +398,9 @@ public class SessionHandler extends ScopedHandler implements SessionConfig.Mutab
     }
 
     @Override
-    public boolean isUsingURLs()
+    public boolean isUsingUriParameters()
     {
-        return _sessionManager.isUsingURLs();
+        return _sessionManager.isUsingUriParameters();
     }
 
     @Override
@@ -310,6 +413,12 @@ public class SessionHandler extends ScopedHandler implements SessionConfig.Mutab
     public void setHttpOnly(boolean value)
     {
         _sessionManager.setHttpOnly(value);
+    }
+
+    @Override
+    public void setPartitioned(boolean value)
+    {
+        _sessionManager.setPartitioned(value);
     }
 
     @Override
@@ -385,39 +494,116 @@ public class SessionHandler extends ScopedHandler implements SessionConfig.Mutab
     }
 
     @Override
-    public void setUsingURLs(boolean value)
+    public void setUsingUriParameters(boolean value)
     {
-        _sessionManager.setUsingURLs(value);
+        _sessionManager.setUsingUriParameters(value);
     }
 
     @Override
     public void doScope(String target, Request baseRequest, HttpServletRequest request, HttpServletResponse response) throws IOException, ServletException
     {
-        if (baseRequest.getDispatcherType() == DispatcherType.REQUEST)
+        ContextHandler.CoreContextRequest coreRequest = baseRequest.getHttpChannel().getCoreRequest();
+        SessionManager oldSessionManager = null;
+        ManagedSession oldSession = null;
+        AbstractSessionManager.RequestedSession oldRequestedSession = null;
+
+        ManagedSession currentSession = null;
+        AbstractSessionManager.RequestedSession currentRequestedSession = null;
+
+        try
         {
-            org.eclipse.jetty.server.Request coreRequest = baseRequest.getHttpChannel().getCoreRequest();
+            switch (baseRequest.getDispatcherType())
+            {
+                case REQUEST:
+                {
+                    //add a HttpStream.wrapper to commit and complete sessions created/loaded during this request
+                    _sessionManager.addSessionStreamWrapper(coreRequest);
+                    // find and set the session if one exists, along with an appropriate session manager
+                    currentRequestedSession = _sessionManager.resolveRequestedSessionId(coreRequest);
+                    coreRequest.setSessionManager(_sessionManager);
+                    coreRequest.setRequestedSession(currentRequestedSession);
+                    if (currentRequestedSession != null)
+                    {
+                        coreRequest.setManagedSession(currentRequestedSession.session());
+                        currentSession = currentRequestedSession.session();
+                    }
+                    break;
+                }
+                case ASYNC:
+                case ERROR:
+                case FORWARD:
+                case INCLUDE:
+                {
+                    oldSessionManager = coreRequest.getSessionManager();
+                    oldSession = coreRequest.getManagedSession();
+                    oldRequestedSession = coreRequest.getRequestedSession();
 
-            // TODO should we use the Stream wrapper? Could use the HttpChannel#onCompleted mechanism instead.
-            _sessionManager.addSessionStreamWrapper(coreRequest);
+                    //We have been cross context dispatched. Could be from the same type of context, or a different
+                    //type of context. If from the same type of context, the request is preserved and mutated during the
+                    //dispatch, so a HttpStream.Wrapper would already have been added to it. If from a different type
+                    //of context, we cannot share the HttpStream.Wrapper  and so we need to add a new one.
+                    if (oldSessionManager == null)
+                        _sessionManager.addSessionStreamWrapper(coreRequest);
 
-            // find and set the session if one exists
-            AbstractSessionManager.RequestedSession requestedSession = _sessionManager.resolveRequestedSessionId(coreRequest);
+                    //check if we have changed contexts during the dispatch
+                    if (oldSessionManager != _sessionManager)
+                    {
+                        //find any existing session for this context that has already been accessed
+                        currentSession = coreRequest.getManagedSession(_sessionManager);
 
-            baseRequest.setCoreSession(requestedSession.session());
-            baseRequest.setSessionManager(_sessionManager);
-            baseRequest.setRequestedSessionId(requestedSession.sessionId());
-            baseRequest.setRequestedSessionIdFromCookie(requestedSession.sessionIdFromCookie());
+                        if (currentSession == null)
+                        {
+                            //session for this context has not been already loaded, try getting it
+                            coreRequest.setManagedSession(null);
+                            currentRequestedSession = _sessionManager.resolveRequestedSessionId(coreRequest);
+                            currentSession = currentRequestedSession.session();
+                        }
+                        else
+                            currentRequestedSession = new AbstractSessionManager.RequestedSession(currentSession, currentSession.getId(), false /*TODO!!!*/);
 
-            HttpCookie cookie = _sessionManager.access(requestedSession.session(), coreRequest.getConnectionMetaData().isSecure());
+                        coreRequest.setManagedSession(currentSession);
+                        coreRequest.setRequestedSession(currentRequestedSession);
+                        coreRequest.setSessionManager(_sessionManager);
+                    }
+                    break;
+                }
+                default:
+                    break;
+            }
 
-            // Handle changed ID or max-age refresh, but only if this is not a redispatched request
-            if (cookie != null)
-                baseRequest.getResponse().replaceCookie(cookie);
+            //first time the request has entered this context, or we have changed context
+            if ((currentSession != null) && (oldSessionManager != _sessionManager))
+            {
+                HttpCookie cookie = _sessionManager.access(currentRequestedSession.session(), coreRequest.getConnectionMetaData().isSecure());
+
+                // Handle changed ID or max-age refresh, but only if this is not a redispatched request
+                if ((cookie != null) &&
+                    (request.getDispatcherType() == DispatcherType.ASYNC ||
+                        request.getDispatcherType() == DispatcherType.REQUEST))
+                    baseRequest.getResponse().replaceCookie(cookie);
+            }
+
+            if (LOG.isDebugEnabled())
+                LOG.debug("sessionHandler={} session={}", this, currentSession);
+
+            nextScope(target, baseRequest, request, response);
         }
+        finally
+        {
+            if (LOG.isDebugEnabled())
+                LOG.debug("Leaving scope {} dispatch={}, async={}, session={}, oldsession={}, oldsessionhandler={}",
+                    this, baseRequest.getDispatcherType(), baseRequest.isAsyncStarted(), baseRequest.getSession(false),
+                    oldSession, oldSessionManager);
 
-        // TODO other dispatch type????
-
-        nextScope(target, baseRequest, request, response);
+            // revert the session handler to the previous, unless it was null, in which case remember it as
+            // the first session handler encountered.
+            if (oldSessionManager != null && oldSessionManager != _sessionManager)
+            {
+                coreRequest.setSessionManager(oldSessionManager);
+                coreRequest.setManagedSession(oldSession);
+                coreRequest.setRequestedSession(oldRequestedSession);
+            }
+        }
     }
 
     @Override
@@ -430,7 +616,8 @@ public class SessionHandler extends ScopedHandler implements SessionConfig.Mutab
      * CookieConfig
      *
      * Implementation of the jakarta.servlet.SessionCookieConfig.
-     * SameSite configuration can be achieved by using setComment
+     * SameSite configuration can be achieved by using setComment.
+     * Partitioned configuration can be achieved by using setComment.
      *
      * @see HttpCookie
      */
@@ -488,7 +675,19 @@ public class SessionHandler extends ScopedHandler implements SessionConfig.Mutab
         public void setComment(String comment)
         {
             checkAvailable();
-            _sessionManager.setSessionComment(comment);
+
+            if (!StringUtil.isEmpty(comment))
+            {
+                HttpCookie.SameSite sameSite = Response.HttpCookieFacade.getSameSiteFromComment(comment);
+                if (sameSite != null)
+                    _sessionManager.setSameSite(sameSite);
+
+                boolean partitioned = Response.HttpCookieFacade.isPartitionedInComment(comment);
+                if (partitioned)
+                    _sessionManager.setPartitioned(partitioned);
+
+                _sessionManager.setSessionComment(Response.HttpCookieFacade.getCommentWithoutAttributes(comment));
+            }
         }
 
         @Override
@@ -532,6 +731,14 @@ public class SessionHandler extends ScopedHandler implements SessionConfig.Mutab
             checkAvailable();
             _sessionManager.setSecureCookies(secure);
         }
+
+        @Override
+        public String toString()
+        {
+            return String.format("%s@%x[name=%s,domain=%s,path=%s,max-age=%d,secure=%b,http-only=%b,same-site=%s,comment=%s]",
+                this.getClass().getName(), this.hashCode(), _sessionManager.getSessionCookie(), _sessionManager.getSessionDomain(), _sessionManager.getSessionPath(),
+                _sessionManager.getMaxCookieAge(), _sessionManager.isSecureCookies(), _sessionManager.isHttpOnly(), _sessionManager.getSameSite(), _sessionManager.getSessionComment());
+        }
     }
 
     private class CoreSessionManager extends AbstractSessionManager
@@ -545,20 +752,21 @@ public class SessionHandler extends ScopedHandler implements SessionConfig.Mutab
         @Override
         protected void addSessionStreamWrapper(org.eclipse.jetty.server.Request request)
         {
-            super.addSessionStreamWrapper(request);
+            final ContextHandler.CoreContextRequest coreRequest = (ContextHandler.CoreContextRequest)request;
+            coreRequest.addHttpStreamWrapper(s -> new SessionStreamWrapper(s, coreRequest));
         }
 
         @Override
-        public Session getSession(org.eclipse.jetty.server.Request request)
+        public ManagedSession getManagedSession(org.eclipse.jetty.server.Request request)
         {
             return org.eclipse.jetty.server.Request.get(request, ContextHandler.CoreContextRequest.class, ContextHandler.CoreContextRequest::getHttpChannel)
-                .getRequest().getCoreSession();
+                .getCoreRequest().getManagedSession();
         }
 
         @Override
-        public Session.APISession newSessionAPIWrapper(Session session)
+        public Session.API newSessionAPIWrapper(ManagedSession session)
         {
-            return new ServletAPISession(session);
+            return new ServletSessionApi(session);
         }
 
         @Override
@@ -568,11 +776,16 @@ public class SessionHandler extends ScopedHandler implements SessionConfig.Mutab
         }
 
         @Override
-        public void callSessionAttributeListeners(Session session, String name, Object old, Object value)
+        public void onSessionAttributeUpdate(Session session, String name, Object old, Object value)
         {
+            if (old != null)
+                callUnboundBindingListener(session, name, old);
+            if (value != null)
+                callBoundBindingListener(session, name, value);
+
             if (!_sessionAttributeListeners.isEmpty())
             {
-                HttpSessionBindingEvent event = new HttpSessionBindingEvent(session.getAPISession(), name, old == null ? value : old);
+                HttpSessionBindingEvent event = new HttpSessionBindingEvent(session.getApi(), name, old == null ? value : old);
 
                 for (HttpSessionAttributeListener l : _sessionAttributeListeners)
                 {
@@ -593,12 +806,12 @@ public class SessionHandler extends ScopedHandler implements SessionConfig.Mutab
          * @param session the session on which to call the lifecycle listeners
          */
         @Override
-        public void callSessionCreatedListeners(Session session)
+        public void onSessionCreated(Session session)
         {
             if (session == null)
                 return;
-
-            HttpSessionEvent event = new HttpSessionEvent(session.getAPISession());
+            super.onSessionCreated(session);
+            HttpSessionEvent event = new HttpSessionEvent(session.getApi());
             for (HttpSessionListener  l : _sessionListeners)
                 l.sessionCreated(event);
         }
@@ -610,32 +823,35 @@ public class SessionHandler extends ScopedHandler implements SessionConfig.Mutab
          * @param session the session on which to call the lifecycle listeners
          */
         @Override
-        public void callSessionDestroyedListeners(Session session)
+        public void onSessionDestroyed(Session session)
         {
             if (session == null)
                 return;
+
+            super.onSessionDestroyed(session);
 
             //We annoint the calling thread with
             //the webapp's classloader because the calling thread may
             //come from the scavenger, rather than a request thread
             Runnable r = () ->
             {
-                HttpSessionEvent event = new HttpSessionEvent(session.getAPISession());
-                for (int i = _sessionListeners.size() - 1; i >= 0; i--)
+                HttpSessionEvent event = new HttpSessionEvent(session.getApi());
+                for (ListIterator<HttpSessionListener> i = TypeUtil.listIteratorAtEnd(_sessionListeners); i.hasPrevious();)
                 {
-                    _sessionListeners.get(i).sessionDestroyed(event);
+                    i.previous().sessionDestroyed(event);
                 }
             };
             _contextHandler.getCoreContextHandler().getContext().run(r);
         }
 
         @Override
-        public void callSessionIdListeners(Session session, String oldId)
+        public void onSessionIdChanged(Session session, String oldId)
         {
             //inform the listeners
+            super.onSessionIdChanged(session, oldId);
             if (!_sessionIdListeners.isEmpty())
             {
-                HttpSessionEvent event = new HttpSessionEvent(session.getAPISession());
+                HttpSessionEvent event = new HttpSessionEvent(session.getApi());
                 for (HttpSessionIdListener l : _sessionIdListeners)
                 {
                     l.sessionIdChanged(event, oldId);
@@ -643,53 +859,72 @@ public class SessionHandler extends ScopedHandler implements SessionConfig.Mutab
             }
         }
 
-        @Override
-        public void callUnboundBindingListener(Session session, String name, Object value)
+        protected void callUnboundBindingListener(Session session, String name, Object value)
         {
             if (value instanceof HttpSessionBindingListener)
-                ((HttpSessionBindingListener)value).valueUnbound(new HttpSessionBindingEvent(session.getAPISession(), name));
+                ((HttpSessionBindingListener)value).valueUnbound(new HttpSessionBindingEvent(session.getApi(), name));
+        }
+
+        protected void callBoundBindingListener(Session session, String name, Object value)
+        {
+            if (value instanceof HttpSessionBindingListener)
+                ((HttpSessionBindingListener)value).valueBound(new HttpSessionBindingEvent(session.getApi(), name));
         }
 
         @Override
-        public void callBoundBindingListener(Session session, String name, Object value)
+        public void onSessionActivation(Session session)
         {
-            if (value instanceof HttpSessionBindingListener)
-                ((HttpSessionBindingListener)value).valueBound(new HttpSessionBindingEvent(session.getAPISession(), name));
-        }
-
-        @Override
-        public void callSessionActivationListener(Session session, String name, Object value)
-        {
-            if (value instanceof HttpSessionActivationListener listener)
+            for (String name : session.getAttributeNameSet())
             {
-                HttpSessionEvent event = new HttpSessionEvent(session.getAPISession());
-                listener.sessionDidActivate(event);
+                Object value = session.getAttribute(name);
+                if (value instanceof HttpSessionActivationListener listener)
+                {
+                    HttpSessionEvent event = new HttpSessionEvent(session.getApi());
+                    listener.sessionDidActivate(event);
+                }
             }
-
         }
 
         @Override
-        public void callSessionPassivationListener(Session session, String name, Object value)
+        public void onSessionPassivation(Session session)
         {
-            if (value instanceof HttpSessionActivationListener listener)
+            for (String name : session.getAttributeNameSet())
             {
-                HttpSessionEvent event = new HttpSessionEvent(session.getAPISession());
-                listener.sessionWillPassivate(event);
+                Object value = session.getAttribute(name);
+                if (value instanceof HttpSessionActivationListener listener)
+                {
+                    HttpSessionEvent event = new HttpSessionEvent(session.getApi());
+                    listener.sessionWillPassivate(event);
+                }
             }
         }
     }
 
-    public class ServletAPISession implements HttpSession, Session.APISession
+    public class ServletSessionApi implements HttpSession, Session.API
     {
-        private final Session _session;
+        public static Function<Boolean, Session> getOrCreateSession(ServletRequest servletRequest)
+        {
+            return createSession ->
+            {
+                if (servletRequest instanceof HttpServletRequest request)
+                {
+                    HttpSession session = request.getSession(createSession);
+                    if (session instanceof SessionHandler.ServletSessionApi sessionApi)
+                        return sessionApi.getSession();
+                }
+                return null;
+            };
+        }
 
-        private ServletAPISession(Session session)
+        private final ManagedSession _session;
+
+        private ServletSessionApi(ManagedSession session)
         {
             _session = session;
         }
 
         @Override
-        public Session getCoreSession()
+        public ManagedSession getSession()
         {
             return _session;
         }
@@ -739,7 +974,7 @@ public class SessionHandler extends ScopedHandler implements SessionConfig.Mutab
         @Override
         public Enumeration<String> getAttributeNames()
         {
-            return Collections.enumeration(_session.getNames());
+            return Collections.enumeration(_session.getAttributeNameSet());
         }
 
         @Override
@@ -781,7 +1016,7 @@ public class SessionHandler extends ScopedHandler implements SessionConfig.Mutab
         @Override
         public String[] getValueNames()
         {
-            return _session.getNames().toArray(new String[0]);
+            return _session.getAttributeNameSet().toArray(new String[0]);
         }
 
         @Override

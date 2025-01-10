@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -23,10 +23,11 @@ import jakarta.servlet.Servlet;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.eclipse.jetty.client.ContentResponse;
 import org.eclipse.jetty.client.HttpClient;
-import org.eclipse.jetty.client.api.ContentResponse;
-import org.eclipse.jetty.client.api.Request;
+import org.eclipse.jetty.client.Request;
 import org.eclipse.jetty.http.HttpHeader;
+import org.eclipse.jetty.http.HttpHeaderValue;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.server.handler.gzip.GzipHandler;
@@ -89,7 +90,7 @@ public class GzipHandlerCommitTest
 
         URI uri = server.getURI().resolve("/test/");
         Request request = client.newRequest(uri);
-        request.header(HttpHeader.CONNECTION, "Close");
+        request.headers(headers -> headers.put(HttpHeader.CONNECTION, HttpHeaderValue.CLOSE));
         request.onResponseHeaders((r) -> latch.countDown());
         ContentResponse response = request.send();
         assertThat("Response status", response.getStatus(), is(200));
@@ -116,7 +117,7 @@ public class GzipHandlerCommitTest
 
         URI uri = server.getURI().resolve("/test/");
         Request request = client.newRequest(uri);
-        request.header(HttpHeader.CONNECTION, "Close");
+        request.headers(headers -> headers.put(HttpHeader.CONNECTION, HttpHeaderValue.CLOSE));
         request.onResponseHeaders((r) -> latch.countDown());
         ContentResponse response = request.send();
         assertThat("Response status", response.getStatus(), is(200));

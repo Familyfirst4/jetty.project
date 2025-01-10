@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -15,20 +15,23 @@ package org.eclipse.jetty.ee9.servlet;
 
 import java.util.concurrent.LinkedBlockingQueue;
 
+import org.eclipse.jetty.client.ContentResponse;
 import org.eclipse.jetty.client.HttpClient;
-import org.eclipse.jetty.client.api.ContentResponse;
 import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.Request;
+import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
-import org.eclipse.jetty.server.handler.DefaultHandler;
 import org.eclipse.jetty.server.handler.ResourceHandler;
 import org.eclipse.jetty.server.handler.gzip.GzipHandler;
 import org.eclipse.jetty.toolchain.test.jupiter.WorkDir;
+import org.eclipse.jetty.toolchain.test.jupiter.WorkDirExtension;
+import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.component.LifeCycle;
+import org.eclipse.jetty.util.resource.ResourceFactory;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
@@ -37,11 +40,9 @@ import static org.hamcrest.Matchers.is;
 /**
  * Tests of behavior of GzipHandler when Request.isHandled() or Response.isCommitted() is true
  */
-// TODO: re-enable when the PathResource work has been integrated.
-@Disabled()
+@ExtendWith(WorkDirExtension.class)
 public class GzipHandlerIsHandledTest
 {
-    public WorkDir workDir;
 
     private Server server;
     private HttpClient client;
@@ -69,21 +70,20 @@ public class GzipHandlerIsHandledTest
     }
 
     @Test
-    public void testRequest() throws Exception
+    public void testRequest(WorkDir workDir) throws Exception
     {
-        Handler.Collection handlers = new Handler.Collection();
+        Handler.Sequence handlers = new Handler.Sequence();
 
         ResourceHandler resourceHandler = new ResourceHandler();
-        resourceHandler.setBaseResource(workDir.getPath());
-        // TODO: fix when the PathResource work has been integrated.
-//        resourceHandler.setDirectoriesListed(true);
+        resourceHandler.setBaseResource(ResourceFactory.root().newResource(workDir.getEmptyPathDir()));
+        resourceHandler.setDirAllowed(true);
         resourceHandler.setHandler(new EventHandler(events, "ResourceHandler"));
 
         GzipHandler gzipHandler = new GzipHandler();
         gzipHandler.setMinGzipSize(32);
         gzipHandler.setHandler(new EventHandler(events, "GzipHandler-wrapped-handler"));
 
-        handlers.setHandlers(resourceHandler, gzipHandler, new DefaultHandler());
+        handlers.setHandlers(resourceHandler, gzipHandler);
 
         startServer(handlers);
 
@@ -91,14 +91,9 @@ public class GzipHandlerIsHandledTest
         assertThat("response.status", response.getStatus(), is(200));
         // we should have received a directory listing from the ResourceHandler
         assertThat("response.content", response.getContentAsString(), containsString("Directory: /"));
-        // resource handler should have handled the request
-        // the gzip handler and default handlers should have been executed, seeing as this is a HandlerCollection
-        // but the gzip handler should not have acted on the request, as the response is committed
-        assertThat("One event should have been recorded", events.size(), is(1));
-        // the event handler should see the request.isHandled = true
-        // and response.isCommitted = true as the gzip handler didn't really do anything due to these
-        // states and let the wrapped handler (the EventHandler in this case) make the call on what it should do.
-        assertThat("Event indicating that GzipHandler-wrapped-handler ran", events.remove(), is("GzipHandler-wrapped-handler"));
+        // resource handler should have handled the request;
+        // hence the gzip handler and default handlers should not have been executed
+        assertThat("Zero event should have been recorded", events.size(), is(0));
     }
 
     private static class EventHandler extends Handler.Abstract
@@ -113,10 +108,11 @@ public class GzipHandlerIsHandledTest
         }
 
         @Override
-        public Request.Processor handle(Request request)
+        public boolean handle(Request request, Response response, Callback callback)
         {
             events.offer(action);
-            return null;
+            callback.succeeded();
+            return true;
         }
     }
 }

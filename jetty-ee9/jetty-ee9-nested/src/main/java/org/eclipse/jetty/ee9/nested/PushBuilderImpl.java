@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -29,21 +29,18 @@ import org.eclipse.jetty.util.URIUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- *
- */
 public class PushBuilderImpl implements PushBuilder
 {
     private static final Logger LOG = LoggerFactory.getLogger(PushBuilderImpl.class);
-
     private static final HttpField JETTY_PUSH = new HttpField("x-http2-push", "PushBuilder");
-    private static EnumSet<HttpMethod> UNSAFE_METHODS = EnumSet.of(
+    private static final EnumSet<HttpMethod> UNSAFE_METHODS = EnumSet.of(
         HttpMethod.POST,
         HttpMethod.PUT,
         HttpMethod.DELETE,
         HttpMethod.CONNECT,
         HttpMethod.OPTIONS,
-        HttpMethod.TRACE);
+        HttpMethod.TRACE
+    );
 
     private final Request _request;
     private final HttpFields.Mutable _fields;
@@ -51,7 +48,6 @@ public class PushBuilderImpl implements PushBuilder
     private String _queryString;
     private String _sessionId;
     private String _path;
-    private String _lastModified;
 
     public PushBuilderImpl(Request request, HttpFields fields, String method, String queryString, String sessionId)
     {
@@ -183,13 +179,12 @@ public class PushBuilderImpl implements PushBuilder
         }
 
         HttpURI uri = HttpURI.build(_request.getHttpURI(), path, param, query).normalize();
-        MetaData.Request push = new MetaData.Request(_method, uri, _request.getHttpVersion(), _fields);
+        MetaData.Request push = new MetaData.Request(_request.getCoreRequest().getBeginNanoTime(), _method, uri, _request.getHttpVersion(), _fields);
 
         if (LOG.isDebugEnabled())
             LOG.debug("Push {} {} inm={} ims={}", _method, uri, _fields.get(HttpHeader.IF_NONE_MATCH), _fields.get(HttpHeader.IF_MODIFIED_SINCE));
 
         _request.getHttpChannel().getCoreRequest().push(push);
         _path = null;
-        _lastModified = null;
     }
 }

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,6 +13,8 @@
 
 package org.eclipse.jetty.ee10.servlet;
 
+import org.eclipse.jetty.util.resource.Resource;
+
 /**
  * Source
  *
@@ -20,8 +22,8 @@ package org.eclipse.jetty.ee10.servlet;
  */
 public class Source
 {
-    public static final Source EMBEDDED = new Source(Origin.EMBEDDED, null);
-    public static final Source JAVAX_API = new Source(Origin.JAKARTA_API, null);
+    public static final Source EMBEDDED = new Source(Origin.EMBEDDED);
+    public static final Source JAKARTA_API = new Source(Origin.JAKARTA_API);
 
     public enum Origin
     {
@@ -29,22 +31,53 @@ public class Source
         JAKARTA_API, DESCRIPTOR, ANNOTATION
     }
 
-    public Origin _origin;
-    public String _resource;
+    public final Origin _origin;
+    public final String _name;
+    public Resource _resource;
+
+    /**
+     * A Source without a name/location.
+     *
+     * @param o the Origin of the artifact (servlet, filter, mapping etc)
+     */
+    public Source(Origin o)
+    {
+        this(o, (String)null);
+    }
+
+    /**
+     * @param o the Origin of the artifact (servlet, filter, mapping etc)
+     * @param clazz the class where the artifact was declared
+     */
+    public Source(Origin o, Class<?> clazz)
+    {
+        this(o, clazz.getName());
+    }
 
     /**
      * @param o the Origin of the artifact (servlet, filter, mapping etc)
      * @param resource the location where the artifact was declared
      */
-    public Source(Origin o, String resource)
+    public Source(Origin o, Resource resource)
     {
-        if (o == null)
-            throw new IllegalArgumentException("Origin is null");
-        _origin = o;
+        this(o, resource.getURI().toASCIIString());
         _resource = resource;
     }
 
     /**
+     * @param o the Origin of the artifact (servlet, filter, mapping etc)
+     * @param name the name of the location where the artifact was declared (not a {@link Resource})
+     */
+    public Source(Origin o, String name)
+    {
+        if (o == null)
+            throw new IllegalArgumentException("Origin is null");
+        _origin = o;
+        _name = name;
+    }
+
+    /**
+     * Get the origin.
      * @return the origin
      */
     public Origin getOrigin()
@@ -53,17 +86,26 @@ public class Source
     }
 
     /**
+     * Get the resource.
      * @return the resource
      */
-    public String getResource()
+    public Resource getResource()
     {
         return _resource;
+    }
+
+    /**
+     * Get the name.
+     * @return the name
+     */
+    public String getName()
+    {
+        return _name;
     }
 
     @Override
     public String toString()
     {
-
-        return _origin + ":" + _resource;
+        return _origin + ":" + (_name == null ? "<null>" : _name);
     }
 }

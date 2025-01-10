@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -20,6 +20,7 @@ import java.util.stream.Stream;
 import jakarta.websocket.DeploymentException;
 import jakarta.websocket.server.ServerContainer;
 import jakarta.websocket.server.ServerEndpoint;
+import jakarta.websocket.server.ServerEndpointConfig;
 import org.eclipse.jetty.ee9.nested.ContextHandler;
 import org.eclipse.jetty.ee9.nested.HandlerCollection;
 import org.eclipse.jetty.ee9.servlet.ServletContextHandler;
@@ -34,7 +35,7 @@ import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.websocket.core.exception.InvalidSignatureException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -47,7 +48,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  * Deploy various {@link ServerEndpoint} annotated classes with invalid signatures,
  * check for {@link DeploymentException}
  */
-@Disabled
 public class DeploymentExceptionTest
 {
     public static Stream<Arguments> data()
@@ -105,6 +105,31 @@ public class DeploymentExceptionTest
             ServerContainer serverContainer = (ServerContainer)context.getServletContext().getAttribute(ServerContainer.class.getName());
             Exception e = assertThrows(DeploymentException.class, () -> serverContainer.addEndpoint(pojo));
             assertThat(e.getCause(), instanceOf(InvalidSignatureException.class));
+        }
+        finally
+        {
+            context.stop();
+        }
+    }
+
+    @Test
+    public void testDeploymentException() throws Exception
+    {
+        ServletContextHandler context = new ServletContextHandler();
+        context.setServer(server);
+        JakartaWebSocketServletContainerInitializer.configure(context, null);
+
+        contexts.addHandler(context);
+        try
+        {
+            context.start();
+            ServerContainer serverContainer = (ServerContainer)context.getServletContext().getAttribute(ServerContainer.class.getName());
+
+            // We cannot deploy this because it does not extend Endpoint and has no @ServerEndpoint/@ClientEndpoint annotation.
+            assertThrows(DeploymentException.class, () ->
+                serverContainer.addEndpoint(BadEndpoint.class));
+            assertThrows(DeploymentException.class, () ->
+                serverContainer.addEndpoint(ServerEndpointConfig.Builder.create(BadEndpoint.class, "/ws").build()));
         }
         finally
         {

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -19,7 +19,6 @@ import java.nio.channels.ReadPendingException;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.eclipse.jetty.util.Callback;
-import org.eclipse.jetty.util.thread.Invocable;
 import org.eclipse.jetty.util.thread.Invocable.InvocationType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -116,7 +115,8 @@ public abstract class FillInterest
     public InvocationType getCallbackInvocationType()
     {
         Callback callback = _interested.get();
-        return Invocable.getInvocationType(callback);
+        // Identical to Invocable.getInvocationType(callback) except that the cast is costly here.
+        return callback == null ? InvocationType.BLOCKING : callback.getInvocationType();
     }
 
     /**

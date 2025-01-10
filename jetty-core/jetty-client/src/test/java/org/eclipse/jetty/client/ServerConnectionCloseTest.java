@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -19,12 +19,11 @@ import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
-import org.eclipse.jetty.client.api.ContentResponse;
-import org.eclipse.jetty.client.api.Request;
-import org.eclipse.jetty.client.http.HttpClientTransportOverHTTP;
-import org.eclipse.jetty.client.util.FutureResponseListener;
+import org.eclipse.jetty.client.transport.HttpClientTransportOverHTTP;
+import org.eclipse.jetty.client.transport.HttpDestination;
 import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.util.thread.QueuedThreadPool;
 import org.junit.jupiter.api.AfterEach;
@@ -97,8 +96,7 @@ public class ServerConnectionCloseTest
             startClient();
 
             Request request = client.newRequest("localhost", port).path("/ctx/path");
-            FutureResponseListener listener = new FutureResponseListener(request);
-            request.send(listener);
+            CompletableFuture<ContentResponse> completable = new CompletableResponseListener(request).send();
 
             try (Socket socket = server.accept())
             {
@@ -136,7 +134,7 @@ public class ServerConnectionCloseTest
                 if (shutdownOutput)
                     socket.shutdownOutput();
 
-                ContentResponse response = listener.get(5, TimeUnit.SECONDS);
+                ContentResponse response = completable.get(5, TimeUnit.SECONDS);
                 assertEquals(HttpStatus.OK_200, response.getStatus());
 
                 // Give some time to process the connection.

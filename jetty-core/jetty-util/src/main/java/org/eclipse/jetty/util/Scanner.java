@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -70,6 +70,8 @@ public class Scanner extends ContainerLifeCycle
     private Map<Path, MetaData> _prevScan;
     private FilenameFilter _filter;
     private final Map<Path, IncludeExcludeSet<PathMatcher, Path>> _scannables = new ConcurrentHashMap<>();
+    private boolean _autoStartScanning = true;
+    private boolean _scanningStarted = false;
     private boolean _reportExisting = true;
     private boolean _reportDirs = true;
     private Scheduler.Task _task;
@@ -299,7 +301,9 @@ public class Scanner extends ContainerLifeCycle
          * @param filename the {@link Path#toRealPath(LinkOption...)} as a string of the changed file
          * @throws Exception May be thrown for handling errors
          */
-        void fileChanged(String filename) throws Exception;
+        default void fileChanged(String filename) throws Exception
+        {
+        }
 
         /**
          * Called when a file is added.
@@ -307,7 +311,9 @@ public class Scanner extends ContainerLifeCycle
          * @param filename the {@link Path#toRealPath(LinkOption...)} as a string of the added file
          * @throws Exception May be thrown for handling errors
          */
-        void fileAdded(String filename) throws Exception;
+        default void fileAdded(String filename) throws Exception
+        {
+        }
 
         /**
          * Called when a file is removed.
@@ -315,7 +321,9 @@ public class Scanner extends ContainerLifeCycle
          * @param filename the {@link Path#toRealPath(LinkOption...)} as a string of the removed file
          * @throws Exception May be thrown for handling errors
          */
-        void fileRemoved(String filename) throws Exception;
+        default void fileRemoved(String filename) throws Exception
+        {
+        }
     }
 
     /**
@@ -363,7 +371,7 @@ public class Scanner extends ContainerLifeCycle
     {
         //Create the scheduler and start it
         _scheduler = scheduler == null ? new ScheduledExecutorScheduler("Scanner-" + SCANNER_IDS.getAndIncrement(), true, 1) : scheduler;
-        addBean(_scheduler);
+        installBean(_scheduler);
         _linkOptions = reportRealPaths ? new LinkOption[0] : new LinkOption[] {LinkOption.NOFOLLOW_LINKS};
     }
 
@@ -390,7 +398,7 @@ public class Scanner extends ContainerLifeCycle
         _scanInterval = scanInterval;
     }
 
-    public void setScanDirs(List<File> dirs)
+    public void setScanDirs(List<Path> dirs)
     {
         if (isRunning())
             throw new IllegalStateException("Scanner started");
@@ -398,12 +406,12 @@ public class Scanner extends ContainerLifeCycle
         _scannables.clear();
         if (dirs == null)
             return;
-        for (File f :dirs)
+        for (Path p :dirs)
         {
-            if (f.isDirectory())
-                addDirectory(f.toPath());
+            if (Files.isDirectory(p))
+                addDirectory(p);
             else
-                addFile(f.toPath());
+                addFile(p);
         }
     }
 
@@ -422,8 +430,8 @@ public class Scanner extends ContainerLifeCycle
 
         try
         {
-            // Always follow links when check ultimate type of the path
-            Path real = path.toRealPath();
+            // Check status of the real path
+            Path real = path.toRealPath(_linkOptions);
             if (!Files.exists(real) || Files.isDirectory(real))
                 throw new IllegalStateException("Not file or doesn't exist: " + path);
 
@@ -452,7 +460,7 @@ public class Scanner extends ContainerLifeCycle
         try
         {
             // Check status of the real path
-            Path real = p.toRealPath();
+            Path real = p.toRealPath(_linkOptions);
             if (!Files.exists(real) || !Files.isDirectory(real))
                 throw new IllegalStateException("Not directory or doesn't exist: " + p);
 
@@ -518,6 +526,36 @@ public class Scanner extends ContainerLifeCycle
             throw new IllegalStateException("Scanner started");
 
         _scanDepth = scanDepth;
+    }
+
+    /**
+     * Test if scanning should start automatically with {@code Scanner}.{@link #start()}
+     *
+     * @return true if scanning should start automatically, false to have scanning is deferred to a later manual call to {@link #startScanning()}
+     */
+    public boolean isAutoStartScanning()
+    {
+        return _autoStartScanning;
+    }
+
+    /**
+     * Flag to control scanning auto start feature.
+     *
+     * <ul>
+     *     <li>{@code true} - to have scanning automatically start with the Scanner.{@link #start()}</li>
+     *     <li>{@code false} - to have scanning deferred until a future call to {@link #startScanning()}</li>
+     * </ul>
+     *
+     * <p>
+     *     If choosing to defer the automatic scanning, a future call to {@link #startScanning()}
+     *     is required to initiate this Scanner so that it can begin report files in the {@link #setScanDirs(List)}
+     * </p>
+     *
+     * @param autostart true if scanning should start automatically, false to defer start of scanning to a later call to {@link #startScanning()}
+     */
+    public void setAutoStartScanning(boolean autostart)
+    {
+        this._autoStartScanning = autostart;
     }
 
     /**
@@ -587,8 +625,37 @@ public class Scanner extends ContainerLifeCycle
     public void doStart() throws Exception
     {
         if (LOG.isDebugEnabled())
-            LOG.debug("Scanner start: rprtExists={}, depth={}, rprtDirs={}, interval={}, filter={}, scannables={}",
-                      _reportExisting, _scanDepth, _reportDirs, _scanInterval, _filter, _scannables);
+            LOG.debug("Scanner start: autoStartScanning={}, reportExists={}, depth={}, rprtDirs={}, interval={}, filter={}, scannables={}",
+                isAutoStartScanning(), _reportExisting, _scanDepth, _reportDirs, _scanInterval, _filter, _scannables);
+
+        // Start the scanner and managed beans (eg: the scheduler)
+        super.doStart();
+
+        if (isAutoStartScanning())
+        {
+            startScanning();
+        }
+    }
+
+    /**
+     * Start scanning.
+     * <p>
+     *     This will perform the initial scan of the directories {@link #setScanDirs(List)}
+     *     and schedule future scans, following all of the configuration
+     *     of the scan (eg: {@link #setReportExistingFilesOnStartup(boolean)})
+     * </p>
+     */
+    public void startScanning()
+    {
+        if (!isRunning())
+            throw new IllegalStateException("Scanner not started");
+
+        if (_scanningStarted)
+            return;
+        _scanningStarted = true;
+
+        if (LOG.isDebugEnabled())
+            LOG.debug("{}.startup()", this.getClass().getSimpleName());
 
         if (_reportExisting)
         {
@@ -602,9 +669,7 @@ public class Scanner extends ContainerLifeCycle
             _prevScan = scanFiles();
         }
 
-        super.doStart();
-
-        //schedule the scan
+        // schedule further scans
         schedule();
     }
 
@@ -624,6 +689,7 @@ public class Scanner extends ContainerLifeCycle
         _task = null;
         if (task != null)
             task.cancel();
+        _scanningStarted = false;
     }
 
     /**
@@ -712,7 +778,7 @@ public class Scanner extends ContainerLifeCycle
     }
 
     /**
-     * Scan all of the given paths.
+     * Scan all the given paths.
      */
     private Map<Path, MetaData> scanFiles()
     {

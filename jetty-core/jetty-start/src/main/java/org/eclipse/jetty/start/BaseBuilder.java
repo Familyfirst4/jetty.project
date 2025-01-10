@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -86,7 +86,6 @@ public class BaseBuilder
             // Handle local directories
             fileInitializers.add(new LocalFileInitializer(baseHome));
 
-            // Downloads are allowed to be performed
             // Setup Maven Local Repo
             Path localRepoDir = args.findMavenLocalRepoDir();
             if (localRepoDir != null)
@@ -106,7 +105,7 @@ public class BaseBuilder
             fileInitializers.add(new BaseHomeFileInitializer(baseHome));
 
             // Normal URL downloads
-            fileInitializers.add(new UriFileInitializer(baseHome));
+            fileInitializers.add(new UriFileInitializer(startArgs, baseHome));
         }
     }
 
@@ -208,7 +207,7 @@ public class BaseBuilder
                 List<String> startLines = new ArrayList<>();
                 for (Path path : paths)
                 {
-                    StartLog.info("copy " + baseHome.toShortForm(path) + " into " + baseHome.toShortForm(startini));
+                    StartLog.info("copy %s into %s", baseHome.toShortForm(path), baseHome.toShortForm(startini));
                     startLines.add("");
                     startLines.add("# Config from " + baseHome.toShortForm(path));
                     startLines.addAll(Files.readAllLines(path));
@@ -251,7 +250,7 @@ public class BaseBuilder
 
             if (FS.ensureDirectoryExists(startd))
             {
-                StartLog.info("mkdir " + baseHome.toShortForm(startd));
+                StartLog.info("mkdir %s", baseHome.toShortForm(startd));
                 modified.set(true);
             }
 
@@ -294,13 +293,13 @@ public class BaseBuilder
                         // if (explicitly added and ini file modified)
                         if (startArgs.getStartModules().contains(module.getName()))
                         {
-                            ini = builder.get().addModule(module, startArgs.getCoreEnvironment().getProperties());
+                            ini = builder.get().addModule(module, startArgs.getJettyEnvironment().getProperties());
                             if (ini != null)
                                 modified.set(true);
                         }
                         for (String file : module.getFiles())
                         {
-                            files.add(new FileArg(module, startArgs.getCoreEnvironment().getProperties().expand(file)));
+                            files.add(new FileArg(module, startArgs.getJettyEnvironment().getProperties().expand(file)));
                         }
                     }
                 }
@@ -320,7 +319,7 @@ public class BaseBuilder
                 {
                     if (module.hasIniTemplate())
                     {
-                        StartLog.info("%-15s transitively enabled, ini template available with --add-module=%s",
+                        StartLog.info("%-15s transitively enabled, ini template available with --add-modules=%s",
                             module.getName(),
                             module.getName());
                     }

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -15,7 +15,9 @@ package org.eclipse.jetty.rewrite.handler;
 
 import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.http.HttpTester;
+import org.eclipse.jetty.http.UriCompliance;
 import org.eclipse.jetty.server.Handler;
+import org.eclipse.jetty.server.HttpConnectionFactory;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.util.Callback;
@@ -30,12 +32,14 @@ public class InvalidURIRuleTest extends AbstractRuleTest
     private void start(InvalidURIRule rule) throws Exception
     {
         _rewriteHandler.addRule(rule);
-        start(new Handler.Processor()
+        _httpConfig.setUriCompliance(UriCompliance.UNSAFE);
+        start(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 callback.succeeded();
+                return true;
             }
         });
     }
@@ -217,8 +221,28 @@ public class InvalidURIRuleTest extends AbstractRuleTest
     }
 
     @Test
+    public void testInvalidPercentEncoding() throws Exception
+    {
+        InvalidURIRule rule = new InvalidURIRule();
+        rule.setCode(HttpStatus.NOT_ACCEPTABLE_406);
+        start(rule);
+
+        String request = """
+            GET /jsp/shamrock-%xx%zz.jsp HTTP/1.1
+            Host: localhost
+                        
+            """;
+
+        HttpTester.Response response = HttpTester.parseResponse(_connector.getResponse(request));
+        // The rule is not invoked because the UTF-8 sequence is invalid.
+        assertEquals(HttpStatus.BAD_REQUEST_400, response.getStatus());
+    }
+
+    @Test
     public void testInvalidUTF8() throws Exception
     {
+        _connector.getConnectionFactory(HttpConnectionFactory.class).getHttpConfiguration()
+            .setUriCompliance(UriCompliance.RFC3986.with("Bad UTF8", UriCompliance.Violation.BAD_UTF8_ENCODING));
         InvalidURIRule rule = new InvalidURIRule();
         rule.setCode(HttpStatus.NOT_ACCEPTABLE_406);
         start(rule);
@@ -230,13 +254,14 @@ public class InvalidURIRuleTest extends AbstractRuleTest
             """;
 
         HttpTester.Response response = HttpTester.parseResponse(_connector.getResponse(request));
-        // The rule is not invoked because the UTF-8 sequence is invalid.
-        assertEquals(HttpStatus.BAD_REQUEST_400, response.getStatus());
+        assertEquals(HttpStatus.NOT_ACCEPTABLE_406, response.getStatus());
     }
 
     @Test
     public void testIncompleteUTF8() throws Exception
     {
+        _connector.getConnectionFactory(HttpConnectionFactory.class).getHttpConfiguration()
+            .setUriCompliance(UriCompliance.RFC3986.with("Bad UTF8", UriCompliance.Violation.BAD_UTF8_ENCODING));
         InvalidURIRule rule = new InvalidURIRule();
         rule.setCode(HttpStatus.NOT_ACCEPTABLE_406);
         start(rule);
@@ -248,7 +273,6 @@ public class InvalidURIRuleTest extends AbstractRuleTest
             """;
 
         HttpTester.Response response = HttpTester.parseResponse(_connector.getResponse(request));
-        // The rule is not invoked because the UTF-8 sequence is incomplete.
-        assertEquals(HttpStatus.BAD_REQUEST_400, response.getStatus());
+        assertEquals(HttpStatus.NOT_ACCEPTABLE_406, response.getStatus());
     }
 }

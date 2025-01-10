@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -49,6 +49,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import javax.net.ssl.CertPathTrustManagerParameters;
@@ -76,13 +77,17 @@ import javax.net.ssl.X509ExtendedTrustManager;
 import javax.net.ssl.X509TrustManager;
 
 import org.eclipse.jetty.util.StringUtil;
+import org.eclipse.jetty.util.TypeUtil;
 import org.eclipse.jetty.util.annotation.ManagedAttribute;
 import org.eclipse.jetty.util.annotation.ManagedObject;
-import org.eclipse.jetty.util.component.AbstractLifeCycle;
+import org.eclipse.jetty.util.component.ContainerLifeCycle;
 import org.eclipse.jetty.util.component.Dumpable;
 import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
+import org.eclipse.jetty.util.resource.Resources;
 import org.eclipse.jetty.util.security.CertificateUtils;
 import org.eclipse.jetty.util.security.CertificateValidator;
+import org.eclipse.jetty.util.security.Credential;
 import org.eclipse.jetty.util.security.Password;
 import org.eclipse.jetty.util.thread.AutoLock;
 import org.slf4j.Logger;
@@ -95,7 +100,7 @@ import org.slf4j.LoggerFactory;
  * and {@link Client} to configure HTTP or WebSocket clients.</p>
  */
 @ManagedObject
-public abstract class SslContextFactory extends AbstractLifeCycle implements Dumpable
+public abstract class SslContextFactory extends ContainerLifeCycle implements Dumpable
 {
     public static final TrustManager[] TRUST_ALL_CERTS = new X509TrustManager[]{new X509ExtendedTrustManagerWrapper(null)};
     public static final String DEFAULT_KEYMANAGERFACTORY_ALGORITHM = KeyManagerFactory.getDefaultAlgorithm();
@@ -111,6 +116,8 @@ public abstract class SslContextFactory extends AbstractLifeCycle implements Dum
 
     private static final Logger LOG = LoggerFactory.getLogger(SslContextFactory.class);
     private static final Logger LOG_CONFIG = LoggerFactory.getLogger(LOG.getName() + ".config");
+    private static final Pattern KEY_SIZE_PATTERN = Pattern.compile("_(\\d+)_");
+
     /**
      * Default Excluded Protocols List
      */
@@ -131,6 +138,7 @@ public abstract class SslContextFactory extends AbstractLifeCycle implements Dum
         "^.*_NULL_.*$",
         "^.*_anon_.*$"
     };
+    private static final String X_509 = "X.509";
 
     private final AutoLock _lock = new AutoLock();
     private final Set<String> _excludeProtocols = new LinkedHashSet<>();
@@ -151,9 +159,9 @@ public abstract class SslContextFactory extends AbstractLifeCycle implements Dum
     private Resource _trustStoreResource;
     private String _trustStoreProvider;
     private String _trustStoreType;
-    private Password _keyStorePassword;
-    private Password _keyManagerPassword;
-    private Password _trustStorePassword;
+    private Credential _keyStoreCredential;
+    private Credential _keyManagerCredential;
+    private Credential _trustStoreCredential;
     private String _sslProvider;
     private String _sslProtocol = "TLS";
     private String _secureRandomAlgorithm;
@@ -174,11 +182,12 @@ public abstract class SslContextFactory extends AbstractLifeCycle implements Dum
     private SSLContext _setContext;
     private String _endpointIdentificationAlgorithm = "HTTPS";
     private boolean _trustAll;
-    private boolean _renegotiationAllowed = true;
+    private boolean _renegotiationAllowed;
     private int _renegotiationLimit = 5;
     private Factory _factory;
     private PKIXCertPathChecker _pkixCertPathChecker;
     private HostnameVerifier _hostnameVerifier;
+    private CertificateFactory _x509CertificateFactory;
 
     /**
      * Construct an instance of SslContextFactory with the default configuration.
@@ -212,6 +221,7 @@ public abstract class SslContextFactory extends AbstractLifeCycle implements Dum
         {
             load();
         }
+        _x509CertificateFactory = getCertificateFactoryInstance(X_509);
         checkConfiguration();
     }
 
@@ -300,7 +310,7 @@ public abstract class SslContextFactory extends AbstractLifeCycle implements Dum
                     for (String alias : Collections.list(keyStore.aliases()))
                     {
                         Certificate certificate = keyStore.getCertificate(alias);
-                        if (certificate != null && "X.509".equals(certificate.getType()))
+                        if (certificate != null && X_509.equals(certificate.getType()))
                         {
                             X509Certificate x509C = (X509Certificate)certificate;
 
@@ -631,14 +641,20 @@ public abstract class SslContextFactory extends AbstractLifeCycle implements Dum
      */
     public void setKeyStorePath(String keyStorePath)
     {
-        try
+        if (StringUtil.isBlank(keyStorePath))
         {
-            _keyStoreResource = Resource.newResource(keyStorePath);
+            // allow user to unset variable
+            _keyStoreResource = null;
+            return;
         }
-        catch (Exception e)
+
+        Resource res = ResourceFactory.of(this).newResource(keyStorePath);
+        if (!Resources.isReadableFile(res))
         {
-            throw new IllegalArgumentException(e);
+            _keyStoreResource = null;
+            throw new IllegalArgumentException("KeyStore Path not accessible: " + keyStorePath);
         }
+        _keyStoreResource = res;
     }
 
     /**
@@ -709,21 +725,20 @@ public abstract class SslContextFactory extends AbstractLifeCycle implements Dum
      */
     public void setTrustStorePath(String trustStorePath)
     {
-        if (StringUtil.isEmpty(trustStorePath))
+        if (StringUtil.isBlank(trustStorePath))
+        {
+            // allow user to unset variable
+            _trustStoreResource = null;
+            return;
+        }
+
+        Resource res = ResourceFactory.of(this).newResource(trustStorePath);
+        if (!Resources.isReadableFile(res))
         {
             _trustStoreResource = null;
+            throw new IllegalArgumentException("TrustStore Path not accessible: " + trustStorePath);
         }
-        else
-        {
-            try
-            {
-                _trustStoreResource = Resource.newResource(trustStorePath);
-            }
-            catch (Exception e)
-            {
-                throw new IllegalArgumentException(e);
-            }
-        }
+        _trustStoreResource = res;
     }
 
     /**
@@ -770,6 +785,7 @@ public abstract class SslContextFactory extends AbstractLifeCycle implements Dum
     }
 
     /**
+     * Set true if SSL certificates have to be validated.
      * @param validateCerts true if SSL certificates have to be validated
      */
     public void setValidateCerts(boolean validateCerts)
@@ -787,6 +803,7 @@ public abstract class SslContextFactory extends AbstractLifeCycle implements Dum
     }
 
     /**
+     * Set true if SSL certificates of the peer have to be validated.
      * @param validatePeerCerts true if SSL certificates of the peer have to be validated
      */
     public void setValidatePeerCerts(boolean validatePeerCerts)
@@ -796,46 +813,42 @@ public abstract class SslContextFactory extends AbstractLifeCycle implements Dum
 
     public String getKeyStorePassword()
     {
-        return _keyStorePassword == null ? null : _keyStorePassword.toString();
+        return _keyStoreCredential == null ? null : _keyStoreCredential.toString();
     }
 
     /**
-     * @param password The password for the key store.  If null is passed and
-     * a keystore is set, then
-     * the {@link #getPassword(String)} is used to
-     * obtain a password either from the {@value #PASSWORD_PROPERTY}
-     * system property.
+     * @param password The password for the key store. If null is passed then
+     * {@link #getCredential(String)} is used to obtain a password from
+     * the {@value #PASSWORD_PROPERTY} system property.
      */
     public void setKeyStorePassword(String password)
     {
-        _keyStorePassword = password == null ? getPassword(PASSWORD_PROPERTY) : newPassword(password);
+        _keyStoreCredential = password == null ? getCredential(PASSWORD_PROPERTY) : newCredential(password);
     }
 
     public String getKeyManagerPassword()
     {
-        return _keyManagerPassword == null ? null : _keyManagerPassword.toString();
+        return _keyManagerCredential == null ? null : _keyManagerCredential.toString();
     }
 
     /**
      * @param password The password (if any) for the specific key within the key store.
-     * If null is passed and the {@value #KEYPASSWORD_PROPERTY} system property is set,
-     * then the {@link #getPassword(String)} is used to
+     * If null is passed then {@link #getCredential(String)} is used to
      * obtain a password from the {@value #KEYPASSWORD_PROPERTY} system property.
      */
     public void setKeyManagerPassword(String password)
     {
-        _keyManagerPassword = password == null ? getPassword(KEYPASSWORD_PROPERTY) : newPassword(password);
+        _keyManagerCredential = password == null ? getCredential(KEYPASSWORD_PROPERTY) : newCredential(password);
     }
 
     /**
      * @param password The password for the truststore. If null is passed then
-     * the {@link #getPassword(String)} is used to
-     * obtain a password from the {@value #PASSWORD_PROPERTY}
+     * {@link #getCredential(String)} is used to obtain a password from the {@value #PASSWORD_PROPERTY}
      * system property.
      */
     public void setTrustStorePassword(String password)
     {
-        _trustStorePassword = password == null ? getPassword(PASSWORD_PROPERTY) : newPassword(password);
+        _trustStoreCredential = password == null ? getCredential(PASSWORD_PROPERTY) : newCredential(password);
     }
 
     /**
@@ -980,7 +993,7 @@ public abstract class SslContextFactory extends AbstractLifeCycle implements Dum
     }
 
     /**
-     * @return whether TLS renegotiation is allowed (true by default)
+     * @return whether TLS renegotiation is allowed ({@code false} by default)
      */
     @ManagedAttribute("Whether renegotiation is allowed")
     public boolean isRenegotiationAllowed()
@@ -989,6 +1002,7 @@ public abstract class SslContextFactory extends AbstractLifeCycle implements Dum
     }
 
     /**
+     * Set whether TLS renegotiation is allowed.
      * @param renegotiationAllowed whether TLS renegotiation is allowed
      */
     public void setRenegotiationAllowed(boolean renegotiationAllowed)
@@ -1117,7 +1131,7 @@ public abstract class SslContextFactory extends AbstractLifeCycle implements Dum
      */
     protected KeyStore loadKeyStore(Resource resource) throws Exception
     {
-        String storePassword = Objects.toString(_keyStorePassword, null);
+        String storePassword = Objects.toString(_keyStoreCredential, null);
         return CertificateUtils.getKeyStore(resource, getKeyStoreType(), getKeyStoreProvider(), storePassword);
     }
 
@@ -1132,12 +1146,12 @@ public abstract class SslContextFactory extends AbstractLifeCycle implements Dum
     {
         String type = Objects.toString(getTrustStoreType(), getKeyStoreType());
         String provider = Objects.toString(getTrustStoreProvider(), getKeyStoreProvider());
-        Password passwd = _trustStorePassword;
+        Credential passwd = _trustStoreCredential;
         if (resource == null || resource.equals(_keyStoreResource))
         {
             resource = _keyStoreResource;
             if (passwd == null)
-                passwd = _keyStorePassword;
+                passwd = _keyStoreCredential;
         }
         return CertificateUtils.getKeyStore(resource, type, provider, Objects.toString(passwd, null));
     }
@@ -1164,7 +1178,7 @@ public abstract class SslContextFactory extends AbstractLifeCycle implements Dum
         if (keyStore != null)
         {
             KeyManagerFactory keyManagerFactory = getKeyManagerFactoryInstance();
-            keyManagerFactory.init(keyStore, _keyManagerPassword == null ? (_keyStorePassword == null ? null : _keyStorePassword.toString().toCharArray()) : _keyManagerPassword.toString().toCharArray());
+            keyManagerFactory.init(keyStore, _keyManagerCredential == null ? (_keyStoreCredential == null ? null : _keyStoreCredential.toString().toCharArray()) : _keyManagerCredential.toString().toCharArray());
             managers = keyManagerFactory.getKeyManagers();
 
             if (managers != null)
@@ -1569,6 +1583,7 @@ public abstract class SslContextFactory extends AbstractLifeCycle implements Dum
     }
 
     /**
+     * Get the HostnameVerifier used by a client to verify host names in the server certificate.
      * @return the HostnameVerifier used by a client to verify host names in the server certificate
      */
     public HostnameVerifier getHostnameVerifier()
@@ -1598,7 +1613,9 @@ public abstract class SslContextFactory extends AbstractLifeCycle implements Dum
      *
      * @param realm the realm
      * @return the Password object
+     * @deprecated use {#link getCredential} instead.
      */
+    @Deprecated(since = "12.0.13", forRemoval = true)
     protected Password getPassword(String realm)
     {
         String password = System.getProperty(realm);
@@ -1610,10 +1627,41 @@ public abstract class SslContextFactory extends AbstractLifeCycle implements Dum
      *
      * @param password the password string
      * @return the new Password object
+     * @deprecated use {#link newCredential} instead.
      */
+    @Deprecated(since = "12.0.13", forRemoval = true)
     public Password newPassword(String password)
     {
         return new Password(password);
+    }
+
+    /**
+     * Returns the credential object for the given realm.
+     *
+     * @param realm the realm
+     * @return the Credential object
+     */
+    protected Credential getCredential(String realm)
+    {
+        if (TypeUtil.isDeclaredMethodOn(this, "getPassword", String.class))
+            return getPassword(realm);
+
+        String password = System.getProperty(realm);
+        return password == null ? null : newCredential(password);
+    }
+
+    /**
+     * Creates a new Credential object.
+     *
+     * @param password the password string
+     * @return the new Credential object
+     */
+    public Credential newCredential(String password)
+    {
+        if (TypeUtil.isDeclaredMethodOn(this, "newPassword", String.class))
+            return newPassword(password);
+
+        return Credential.getCredential(password);
     }
 
     public SSLServerSocket newSslServerSocket(String host, int port, int backlog) throws IOException
@@ -1903,15 +1951,15 @@ public abstract class SslContextFactory extends AbstractLifeCycle implements Dum
     }
 
     /**
-     * Obtain the X509 Certificate Chain from the provided SSLSession using the
-     * default {@link CertificateFactory} behaviors
+     * Obtain the X509 Certificate Chain from the provided SSLSession using this
+     * SslContextFactory's optional Provider specific {@link CertificateFactory}.
      *
      * @param sslSession the session to use for active peer certificates
      * @return the certificate chain
      */
-    public static X509Certificate[] getCertChain(SSLSession sslSession)
+    public X509Certificate[] getX509CertChain(SSLSession sslSession)
     {
-        return getX509CertChain(null, sslSession);
+        return getX509CertChain(_x509CertificateFactory, sslSession);
     }
 
     /**
@@ -1921,15 +1969,17 @@ public abstract class SslContextFactory extends AbstractLifeCycle implements Dum
      * @param sslSession the session to use for active peer certificates
      * @return the certificate chain
      */
-    public X509Certificate[] getX509CertChain(SSLSession sslSession)
+    public static X509Certificate[] getCertChain(SSLSession sslSession)
     {
-        return getX509CertChain(this, sslSession);
+        return getX509CertChain(null, sslSession);
     }
 
-    private static X509Certificate[] getX509CertChain(SslContextFactory sslContextFactory, SSLSession sslSession)
+    private static X509Certificate[] getX509CertChain(CertificateFactory certificateFactory, SSLSession sslSession)
     {
         try
         {
+            if (certificateFactory == null)
+                certificateFactory = CertificateFactory.getInstance(X_509);
             Certificate[] javaxCerts = sslSession.getPeerCertificates();
             if (javaxCerts == null || javaxCerts.length == 0)
                 return null;
@@ -1937,22 +1987,11 @@ public abstract class SslContextFactory extends AbstractLifeCycle implements Dum
             int length = javaxCerts.length;
             X509Certificate[] javaCerts = new X509Certificate[length];
 
-            String type = "X.509";
-            CertificateFactory cf;
-            if (sslContextFactory != null)
-            {
-                cf = sslContextFactory.getCertificateFactoryInstance(type);
-            }
-            else
-            {
-                cf = CertificateFactory.getInstance(type);
-            }
-
             for (int i = 0; i < length; i++)
             {
                 byte[] bytes = javaxCerts[i].getEncoded();
                 ByteArrayInputStream stream = new ByteArrayInputStream(bytes);
-                javaCerts[i] = (X509Certificate)cf.generateCertificate(stream);
+                javaCerts[i] = (X509Certificate)certificateFactory.generateCertificate(stream);
             }
 
             return javaCerts;
@@ -1988,6 +2027,8 @@ public abstract class SslContextFactory extends AbstractLifeCycle implements Dum
      *     DES_CBC      Block     56
      *     3DES_EDE_CBC Block    168
      * </pre>
+     * <p>
+     * For unknown ciphers, any substring of digits bounded by '_' is taken as the key length.
      *
      * @param cipherSuite String name of the TLS cipher suite.
      * @return int indicating the effective key entropy bit-length.
@@ -1997,26 +2038,30 @@ public abstract class SslContextFactory extends AbstractLifeCycle implements Dum
         // Roughly ordered from most common to least common.
         if (cipherSuite == null)
             return 0;
-        else if (cipherSuite.contains("WITH_AES_256_"))
-            return 256;
-        else if (cipherSuite.contains("WITH_RC4_128_"))
-            return 128;
-        else if (cipherSuite.contains("WITH_AES_128_"))
-            return 128;
-        else if (cipherSuite.contains("WITH_RC4_40_"))
-            return 40;
-        else if (cipherSuite.contains("WITH_3DES_EDE_CBC_"))
+        if (cipherSuite.contains("WITH_3DES_EDE_CBC_"))
             return 168;
-        else if (cipherSuite.contains("WITH_IDEA_CBC_"))
+        if (cipherSuite.contains("WITH_IDEA_CBC_"))
             return 128;
-        else if (cipherSuite.contains("WITH_RC2_CBC_40_"))
-            return 40;
         else if (cipherSuite.contains("WITH_DES40_CBC_"))
             return 40;
         else if (cipherSuite.contains("WITH_DES_CBC_"))
             return 56;
-        else
-            return 0;
+
+        Matcher matcher = KEY_SIZE_PATTERN.matcher(cipherSuite);
+        if (matcher.find())
+        {
+            String keyLengthString = matcher.group(1);
+            try
+            {
+                return Integer.parseInt(keyLengthString);
+            }
+            catch (NumberFormatException e)
+            {
+                if (LOG.isTraceEnabled())
+                    LOG.trace("unknown key length", e);
+            }
+        }
+        return 0;
     }
 
     public void validateCerts(X509Certificate[] certs) throws Exception

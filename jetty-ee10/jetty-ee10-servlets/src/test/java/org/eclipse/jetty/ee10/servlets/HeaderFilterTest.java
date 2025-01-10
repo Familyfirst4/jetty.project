@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -50,8 +50,9 @@ public class HeaderFilterTest
         _server = new Server();
         _connector = new LocalConnector(_server);
         _server.addConnector(_connector);
-        _context = new ServletContextHandler(_server, "/context");
+        _context = new ServletContextHandler("/context");
         _context.addServlet(NullServlet.class, "/test/*");
+        _server.setHandler(_context);
         _server.start();
     }
 

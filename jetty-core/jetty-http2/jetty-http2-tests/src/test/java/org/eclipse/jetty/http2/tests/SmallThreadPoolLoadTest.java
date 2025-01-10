@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -37,6 +37,7 @@ import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.FuturePromise;
+import org.eclipse.jetty.util.NanoTime;
 import org.eclipse.jetty.util.thread.QueuedThreadPool;
 import org.eclipse.jetty.util.thread.Scheduler;
 import org.hamcrest.Matchers;
@@ -70,7 +71,7 @@ public class SmallThreadPoolLoadTest extends AbstractTest
         start(new LoadHandler());
 
         // Only one connection to the server.
-        Session session = newClientSession(new Session.Listener.Adapter());
+        Session session = newClientSession(new Session.Listener() {});
 
         int runs = 10;
         int iterations = 512;
@@ -100,7 +101,7 @@ public class SmallThreadPoolLoadTest extends AbstractTest
             }, iterations * factor, TimeUnit.MILLISECONDS);
 
             long successes = 0;
-            long begin = System.nanoTime();
+            long begin = NanoTime.now();
             for (int i = 0; i < iterations; ++i)
             {
                 boolean success = test(session, latch);
@@ -109,10 +110,9 @@ public class SmallThreadPoolLoadTest extends AbstractTest
             }
 
             assertTrue(latch.await(iterations, TimeUnit.SECONDS));
-            long end = System.nanoTime();
             assertThat(successes, Matchers.greaterThan(0L));
             task.cancel();
-            long elapsed = TimeUnit.NANOSECONDS.toMillis(end - begin);
+            long elapsed = NanoTime.millisSince(begin);
             logger.info("{} requests in {} ms, {}/{} success/failure, {} req/s",
                 iterations, elapsed,
                 successes, iterations - successes,
@@ -143,30 +143,35 @@ public class SmallThreadPoolLoadTest extends AbstractTest
 
         HeadersFrame requestFrame = new HeadersFrame(request, null, download);
         FuturePromise<Stream> promise = new FuturePromise<>();
-        CountDownLatch requestLatch = new CountDownLatch(1);
+        CountDownLatch responseLatch = new CountDownLatch(1);
         AtomicBoolean reset = new AtomicBoolean();
-        session.newStream(requestFrame, promise, new Stream.Listener.Adapter()
+        session.newStream(requestFrame, promise, new Stream.Listener()
         {
             @Override
             public void onHeaders(Stream stream, HeadersFrame frame)
             {
                 if (frame.isEndStream())
-                    requestLatch.countDown();
+                    responseLatch.countDown();
+                stream.demand();
             }
 
             @Override
-            public void onData(Stream stream, DataFrame frame, Callback callback)
+            public void onDataAvailable(Stream stream)
             {
-                callback.succeeded();
-                if (frame.isEndStream())
-                    requestLatch.countDown();
+                Stream.Data data = stream.readData();
+                data.release();
+                if (data.frame().isEndStream())
+                    responseLatch.countDown();
+                else
+                    stream.demand();
             }
 
             @Override
-            public void onReset(Stream stream, ResetFrame frame)
+            public void onReset(Stream stream, ResetFrame frame, Callback callback)
             {
                 reset.set(true);
-                requestLatch.countDown();
+                responseLatch.countDown();
+                callback.succeeded();
             }
         });
         if (!download)
@@ -175,7 +180,7 @@ public class SmallThreadPoolLoadTest extends AbstractTest
             stream.data(new DataFrame(stream.getId(), ByteBuffer.allocate(contentLength), true), Callback.NOOP);
         }
 
-        boolean success = requestLatch.await(5, TimeUnit.SECONDS);
+        boolean success = responseLatch.await(5, TimeUnit.SECONDS);
         if (success)
             latch.countDown();
         else
@@ -184,10 +189,10 @@ public class SmallThreadPoolLoadTest extends AbstractTest
         return !reset.get();
     }
 
-    private static class LoadHandler extends Handler.Processor
+    private static class LoadHandler extends Handler.Abstract
     {
         @Override
-        public void process(Request request, Response response, Callback callback) throws Exception
+        public boolean handle(Request request, Response response, Callback callback) throws Exception
         {
             switch (HttpMethod.fromString(request.getMethod()))
             {
@@ -204,6 +209,7 @@ public class SmallThreadPoolLoadTest extends AbstractTest
                     Content.copy(request, response, callback);
                 }
             }
+            return true;
         }
     }
 }

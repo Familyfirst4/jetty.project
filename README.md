@@ -1,66 +1,73 @@
-Eclipse Jetty Canonical Repository
-==================================
+# Eclipse Jetty
 
-This is the canonical repository for the Jetty project, feel free to fork and contribute now!
+Eclipse Jetty is a lightweight, highly scalable, Java-based web server and Servlet engine.
+Jetty's goal is to support web protocols (HTTP/1, HTTP/2, HTTP/3, WebSocket, etc.) in a high volume low latency way that provides maximum performance while retaining the ease of use and compatibility with years of Servlet development.
+Jetty is a modern fully asynchronous web server that has a long history as a component oriented technology, and can be easily embedded into applications while still offering a solid traditional distribution for webapp deployment.
 
-Submitting a patch or pull request?
+- https://jetty.org
+- https://projects.eclipse.org/projects/rt.jetty
 
-Make sure you have an Eclipse Contributor Agreement (ECA) on file.
+## Webapp Example
 
-- [eclipse.org/legal/ecafaq](https://www.eclipse.org/legal/ecafaq.php)
-
-Project description
--------------------
-
-Jetty is a lightweight highly scalable java based web server and servlet engine.
-Our goal is to support web protocols like HTTP, HTTP/2 and WebSocket in a high volume low latency way that provides maximum performance while retaining the ease of use and compatibility with years of servlet development.
-Jetty is a modern fully async web server that has a long history as a component oriented technology easily embedded into applications while still offering a solid traditional distribution for webapp deployment.
-
-- [https://projects.eclipse.org/projects/rt.jetty](https://projects.eclipse.org/projects/rt.jetty)
-
-Webapp Example
---------------
 ```shell
-$ mkdir base && cd base
-$ java -jar $JETTY_HOME/start.jar --add-modules=http,deploy
+$ mkdir jetty-base && cd jetty-base
+$ java -jar $JETTY_HOME/start.jar --add-modules=http,ee10-deploy
 $ cp ~/src/myproj/target/mywebapp.war webapps
 $ java -jar $JETTY_HOME/start.jar 
 ```
 
-Embedded Example
-----------------
+## Multiple Versions Webapp Example
+
+```shell
+$ mkdir jetty-base && cd jetty-base
+$ java -jar $JETTY_HOME/start.jar --add-modules=http,ee10-deploy,ee8-deploy
+$ cp ~/src/myproj/target/mywebapp10.war webapps
+$ cp ~/src/myproj/target/mywebapp8.war webapps
+$ echo "environment: ee8" > webapps/mywebapp8.properties
+$ java -jar $JETTY_HOME/start.jar 
+```
+
+## Embedded Jetty Example
+
 ```java
 Server server = new Server(port);
-ServletContextHandler context = new ServletContextHandler(server, "/");
-context.addServlet(MyServlet.class, "/*");
+server.setHandler(new MyHandler());
 server.start();
 ```
 
-Documentation
--------------
+## Embedded Servlet Example
 
-Project documentation is available on the Jetty Eclipse website.
-
-- [https://www.eclipse.org/jetty/documentation](https://www.eclipse.org/jetty/documentation)
-
-Building
-========
-
-To build, use:
-
-``` shell
-  mvn clean install
+```java
+Server server = new Server(port);
+ServletContextHandler context = new ServletContextHandler("/");
+context.addServlet(MyServlet.class, "/*");
+server.setHandler(context);
+server.start();
 ```
 
-Eclipse Jetty will be built in `jetty-home/target/jetty-home`.
+## Building Jetty from Source
 
-The first build may take a longer than expected as Maven downloads all the dependencies.
+```shell
+$ git clone https://github.com/jetty/jetty.project.git
+$ cd jetty.project
+$ mvn -Pfast clean install # fast build bypasses tests and other checks
+```
 
-The build tests do a lot of stress testing, and on some machines it is necessary to set the file descriptor limit to greater than 2048 for the tests to all pass successfully.
+For more detailed information on building and contributing to the Jetty project, please see the [Contribution Guide](https://jetty.org/docs/contribution-guide/index.html).
 
-It is possible to bypass tests by building with `mvn clean install -DskipTests`.
+# Documentation
 
-Professional Services
----------------------
+[Jetty's documentation](https://jetty.org/docs) is available on the Eclipse Jetty website.
 
-Expert advice and production support are available through [Webtide.com](https://webtide.com).
+The documentation is divided into three guides, based on use case:
+
+* The [Operations Guide](https://jetty.org/docs/jetty/12/operations-guide/index.html) targets sysops, devops, and developers who want to install Eclipse Jetty as a standalone server to deploy web applications.
+
+* The [Programming Guide](https://jetty.org/docs/jetty/12/programming-guide/index.html) targets developers who want to use the Eclipse Jetty libraries in their applications, and advanced sysops/devops that want to customize the deployment of web applications.
+
+* The [Contribution Guide](https://jetty.org/docs/contribution-guide/index.html) targets developers that wish to contribute to the Jetty Project with code patches or documentation improvements.
+
+
+# Commercial Support
+
+Expert advice and production support of Jetty are provided by [Webtide](https://webtide.com).

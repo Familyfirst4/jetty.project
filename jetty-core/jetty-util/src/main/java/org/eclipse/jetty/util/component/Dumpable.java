@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,13 +14,21 @@
 package org.eclipse.jetty.util.component;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.lang.reflect.Array;
+import java.nio.file.Path;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Stream;
 
+import org.eclipse.jetty.util.Jetty;
 import org.eclipse.jetty.util.StringUtil;
 import org.eclipse.jetty.util.TypeUtil;
 import org.eclipse.jetty.util.annotation.ManagedObject;
@@ -29,7 +37,7 @@ import org.eclipse.jetty.util.annotation.ManagedOperation;
 @ManagedObject("Dumpable Object")
 public interface Dumpable
 {
-    String KEY = "key: +- bean, += managed, +~ unmanaged, +? auto, +: iterable, +] array, +@ map, +> undefined";
+    String KEY = "key: +- bean, += managed, +~ unmanaged, +? auto, +: iterable, +] array, +@ map, +> undefined\n";
 
     @ManagedOperation(value = "Dump the nested Object state as a String", impact = "INFO")
     default String dump()
@@ -48,24 +56,55 @@ public interface Dumpable
     void dump(Appendable out, String indent) throws IOException;
 
     /**
-     * Utility method to implement {@link #dump()} by calling {@link #dump(Appendable, String)}
+     * Utility method to dump to a {@link String}
      *
      * @param dumpable The dumpable to dump
      * @return The dumped string
+     * @see #dump(Appendable, String)
      */
     static String dump(Dumpable dumpable)
     {
         StringBuilder b = new StringBuilder();
+        dump(dumpable, b);
+        return b.toString();
+    }
+
+    /**
+     * Utility method to dump to an {@link Appendable}
+     *
+     * @param dumpable The dumpable to dump
+     * @param out The destination of the dump
+     */
+    static void dump(Dumpable dumpable, Appendable out)
+    {
         try
         {
-            dumpable.dump(b, "");
+            dumpable.dump(out, "");
+
+            out.append(KEY);
+            Runtime runtime = Runtime.getRuntime();
+            Instant now = Instant.now();
+            String zone = System.getProperty("user.timezone");
+            out.append("JVM: %s %s %s; OS: %s %s %s; Jetty: %s; CPUs: %d; mem(free/total/max): %,d/%,d/%,d MiB\nUTC: %s; %s: %s".formatted(
+                System.getProperty("java.vm.vendor"),
+                System.getProperty("java.vm.name"),
+                System.getProperty("java.vm.version"),
+                System.getProperty("os.name"),
+                System.getProperty("os.arch"),
+                System.getProperty("os.version"),
+                Jetty.VERSION,
+                runtime.availableProcessors(),
+                runtime.freeMemory() / (1024 * 1024),
+                runtime.totalMemory() / (1024 * 1024),
+                runtime.maxMemory() / (1024 * 1024),
+                DateTimeFormatter.ISO_DATE_TIME.format(now.atOffset(ZoneOffset.UTC)),
+                zone,
+                DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(now.atZone(ZoneId.of(zone)))));
         }
         catch (IOException e)
         {
-            b.append(e.toString());
+            throw new UncheckedIOException(e);
         }
-        b.append(KEY);
-        return b.toString();
     }
 
     /**
@@ -101,12 +140,14 @@ public interface Dumpable
                 s = StringUtil.replace(s, "\r\n", "|");
                 s = StringUtil.replace(s, '\n', '|');
             }
-            else if (o instanceof Collection)
-                s = String.format("%s@%x(size=%d)", TypeUtil.toShortName(o.getClass()), o.hashCode(), ((Collection)o).size());
+            else if (o instanceof Collection collection)
+                s = String.format("%s@%x(size=%d)", TypeUtil.toShortName(o.getClass()), o.hashCode(), collection.size());
             else if (o.getClass().isArray())
                 s = String.format("%s@%x[size=%d]", o.getClass().getComponentType(), o.hashCode(), Array.getLength(o));
-            else if (o instanceof Map)
-                s = String.format("%s@%x{size=%d}", TypeUtil.toShortName(o.getClass()), o.hashCode(), ((Map<?, ?>)o).size());
+            else if (o instanceof Map map)
+                s = String.format("%s@%x{size=%d}", TypeUtil.toShortName(o.getClass()), o.hashCode(), map.size());
+            else if (o instanceof Map.Entry<?, ?> entry)
+                s = String.format("%s=%s", entry.getKey(), entry.getValue());
             else
             {
                 s = String.valueOf(o);
@@ -153,7 +194,8 @@ public interface Dumpable
         {
             dumpContainer(out, indent, (Container)object, extras == 0);
         }
-        if (object instanceof Iterable)
+        // Dump an Iterable Path because it may contain itself.
+        if (object instanceof Iterable && !(object instanceof Path))
         {
             dumpIterable(out, indent, (Iterable<?>)object, extras == 0);
         }
@@ -161,7 +203,7 @@ public interface Dumpable
         {
             dumpMapEntries(out, indent, (Map<?, ?>)object, extras == 0);
         }
-
+        
         if (extras == 0)
             return;
 
@@ -229,12 +271,15 @@ public interface Dumpable
             }
         }
     }
-    
+
     static void dumpIterable(Appendable out, String indent, Iterable<?> iterable, boolean last) throws IOException
     {
         for (Iterator i = iterable.iterator(); i.hasNext(); )
         {
             Object item = i.next();
+            // Safety net to stop iteration when an Iterable contains itself e.g. Path.
+            if (Objects.equals(item, iterable))
+                return;
             String nextIndent = indent + ((i.hasNext() || !last) ? "|  " : "   ");
             out.append(indent).append("+: ");
             if (item instanceof Dumpable)
@@ -293,7 +338,7 @@ public interface Dumpable
      * interface to allow it to refine which of its beans can be
      * dumped.
      */
-    public interface DumpableContainer extends Dumpable
+    interface DumpableContainer extends Dumpable
     {
         default boolean isDumpable(Object o)
         {

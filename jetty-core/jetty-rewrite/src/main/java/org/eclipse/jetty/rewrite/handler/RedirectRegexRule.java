@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -18,7 +18,6 @@ import java.util.regex.Matcher;
 
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpStatus;
-import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.annotation.Name;
@@ -33,6 +32,10 @@ public class RedirectRegexRule extends RegexRule
 {
     protected String _location;
     private int _statusCode = HttpStatus.FOUND_302;
+
+    public RedirectRegexRule()
+    {
+    }
 
     public RedirectRegexRule(@Name("regex") String regex, @Name("location") String location)
     {
@@ -52,6 +55,7 @@ public class RedirectRegexRule extends RegexRule
     }
 
     /**
+     * Set the location to redirect.
      * @param location the location to redirect.
      */
     public void setLocation(String location)
@@ -72,17 +76,18 @@ public class RedirectRegexRule extends RegexRule
     }
 
     @Override
-    protected Request.WrapperProcessor apply(Request.WrapperProcessor input, Matcher matcher) throws IOException
+    protected Handler apply(Handler input, Matcher matcher) throws IOException
     {
-        return new Request.WrapperProcessor(input)
+        return new Handler(input)
         {
             @Override
-            public void process(Request ignored, Response response, Callback callback)
+            protected boolean handle(Response response, Callback callback)
             {
                 String target = matcher.replaceAll(getLocation());
                 response.setStatus(_statusCode);
-                response.getHeaders().put(HttpHeader.LOCATION, Request.toRedirectURI(this, target));
+                response.getHeaders().put(HttpHeader.LOCATION, Response.toRedirectURI(this, target));
                 callback.succeeded();
+                return true;
             }
         };
     }

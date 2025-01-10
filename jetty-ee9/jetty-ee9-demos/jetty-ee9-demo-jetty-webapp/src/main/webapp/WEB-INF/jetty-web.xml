@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE Configure PUBLIC "-//Jetty//Configure//EN" "https://www.eclipse.org/jetty/configure_10_0.dtd">
+<!DOCTYPE Configure PUBLIC "-//Jetty//Configure//EN" "https://jetty.org/configure_10_0.dtd">
 
 <!--
 This is the jetty specific web application configuration file.  When starting
@@ -21,6 +21,6 @@ org.eclipse.jetty.ee9.servlet.WebApplicationContext object
   </Get>
 
   <Get name="servletContext">
-    <Call name="log"><Arg>The test-jetty webapp is deployed. DO NOT USE IN PRODUCTION!</Arg><Arg></Arg></Call>
+    <Call name="log"><Arg>The ee9-demo-jetty webapp is deployed. DO NOT USE IN PRODUCTION!</Arg><Arg></Arg></Call>
   </Get>
 </Configure>

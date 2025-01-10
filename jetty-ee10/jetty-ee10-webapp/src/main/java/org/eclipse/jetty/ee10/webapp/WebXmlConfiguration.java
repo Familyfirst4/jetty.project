@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -15,9 +15,12 @@ package org.eclipse.jetty.ee10.webapp;
 
 import java.io.IOException;
 import java.net.MalformedURLException;
+import java.net.URI;
+import java.net.URL;
 
 import org.eclipse.jetty.ee10.servlet.ErrorPageErrorHandler;
 import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.Resources;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -30,7 +33,7 @@ public class WebXmlConfiguration extends AbstractConfiguration
 
     public WebXmlConfiguration()
     {
-        addDependencies(WebInfConfiguration.class);
+        super(new Builder().addDependencies(WebInfConfiguration.class));
     }
 
     /**
@@ -43,16 +46,24 @@ public class WebXmlConfiguration extends AbstractConfiguration
         String defaultsDescriptor = context.getDefaultsDescriptor();
         if (defaultsDescriptor != null && defaultsDescriptor.length() > 0)
         {
-            Resource dftResource = Resource.newSystemResource(defaultsDescriptor);
-            if (dftResource == null)
+            Resource dftResource = context.getResourceFactory().newClassLoaderResource(defaultsDescriptor);
+            if (Resources.missing(dftResource))
             {
                 String pkg = WebXmlConfiguration.class.getPackageName().replace(".", "/") + "/";
                 if (defaultsDescriptor.startsWith(pkg))
-                    dftResource = Resource.newResource(WebXmlConfiguration.class.getResource(defaultsDescriptor.substring(pkg.length())));
-                if (dftResource == null)
+                {
+                    URL url = WebXmlConfiguration.class.getResource(defaultsDescriptor.substring(pkg.length()));
+                    if (url != null)
+                    {
+                        URI uri = url.toURI();
+                        dftResource = context.getResourceFactory().newResource(uri);
+                    }
+                }
+                if (Resources.missing(dftResource))
                     dftResource = context.newResource(defaultsDescriptor);
             }
-            context.getMetaData().setDefaultsDescriptor(new DefaultsDescriptor(dftResource));
+            if (Resources.isReadableFile(dftResource))
+                context.getMetaData().setDefaultsDescriptor(new DefaultsDescriptor(dftResource));
         }
 
         //parse, but don't process web.xml
@@ -69,10 +80,11 @@ public class WebXmlConfiguration extends AbstractConfiguration
         {
             if (overrideDescriptor != null && overrideDescriptor.length() > 0)
             {
-                Resource orideResource = Resource.newSystemResource(overrideDescriptor);
-                if (orideResource == null)
+                Resource orideResource = context.getResourceFactory().newClassLoaderResource(overrideDescriptor);
+                if (Resources.missing(orideResource))
                     orideResource = context.newResource(overrideDescriptor);
-                context.getMetaData().addOverrideDescriptor(new OverrideDescriptor(orideResource));
+                if (Resources.isReadableFile(orideResource))
+                    context.getMetaData().addOverrideDescriptor(new OverrideDescriptor(orideResource));
             }
         }
     }
@@ -92,7 +104,7 @@ public class WebXmlConfiguration extends AbstractConfiguration
         if (descriptor != null)
         {
             Resource web = context.newResource(descriptor);
-            if (web.exists() && !web.isDirectory())
+            if (web != null && !web.isDirectory())
                 return web;
         }
 
@@ -100,8 +112,8 @@ public class WebXmlConfiguration extends AbstractConfiguration
         if (webInf != null && webInf.isDirectory())
         {
             // do web.xml file
-            Resource web = webInf.addPath("web.xml");
-            if (web.exists())
+            Resource web = webInf.resolve("web.xml");
+            if (Resources.isReadableFile(web))
                 return web;
             if (LOG.isDebugEnabled())
                 LOG.debug("No WEB-INF/web.xml in {}. Serving files and default/dynamic servlets only", context.getWar());
@@ -114,8 +126,8 @@ public class WebXmlConfiguration extends AbstractConfiguration
     {
         context.setWelcomeFiles(null);
 
-        //TODO: ErrorPageErorrHandler is not an ErrorProcessor
-        if (context.getErrorProcessor() instanceof ErrorPageErrorHandler errorPageErrorHandler) 
+        //TODO: ErrorPageErrorHandler is not an ErrorHandler
+        if (context.getErrorHandler() instanceof ErrorPageErrorHandler errorPageErrorHandler)
             errorPageErrorHandler.setErrorPages(null);
 
         // TODO remove classpaths from classloader

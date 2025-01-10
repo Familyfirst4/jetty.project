@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -15,22 +15,26 @@ package org.eclipse.jetty.util.thread;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static java.util.concurrent.TimeUnit.SECONDS;
+import static org.awaitility.Awaitility.waitAtMost;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.lessThanOrEqualTo;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
 
 public class ReservedThreadExecutorTest
 {
@@ -75,37 +79,41 @@ public class ReservedThreadExecutorTest
     }
 
     @Test
-    public void testPending() throws Exception
+    public void testInterruptedFlagCleared()
     {
-        assertThat(_executor._queue.size(), is(0));
-
+        // Prime the reserved executor.
         for (int i = 0; i < SIZE; i++)
         {
-            _reservedExecutor.tryExecute(NOOP);
+            assertFalse(_reservedExecutor.tryExecute(NOOP));
         }
-        assertThat(_executor._queue.size(), is(SIZE));
-
         for (int i = 0; i < SIZE; i++)
         {
             _executor.startThread();
         }
         assertThat(_executor._queue.size(), is(0));
+        waitAtMost(10, SECONDS).until(_reservedExecutor::getAvailable, is(SIZE));
 
-        waitForAllAvailable();
-
+        // Execute tasks that leave the interrupted flag to true.
         for (int i = 0; i < SIZE; i++)
         {
-            assertThat(_reservedExecutor.tryExecute(new Task()), is(true));
+            assertTrue(_reservedExecutor.tryExecute(() -> Thread.currentThread().interrupt()));
         }
-        assertThat(_executor._queue.size(), is(1));
-        assertThat(_reservedExecutor.getAvailable(), is(0));
+        waitAtMost(10, SECONDS).until(_reservedExecutor::getAvailable, is(SIZE));
 
+        // Check that the interrupted flag was cleared.
+        List<Boolean> interruptedFlags = new CopyOnWriteArrayList<>();
         for (int i = 0; i < SIZE; i++)
         {
-            assertThat(_reservedExecutor.tryExecute(NOOP), is(false));
+            assertTrue(_reservedExecutor.tryExecute(() ->
+            {
+                boolean interrupted = Thread.interrupted();
+                interruptedFlags.add(interrupted);
+            }));
         }
-        assertThat(_executor._queue.size(), is(SIZE));
-        assertThat(_reservedExecutor.getAvailable(), is(0));
+        waitAtMost(10, SECONDS).until(_reservedExecutor::getAvailable, is(SIZE));
+
+        assertThat(interruptedFlags.size(), is(SIZE));
+        assertThat(interruptedFlags.stream().allMatch(interrupted -> interrupted == false), is(true));
     }
 
     @Test
@@ -115,54 +123,60 @@ public class ReservedThreadExecutorTest
 
         for (int i = 0; i < SIZE; i++)
         {
-            _reservedExecutor.tryExecute(NOOP);
+            // No reserved thread available, so task should be executed and a reserve thread started
+            assertFalse(_reservedExecutor.tryExecute(NOOP));
         }
         assertThat(_executor._queue.size(), is(SIZE));
 
         for (int i = 0; i < SIZE; i++)
         {
+            // start executor threads, which should be 2 reserved thread jobs
             _executor.startThread();
         }
         assertThat(_executor._queue.size(), is(0));
 
-        waitForAllAvailable();
+        // check that the reserved thread pool grows to 2 threads
+        waitAtMost(10, SECONDS).until(_reservedExecutor::getAvailable, is(SIZE));
 
         Task[] tasks = new Task[SIZE];
         for (int i = 0; i < SIZE; i++)
         {
             tasks[i] = new Task();
+            // submit a job that will take a reserved thread.
             assertThat(_reservedExecutor.tryExecute(tasks[i]), is(true));
         }
 
         for (int i = 0; i < SIZE; i++)
         {
-            tasks[i]._ran.await(10, TimeUnit.SECONDS);
+            // wait for the job to run
+            tasks[i]._ran.await(10, SECONDS);
         }
 
-        assertThat(_executor._queue.size(), is(1));
+        // This RTP only starts new reserved threads when it there is a miss
+        assertThat(_executor._queue.size(), is(0));
 
-        Task extra = new Task();
-        assertThat(_reservedExecutor.tryExecute(extra), is(false));
-        assertThat(_executor._queue.size(), is(2));
+        // and we have no reserved threads
+        assertThat(_reservedExecutor.getAvailable(), is(0));
 
-        Thread.sleep(500);
-        assertThat(extra._ran.getCount(), is(1L));
+        // Complete the jobs
 
         for (int i = 0; i < SIZE; i++)
         {
+            // wait for the job to run
             tasks[i]._complete.countDown();
         }
 
-        waitForAllAvailable();
+        // reserved threads should run job and then become reserved again
+        waitAtMost(10, SECONDS).until(_reservedExecutor::getAvailable, is(SIZE));
     }
 
     @Test
-    public void testShrink() throws Exception
+    public void testEvict() throws Exception
     {
         final long IDLE = 1000;
 
         _reservedExecutor.stop();
-        _reservedExecutor.setIdleTimeout(IDLE, TimeUnit.MILLISECONDS);
+        _reservedExecutor.setIdleTimeout(IDLE, MILLISECONDS);
         _reservedExecutor.start();
         assertThat(_reservedExecutor.getAvailable(), is(0));
 
@@ -172,79 +186,12 @@ public class ReservedThreadExecutorTest
         _executor.startThread();
         _executor.startThread();
 
-        waitForAvailable(2);
-
-        int available = _reservedExecutor.getAvailable();
-        assertThat(available, is(2));
-        Thread.sleep((5 * IDLE) / 2);
-        assertThat(_reservedExecutor.getAvailable(), is(0));
-    }
-
-    @Test
-    public void testBusyShrink() throws Exception
-    {
-        final long IDLE = 1000;
-
-        _reservedExecutor.stop();
-        _reservedExecutor.setIdleTimeout(IDLE, TimeUnit.MILLISECONDS);
-        _reservedExecutor.start();
-        assertThat(_reservedExecutor.getAvailable(), is(0));
-
-        assertThat(_reservedExecutor.tryExecute(NOOP), is(false));
-        assertThat(_reservedExecutor.tryExecute(NOOP), is(false));
-
-        _executor.startThread();
-        _executor.startThread();
-
-        waitForAvailable(2);
+        waitAtMost(10, SECONDS).until(_reservedExecutor::getAvailable, is(2));
 
         int available = _reservedExecutor.getAvailable();
         assertThat(available, is(2));
 
-        for (int i = 10; i-- > 0;)
-        {
-            assertThat(_reservedExecutor.tryExecute(NOOP), is(true));
-            Thread.sleep(200);
-        }
-        assertThat(_reservedExecutor.getAvailable(), is(1));
-    }
-
-    @Test
-    public void testReservedIdleTimeoutWithOneReservedThread() throws Exception
-    {
-        long idleTimeout = 500;
-        _reservedExecutor.stop();
-        _reservedExecutor.setIdleTimeout(idleTimeout, TimeUnit.MILLISECONDS);
-        _reservedExecutor.start();
-
-        assertThat(_reservedExecutor.tryExecute(NOOP), is(false));
-        Thread thread = _executor.startThread();
-        assertNotNull(thread);
-        waitForAvailable(1);
-
-        Thread.sleep(2 * idleTimeout);
-
-        waitForAvailable(0);
-        thread.join(2 * idleTimeout);
-        assertFalse(thread.isAlive());
-    }
-
-    protected void waitForAvailable(int size) throws InterruptedException
-    {
-        long started = System.nanoTime();
-        while (_reservedExecutor.getAvailable() < size)
-        {
-            long elapsed = System.nanoTime() - started;
-            if (elapsed > TimeUnit.SECONDS.toNanos(10))
-                fail("Took too long");
-            Thread.sleep(10);
-        }
-        assertThat(_reservedExecutor.getAvailable(), is(size));
-    }
-
-    protected void waitForAllAvailable() throws InterruptedException
-    {
-        waitForAvailable(SIZE);
+        waitAtMost(5 * IDLE, MILLISECONDS).until(_reservedExecutor::getAvailable, lessThanOrEqualTo(1));
     }
 
     private static class TestExecutor implements Executor
@@ -290,6 +237,7 @@ public class ReservedThreadExecutorTest
         }
     }
 
+    @Tag("stress")
     @Test
     public void stressTest() throws Exception
     {
@@ -348,7 +296,7 @@ public class ReservedThreadExecutorTest
         task.run();
         task.run();
 
-        assertTrue(executed.await(60, TimeUnit.SECONDS));
+        assertTrue(executed.await(60, SECONDS));
 
         // ensure tryExecute is still working
         while (!reserved.tryExecute(() -> {}))

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -20,6 +20,7 @@ import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.PathMatcher;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -50,10 +51,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public class ScannerTest
 {
     public WorkDir workDir;
-    private Path _directory;
+
+    public Path _directory;
     private Scanner _scanner;
-    private BlockingQueue<Event> _queue = new LinkedBlockingQueue<>();
-    private BlockingQueue<Set<String>> _bulk = new LinkedBlockingQueue<>();
+    private final BlockingQueue<Event> _queue = new LinkedBlockingQueue<>();
+    private final BlockingQueue<Set<String>> _bulk = new LinkedBlockingQueue<>();
 
     @BeforeEach
     public void setupScanner() throws Exception
@@ -84,7 +86,7 @@ public class ScannerTest
                 _queue.add(new Event(filename, Notification.ADDED));
             }
         });
-        _scanner.addListener((Scanner.BulkListener)filenames -> _bulk.add(filenames));
+        _scanner.addListener((Scanner.BulkListener)_bulk::add);
 
         _scanner.start();
         _scanner.scan();
@@ -409,7 +411,7 @@ public class ScannerTest
         assertEquals(Notification.ADDED, event._notification);
 
         // Create a new file by writing to it.
-        long now = TimeUnit.NANOSECONDS.toMillis(System.nanoTime());
+        long now = Instant.now().toEpochMilli();
         File file = new File(_directory.toFile(), "st");
         try (OutputStream out = new FileOutputStream(file, true))
         {
@@ -468,7 +470,7 @@ public class ScannerTest
     {
         File file = new File(_directory.toFile(), string);
         if (file.exists())
-            file.setLastModified(TimeUnit.NANOSECONDS.toMillis(System.nanoTime()));
+            file.setLastModified(Instant.now().toEpochMilli());
         else
             file.createNewFile();
     }

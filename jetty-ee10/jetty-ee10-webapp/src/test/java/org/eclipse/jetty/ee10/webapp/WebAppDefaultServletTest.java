@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -27,7 +27,6 @@ import org.eclipse.jetty.toolchain.test.jupiter.WorkDir;
 import org.eclipse.jetty.toolchain.test.jupiter.WorkDirExtension;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -37,23 +36,21 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
-@Disabled //TODO
 @ExtendWith(WorkDirExtension.class)
 public class WebAppDefaultServletTest
 {
-    public WorkDir workDir;
     private Server server;
     private LocalConnector connector;
 
     @BeforeEach
-    public void prepareServer() throws Exception
+    public void prepareServer(WorkDir workDir) throws Exception
     {
+        Path directoryPath = workDir.getEmptyPathDir();
         server = new Server();
         connector = new LocalConnector(server);
-        connector.getConnectionFactory(HttpConnectionFactory.class).getHttpConfiguration().setUriCompliance(UriCompliance.RFC3986);
+        connector.getConnectionFactory(HttpConnectionFactory.class).getHttpConfiguration().setUriCompliance(UriCompliance.UNSAFE);
         server.addConnector(connector);
 
-        Path directoryPath = workDir.getEmptyPathDir();
         Path welcomeResource = directoryPath.resolve("index.html");
         try (OutputStream output = Files.newOutputStream(welcomeResource))
         {
@@ -89,7 +86,7 @@ public class WebAppDefaultServletTest
             output.write("standard hash dir welcome".getBytes(StandardCharsets.UTF_8));
         }
 
-        WebAppContext context = new WebAppContext(server, directoryPath.toString(), "/");
+        WebAppContext context = new WebAppContext(directoryPath.toString(), "/");
         server.setHandler(context);
         server.start();
 
@@ -129,11 +126,12 @@ public class WebAppDefaultServletTest
     @MethodSource("argumentsStream")
     public void testResourceService(String uri, String[] contains) throws Exception
     {
-        String request =
-            "GET " + uri + " HTTP/1.1\r\n" +
-                "Host: localhost\r\n" +
-                "Connection: close\r\n" +
-                "\r\n";
+        String request = """
+            GET %s HTTP/1.1\r
+            Host: localhost\r
+            Connection: close\r
+            \r
+            """.formatted(uri);
         String response = connector.getResponse(request);
         for (String s : contains)
         {

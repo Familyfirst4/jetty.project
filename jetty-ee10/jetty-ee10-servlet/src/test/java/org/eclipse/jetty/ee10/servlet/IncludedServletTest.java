@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -37,7 +37,6 @@ import org.eclipse.jetty.toolchain.test.IO;
 import org.hamcrest.Matchers;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -147,12 +146,10 @@ public class IncludedServletTest
         this.server.stop();
     }
 
-    @Disabled
     @Test
     public void testTopWithIncludedHeader() throws IOException
     {
         URI uri = baseUri.resolve("/top");
-        System.out.println("GET (String): " + uri.toASCIIString());
 
         InputStream in = null;
         InputStreamReader reader = null;
@@ -175,6 +172,9 @@ public class IncludedServletTest
             IO.copy(reader, writer);
 
             String response = writer.toString();
+            connection.getHeaderFields().entrySet().forEach(System.err::println);
+            System.err.println();
+            System.err.println(response);
             // System.out.printf("Response%n%s",response);
             assertThat("Response", response, containsString("<h2> Hello, this is the top page."));
             assertThat("Response", response, containsString("<h3> This is the included page"));

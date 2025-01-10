@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -164,16 +164,15 @@ public class MultiPartParser
         _length = s.length();
     }
 
-    /*
+    /**
      * Mime Field strings are treated as UTF-8 as per https://tools.ietf.org/html/rfc7578#section-5.1
      */
     private String takeString()
     {
-        String s = _string.toString();
+        String s = _string.takeCompleteString(null);
         // trim trailing whitespace.
         if (s.length() > _length)
             s = s.substring(0, _length);
-        _string.reset();
         _length = -1;
         return s;
     }

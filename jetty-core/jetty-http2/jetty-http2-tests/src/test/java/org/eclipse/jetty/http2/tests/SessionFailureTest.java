@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -20,12 +20,13 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import org.eclipse.jetty.http.HttpFields;
+import org.eclipse.jetty.http2.HTTP2Session;
 import org.eclipse.jetty.http2.api.Session;
 import org.eclipse.jetty.http2.api.Stream;
 import org.eclipse.jetty.http2.api.server.ServerSessionListener;
 import org.eclipse.jetty.http2.frames.HeadersFrame;
-import org.eclipse.jetty.http2.internal.HTTP2Session;
 import org.eclipse.jetty.util.Callback;
+import org.eclipse.jetty.util.NanoTime;
 import org.eclipse.jetty.util.Promise;
 import org.junit.jupiter.api.Test;
 
@@ -39,12 +40,13 @@ public class SessionFailureTest extends AbstractTest
     public void testWrongPreface() throws Exception
     {
         final CountDownLatch latch = new CountDownLatch(1);
-        start(new ServerSessionListener.Adapter()
+        start(new ServerSessionListener()
         {
             @Override
-            public void onFailure(Session session, Throwable failure)
+            public void onFailure(Session session, Throwable failure, Callback callback)
             {
                 latch.countDown();
+                callback.succeeded();
             }
         });
 
@@ -74,7 +76,7 @@ public class SessionFailureTest extends AbstractTest
     {
         final CountDownLatch writeLatch = new CountDownLatch(1);
         final CountDownLatch serverFailureLatch = new CountDownLatch(1);
-        start(new ServerSessionListener.Adapter()
+        start(new ServerSessionListener()
         {
             @Override
             public Stream.Listener onNewStream(Stream stream, HeadersFrame frame)
@@ -94,19 +96,21 @@ public class SessionFailureTest extends AbstractTest
             }
 
             @Override
-            public void onFailure(Session session, Throwable failure)
+            public void onFailure(Session session, Throwable failure, Callback callback)
             {
                 serverFailureLatch.countDown();
+                callback.succeeded();
             }
         });
 
         final CountDownLatch clientFailureLatch = new CountDownLatch(1);
-        Session session = newClientSession(new Session.Listener.Adapter()
+        Session session = newClientSession(new Session.Listener()
         {
             @Override
-            public void onFailure(Session session, Throwable failure)
+            public void onFailure(Session session, Throwable failure, Callback callback)
             {
                 clientFailureLatch.countDown();
+                callback.succeeded();
             }
         });
         HeadersFrame frame = new HeadersFrame(newRequest("GET", HttpFields.EMPTY), null, true);
@@ -116,14 +120,12 @@ public class SessionFailureTest extends AbstractTest
         assertTrue(writeLatch.await(5, TimeUnit.SECONDS));
         assertTrue(serverFailureLatch.await(5, TimeUnit.SECONDS));
         assertTrue(clientFailureLatch.await(5, TimeUnit.SECONDS));
-        long start = System.nanoTime();
-        long now = System.nanoTime();
+        long start = NanoTime.now();
         while (((HTTP2Session)session).getEndPoint().isOpen())
         {
-            assertThat(TimeUnit.NANOSECONDS.toSeconds(now - start), lessThanOrEqualTo(5L));
+            assertThat(NanoTime.secondsSince(start), lessThanOrEqualTo(5L));
 
             Thread.sleep(10);
-            now = System.nanoTime();
         }
     }
 }

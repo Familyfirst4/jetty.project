@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,37 +13,38 @@
 
 package org.eclipse.jetty.io.internal;
 
-import java.util.function.BiPredicate;
-
 import org.eclipse.jetty.io.Content;
 import org.eclipse.jetty.util.Callback;
+import org.eclipse.jetty.util.ExceptionUtil;
 import org.eclipse.jetty.util.IteratingNestedCallback;
+import org.eclipse.jetty.util.thread.Invocable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class ContentCopier extends IteratingNestedCallback
 {
+    private static final Logger LOG = LoggerFactory.getLogger(ContentCopier.class);
+
     private final Content.Source source;
     private final Content.Sink sink;
-    private final BiPredicate<Content.Chunk, Callback> chunkHandler;
+    private final Content.Chunk.Processor chunkProcessor;
     private Content.Chunk current;
     private boolean terminated;
 
-    public ContentCopier(Content.Source source, Content.Sink sink, BiPredicate<Content.Chunk, Callback> chunkHandler, Callback callback)
+    public ContentCopier(Content.Source source, Content.Sink sink, Content.Chunk.Processor chunkProcessor, Callback callback)
     {
         super(callback);
         this.source = source;
         this.sink = sink;
-        this.chunkHandler = chunkHandler;
-    }
-
-    @Override
-    public InvocationType getInvocationType()
-    {
-        return InvocationType.NON_BLOCKING;
+        this.chunkProcessor = chunkProcessor;
     }
 
     @Override
     protected Action process() throws Throwable
     {
+        if (current != null)
+            current.release();
+
         if (terminated)
             return Action.SUCCEEDED;
 
@@ -51,35 +52,33 @@ public class ContentCopier extends IteratingNestedCallback
 
         if (current == null)
         {
-            source.demand(this::iterate);
-            return Action.IDLE;
+            source.demand(Invocable.from(getInvocationType(), this::succeeded));
+            return Action.SCHEDULED;
         }
 
-        if (chunkHandler != null && chunkHandler.test(current, this))
+        if (chunkProcessor != null && chunkProcessor.process(current, this))
             return Action.SCHEDULED;
 
-        if (current instanceof Error error)
-            throw error.getCause();
+        terminated = current.isLast();
+
+        if (Content.Chunk.isFailure(current))
+        {
+            failed(current.getFailure());
+            return Action.SCHEDULED;
+        }
 
         sink.write(current.isLast(), current.getByteBuffer(), this);
         return Action.SCHEDULED;
     }
 
     @Override
-    public void succeeded()
-    {
-        terminated = current.isLast();
-        current.release();
-        current = null;
-        super.succeeded();
-    }
-
-    @Override
-    public void failed(Throwable x)
+    protected void onCompleteFailure(Throwable x)
     {
         if (current != null)
+        {
             current.release();
-        current = null;
-        super.failed(x);
+            current = Content.Chunk.next(current);
+        }
+        ExceptionUtil.callAndThen(x, source::fail, super::onCompleteFailure);
     }
 }

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -19,9 +19,9 @@ import java.util.Set;
 import jakarta.servlet.ServletRequest;
 import org.eclipse.jetty.ee9.nested.Authentication;
 import org.eclipse.jetty.ee9.nested.Authentication.User;
-import org.eclipse.jetty.ee9.nested.UserIdentity;
-import org.eclipse.jetty.ee9.nested.UserIdentity.Scope;
+import org.eclipse.jetty.ee9.nested.UserIdentityScope;
 import org.eclipse.jetty.ee9.security.authentication.LoginAuthenticator;
+import org.eclipse.jetty.security.UserIdentity;
 
 /**
  * AbstractUserAuthentication
@@ -54,15 +54,13 @@ public abstract class AbstractUserAuthentication implements User, Serializable
     }
 
     @Override
-    public boolean isUserInRole(Scope scope, String role)
+    public boolean isUserInRole(UserIdentityScope scope, String role)
     {
-        String roleToTest = null;
-        if (scope != null && scope.getRoleRefMap() != null)
-            roleToTest = scope.getRoleRefMap().get(role);
-        if (roleToTest == null)
-            roleToTest = role;
+        String roleToTest = UserIdentityScope.deRefRole(scope, role);
+        roleToTest = (roleToTest == null ? null : roleToTest.trim());
+
         //Servlet Spec 3.1 pg 125 if testing special role **
-        if ("**".equals(roleToTest.trim()))
+        if ("**".equals(roleToTest))
         {
             //if ** is NOT a declared role name, the we return true 
             //as the user is authenticated. If ** HAS been declared as a
@@ -70,10 +68,10 @@ public abstract class AbstractUserAuthentication implements User, Serializable
             if (!declaredRolesContains("**"))
                 return true;
             else
-                return _userIdentity.isUserInRole(role, scope);
+                return _userIdentity.isUserInRole(roleToTest);
         }
 
-        return _userIdentity.isUserInRole(role, scope);
+        return _userIdentity.isUserInRole(roleToTest);
     }
 
     public boolean declaredRolesContains(String roleName)

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -26,16 +26,17 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.UnaryOperator;
 
 import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.http.HttpVersion;
 import org.eclipse.jetty.http.MetaData;
+import org.eclipse.jetty.http2.ErrorCode;
 import org.eclipse.jetty.http2.api.Session;
 import org.eclipse.jetty.http2.api.Stream;
 import org.eclipse.jetty.http2.api.server.ServerSessionListener;
@@ -45,13 +46,12 @@ import org.eclipse.jetty.http2.frames.HeadersFrame;
 import org.eclipse.jetty.http2.frames.PingFrame;
 import org.eclipse.jetty.http2.frames.PrefaceFrame;
 import org.eclipse.jetty.http2.frames.SettingsFrame;
-import org.eclipse.jetty.http2.internal.ErrorCode;
-import org.eclipse.jetty.http2.internal.generator.Generator;
-import org.eclipse.jetty.http2.internal.parser.Parser;
+import org.eclipse.jetty.http2.generator.Generator;
+import org.eclipse.jetty.http2.parser.Parser;
 import org.eclipse.jetty.http2.server.HTTP2CServerConnectionFactory;
+import org.eclipse.jetty.io.ArrayByteBufferPool;
 import org.eclipse.jetty.io.ByteBufferPool;
 import org.eclipse.jetty.io.EndPoint;
-import org.eclipse.jetty.io.MappedByteBufferPool;
 import org.eclipse.jetty.server.Connector;
 import org.eclipse.jetty.server.HttpConfiguration;
 import org.eclipse.jetty.server.HttpConnectionFactory;
@@ -72,7 +72,7 @@ public class PrefaceTest extends AbstractTest
     @Test
     public void testServerPrefaceReplySentAfterClientPreface() throws Exception
     {
-        start(new ServerSessionListener.Adapter()
+        start(new ServerSessionListener()
         {
             @Override
             public void onAccept(Session session)
@@ -84,14 +84,14 @@ public class PrefaceTest extends AbstractTest
             @Override
             public Stream.Listener onNewStream(Stream stream, HeadersFrame frame)
             {
-                MetaData.Response metaData = new MetaData.Response(HttpVersion.HTTP_2, 200, HttpFields.EMPTY);
+                MetaData.Response metaData = new MetaData.Response(200, null, HttpVersion.HTTP_2, HttpFields.EMPTY);
                 HeadersFrame responseFrame = new HeadersFrame(stream.getId(), metaData, null, true);
                 stream.headers(responseFrame, Callback.NOOP);
                 return null;
             }
         });
 
-        Session session = newClientSession(new Session.Listener.Adapter()
+        Session session = newClientSession(new Session.Listener()
         {
             @Override
             public Map<Integer, Integer> onPreface(Session session)
@@ -114,7 +114,7 @@ public class PrefaceTest extends AbstractTest
         CountDownLatch latch = new CountDownLatch(1);
         MetaData.Request metaData = newRequest("GET", HttpFields.EMPTY);
         HeadersFrame requestFrame = new HeadersFrame(metaData, null, true);
-        session.newStream(requestFrame, new Promise.Adapter<>(), new Stream.Listener.Adapter()
+        session.newStream(requestFrame, new Promise.Adapter<>(), new Stream.Listener()
         {
             @Override
             public void onHeaders(Stream stream, HeadersFrame frame)
@@ -130,7 +130,7 @@ public class PrefaceTest extends AbstractTest
     @Test
     public void testClientPrefaceReplySentAfterServerPreface() throws Exception
     {
-        start(new ServerSessionListener.Adapter()
+        start(new ServerSessionListener()
         {
             @Override
             public Map<Integer, Integer> onPreface(Session session)
@@ -146,27 +146,30 @@ public class PrefaceTest extends AbstractTest
                 session.close(ErrorCode.NO_ERROR.code, null, Callback.NOOP);
             }
         });
+        connector.setIdleTimeout(1000);
 
-        ByteBufferPool byteBufferPool = http2Client.getByteBufferPool();
+        ByteBufferPool bufferPool = http2Client.getByteBufferPool();
         try (SocketChannel socket = SocketChannel.open())
         {
             socket.connect(new InetSocketAddress("localhost", connector.getLocalPort()));
 
-            Generator generator = new Generator(byteBufferPool);
-            ByteBufferPool.Lease lease = new ByteBufferPool.Lease(byteBufferPool);
-            generator.control(lease, new PrefaceFrame());
+            Generator generator = new Generator(bufferPool);
+            ByteBufferPool.Accumulator accumulator = new ByteBufferPool.Accumulator();
+            generator.control(accumulator, new PrefaceFrame());
             Map<Integer, Integer> clientSettings = new HashMap<>();
             clientSettings.put(SettingsFrame.ENABLE_PUSH, 0);
-            generator.control(lease, new SettingsFrame(clientSettings, false));
+            generator.control(accumulator, new SettingsFrame(clientSettings, false));
             // The PING frame just to make sure the client stops reading.
-            generator.control(lease, new PingFrame(true));
+            generator.control(accumulator, new PingFrame(true));
 
-            List<ByteBuffer> buffers = lease.getByteBuffers();
+            List<ByteBuffer> buffers = accumulator.getByteBuffers();
             socket.write(buffers.toArray(new ByteBuffer[0]));
+            accumulator.release();
 
             Queue<SettingsFrame> settings = new ArrayDeque<>();
             AtomicBoolean closed = new AtomicBoolean();
-            Parser parser = new Parser(byteBufferPool, new Parser.Listener.Adapter()
+            Parser parser = new Parser(bufferPool, 8192);
+            parser.init(new Parser.Listener()
             {
                 @Override
                 public void onSettings(SettingsFrame frame)
@@ -179,10 +182,9 @@ public class PrefaceTest extends AbstractTest
                 {
                     closed.set(true);
                 }
-            }, 4096, 8192);
-            parser.init(UnaryOperator.identity());
+            });
 
-            ByteBuffer buffer = byteBufferPool.acquire(1024, true);
+            ByteBuffer buffer = ByteBuffer.allocateDirect(1024);
             while (true)
             {
                 BufferUtil.clearToFill(buffer);
@@ -197,8 +199,10 @@ public class PrefaceTest extends AbstractTest
 
             assertEquals(2, settings.size());
             SettingsFrame frame1 = settings.poll();
+            assertNotNull(frame1);
             assertFalse(frame1.isReply());
             SettingsFrame frame2 = settings.poll();
+            assertNotNull(frame2);
             assertTrue(frame2.isReply());
         }
     }
@@ -215,7 +219,7 @@ public class PrefaceTest extends AbstractTest
             @Override
             protected ServerSessionListener newSessionListener(Connector connector, EndPoint endPoint)
             {
-                return new ServerSessionListener.Adapter()
+                return new ServerSessionListener()
                 {
                     @Override
                     public Map<Integer, Integer> onPreface(Session session)
@@ -235,7 +239,7 @@ public class PrefaceTest extends AbstractTest
                     @Override
                     public Stream.Listener onNewStream(Stream stream, HeadersFrame frame)
                     {
-                        MetaData.Response response = new MetaData.Response(HttpVersion.HTTP_2, HttpStatus.OK_200, HttpFields.EMPTY);
+                        MetaData.Response response = new MetaData.Response(HttpStatus.OK_200, null, HttpVersion.HTTP_2, HttpFields.EMPTY);
                         stream.headers(new HeadersFrame(stream.getId(), response, null, true), Callback.NOOP);
                         return null;
                     }
@@ -244,18 +248,19 @@ public class PrefaceTest extends AbstractTest
         });
         server.start();
 
-        ByteBufferPool byteBufferPool = new MappedByteBufferPool();
+        ByteBufferPool bufferPool = new ArrayByteBufferPool();
         try (SocketChannel socket = SocketChannel.open())
         {
             socket.connect(new InetSocketAddress("localhost", connector.getLocalPort()));
 
-            String upgradeRequest =
-                "GET /one HTTP/1.1\r\n" +
-                    "Host: localhost\r\n" +
-                    "Connection: Upgrade, HTTP2-Settings\r\n" +
-                    "Upgrade: h2c\r\n" +
-                    "HTTP2-Settings: \r\n" +
-                    "\r\n";
+            String upgradeRequest = """
+                GET /one HTTP/1.1\r
+                Host: localhost\r
+                Connection: Upgrade, HTTP2-Settings\r
+                Upgrade: h2c\r
+                HTTP2-Settings: \r
+                \r
+                """;
             ByteBuffer upgradeBuffer = ByteBuffer.wrap(upgradeRequest.getBytes(StandardCharsets.ISO_8859_1));
             socket.write(upgradeBuffer);
 
@@ -264,7 +269,7 @@ public class PrefaceTest extends AbstractTest
             assertTrue(serverSettingsLatch.get().await(5, TimeUnit.SECONDS));
 
             // The 101 response is the reply to the client preface SETTINGS frame.
-            ByteBuffer buffer = byteBufferPool.acquire(1024, true);
+            ByteBuffer buffer = ByteBuffer.allocateDirect(1024);
             http1:
             while (true)
             {
@@ -291,13 +296,13 @@ public class PrefaceTest extends AbstractTest
             serverSettingsLatch.set(new CountDownLatch(1));
 
             // After the 101, the client must send the connection preface.
-            Generator generator = new Generator(byteBufferPool);
-            ByteBufferPool.Lease lease = new ByteBufferPool.Lease(byteBufferPool);
-            generator.control(lease, new PrefaceFrame());
+            Generator generator = new Generator(bufferPool);
+            ByteBufferPool.Accumulator accumulator = new ByteBufferPool.Accumulator();
+            generator.control(accumulator, new PrefaceFrame());
             Map<Integer, Integer> clientSettings = new HashMap<>();
             clientSettings.put(SettingsFrame.ENABLE_PUSH, 1);
-            generator.control(lease, new SettingsFrame(clientSettings, false));
-            List<ByteBuffer> buffers = lease.getByteBuffers();
+            generator.control(accumulator, new SettingsFrame(clientSettings, false));
+            List<ByteBuffer> buffers = accumulator.getByteBuffers();
             socket.write(buffers.toArray(new ByteBuffer[0]));
 
             // However, we should not call onPreface() again.
@@ -307,7 +312,8 @@ public class PrefaceTest extends AbstractTest
 
             CountDownLatch clientSettingsLatch = new CountDownLatch(1);
             AtomicBoolean responded = new AtomicBoolean();
-            Parser parser = new Parser(byteBufferPool, new Parser.Listener.Adapter()
+            Parser parser = new Parser(bufferPool, 8192);
+            parser.init(new Parser.Listener()
             {
                 @Override
                 public void onSettings(SettingsFrame frame)
@@ -324,8 +330,7 @@ public class PrefaceTest extends AbstractTest
                     if (frame.isEndStream())
                         responded.set(true);
                 }
-            }, 4096, 8192);
-            parser.init(UnaryOperator.identity());
+            });
 
             // HTTP/2 parsing.
             while (true)
@@ -353,16 +358,16 @@ public class PrefaceTest extends AbstractTest
             http2Client.start();
 
             CountDownLatch failureLatch = new CountDownLatch(1);
-            Promise.Completable<Session> promise = new Promise.Completable<>();
             InetSocketAddress address = new InetSocketAddress("localhost", server.getLocalPort());
-            http2Client.connect(address, new Session.Listener.Adapter()
+            CompletableFuture<Session> promise = http2Client.connect(address, new Session.Listener()
             {
                 @Override
-                public void onFailure(Session session, Throwable failure)
+                public void onFailure(Session session, Throwable failure, Callback callback)
                 {
                     failureLatch.countDown();
+                    callback.succeeded();
                 }
-            }, promise);
+            });
 
             try (Socket socket = server.accept())
             {
@@ -389,7 +394,7 @@ public class PrefaceTest extends AbstractTest
     @Test
     public void testInvalidClientPreface() throws Exception
     {
-        start(new ServerSessionListener.Adapter());
+        start(new ServerSessionListener() {});
 
         try (Socket client = new Socket("localhost", connector.getLocalPort()))
         {

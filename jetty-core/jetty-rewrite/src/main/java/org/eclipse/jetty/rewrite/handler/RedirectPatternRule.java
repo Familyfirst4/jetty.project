@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -17,7 +17,6 @@ import java.io.IOException;
 
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpStatus;
-import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.annotation.Name;
@@ -31,6 +30,10 @@ public class RedirectPatternRule extends PatternRule
 {
     private String _location;
     private int _statusCode = HttpStatus.FOUND_302;
+
+    public RedirectPatternRule()
+    {
+    }
 
     public RedirectPatternRule(@Name("pattern") String pattern, @Name("location") String location)
     {
@@ -50,6 +53,7 @@ public class RedirectPatternRule extends PatternRule
     }
 
     /**
+     * Set the location to redirect.
      * @param value the location to redirect.
      */
     public void setLocation(String value)
@@ -63,6 +67,7 @@ public class RedirectPatternRule extends PatternRule
     }
 
     /**
+     * Set the 3xx redirect status code.
      * @param statusCode the 3xx redirect status code
      */
     public void setStatusCode(int statusCode)
@@ -73,17 +78,18 @@ public class RedirectPatternRule extends PatternRule
     }
 
     @Override
-    public Request.WrapperProcessor apply(Request.WrapperProcessor input) throws IOException
+    public Handler apply(Handler input) throws IOException
     {
-        return new Request.WrapperProcessor(input)
+        return new Handler(input)
         {
             @Override
-            public void process(Request ignored, Response response, Callback callback)
+            protected boolean handle(Response response, Callback callback)
             {
                 String location = getLocation();
                 response.setStatus(getStatusCode());
-                response.getHeaders().put(HttpHeader.LOCATION, Request.toRedirectURI(this, location));
+                response.getHeaders().put(HttpHeader.LOCATION, Response.toRedirectURI(this, location));
                 callback.succeeded();
+                return true;
             }
         };
     }

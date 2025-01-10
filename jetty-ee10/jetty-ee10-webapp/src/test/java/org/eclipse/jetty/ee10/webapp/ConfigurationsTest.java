@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -16,6 +16,7 @@ package org.eclipse.jetty.ee10.webapp;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.Isolated;
 
 import static java.util.stream.Collectors.toList;
 import static org.eclipse.jetty.ee10.webapp.Configurations.getKnown;
@@ -24,6 +25,7 @@ import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.not;
 
+@Isolated("Access static field of Configurations")
 public class ConfigurationsTest
 {
     @AfterEach
@@ -134,6 +136,44 @@ public class ConfigurationsTest
     }
 
     @Test
+    public void testReplacementWithInstances()
+    {
+        //ConfigDick should be replaced by ReplacementDick
+        Configurations configs = new Configurations(
+            new ConfigDick(),
+            new ConfigBar(),
+            new ConfigZ(),
+            new ConfigY(),
+            new ConfigX(),
+            new ConfigTom(),
+            new ReplacementDick(),
+            new ConfigHarry(),
+            new ConfigAdditionalHarry(),
+            new ConfigFoo()
+        );
+
+        configs.sort();
+
+        assertThat(configs.stream().map(c -> c.getClass().getName()).collect(toList()),
+            contains(
+                ConfigFoo.class.getName(),
+                ConfigBar.class.getName(),
+                ConfigX.class.getName(),
+                ConfigY.class.getName(),
+                ConfigZ.class.getName(),
+                ConfigTom.class.getName(),
+                ReplacementDick.class.getName(),
+                ConfigHarry.class.getName(),
+                ConfigAdditionalHarry.class.getName()
+            ));
+
+         assertThat(configs.stream().map(c -> c.getClass().getName()).collect(toList()),
+            not(contains(
+                ConfigDick.class.getName()
+            )));
+    }
+    
+    @Test
     public void testReplacement()
     {
         Configurations.setKnown(
@@ -239,56 +279,80 @@ public class ConfigurationsTest
 
     public static class ConfigFoo extends AbstractConfiguration
     {
+        public ConfigFoo()
         {
-            addDependents(ConfigBar.class);
+            super(new Builder().addDependents(ConfigBar.class));
         }
     }
 
     public static class ConfigBar extends AbstractConfiguration
     {
+        public ConfigBar()
+        {
+            super(new Builder());
+        }
     }
 
     public static class ConfigX extends AbstractConfiguration
     {
+        public ConfigX()
         {
-            addDependencies(ConfigBar.class);
+            super(new Builder().addDependencies(ConfigBar.class));
         }
     }
 
     public static class ConfigY extends AbstractConfiguration
     {
+        public ConfigY()
         {
-            addDependencies(ConfigX.class);
-            addDependents(ConfigZ.class);
+            super(new Builder()
+                .addDependencies(ConfigX.class)
+                .addDependents(ConfigZ.class));
         }
     }
 
     public static class ConfigZ extends AbstractConfiguration
     {
+        public ConfigZ()
+        {
+            super(new Builder());
+        }
     }
 
     public static class ConfigTom extends AbstractConfiguration
     {
+        public ConfigTom()
+        {
+            super(new Builder());
+        }
     }
 
     public static class ConfigDick extends AbstractConfiguration
     {
+        public ConfigDick()
         {
-            addDependencies(ConfigTom.class);
+            this(new Builder());
+        }
+
+        public ConfigDick(Builder builder)
+        {
+            super(builder.addDependencies(ConfigTom.class));
         }
     }
 
     public static class ConfigHarry extends AbstractConfiguration
     {
+        public ConfigHarry()
         {
-            addDependencies(ConfigDick.class);
+            super(new Builder().addDependencies(ConfigDick.class));
         }
     }
 
     public static class ConfigExtendedDick extends ConfigDick
     {
+        public ConfigExtendedDick()
         {
-            addDependencies(ConfigTom.class);
+            super(new Builder().addDependencies(ConfigTom.class));
         }
 
         @Override

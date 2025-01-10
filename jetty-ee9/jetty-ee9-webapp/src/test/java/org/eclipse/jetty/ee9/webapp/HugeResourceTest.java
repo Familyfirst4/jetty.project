@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -35,17 +35,18 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.eclipse.jetty.client.ContentResponse;
 import org.eclipse.jetty.client.HttpClient;
-import org.eclipse.jetty.client.api.ContentResponse;
-import org.eclipse.jetty.client.api.Request;
-import org.eclipse.jetty.client.api.Response;
-import org.eclipse.jetty.client.util.InputStreamResponseListener;
-import org.eclipse.jetty.client.util.MultiPartRequestContent;
-import org.eclipse.jetty.client.util.PathRequestContent;
+import org.eclipse.jetty.client.InputStreamResponseListener;
+import org.eclipse.jetty.client.MultiPartRequestContent;
+import org.eclipse.jetty.client.PathRequestContent;
+import org.eclipse.jetty.client.Request;
+import org.eclipse.jetty.client.Response;
 import org.eclipse.jetty.ee9.servlet.ServletHolder;
+import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpMethod;
-import org.eclipse.jetty.server.Handler;
+import org.eclipse.jetty.http.MultiPart;
 import org.eclipse.jetty.server.HttpConfiguration;
 import org.eclipse.jetty.server.HttpConnectionFactory;
 import org.eclipse.jetty.server.Server;
@@ -54,7 +55,7 @@ import org.eclipse.jetty.server.handler.DefaultHandler;
 import org.eclipse.jetty.toolchain.test.FS;
 import org.eclipse.jetty.toolchain.test.MavenTestingUtils;
 import org.eclipse.jetty.util.IO;
-import org.eclipse.jetty.util.resource.PathResource;
+import org.eclipse.jetty.util.resource.FileSystemPool;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
@@ -68,6 +69,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.is;
 
 @Tag("large-disk-resource")
@@ -179,6 +181,7 @@ public class HugeResourceTest
     @BeforeEach
     public void startServer() throws Exception
     {
+        assertThat(FileSystemPool.INSTANCE.mounts(), empty());
         server = new Server();
         HttpConfiguration httpConfig = new HttpConfiguration();
         ServerConnector connector = new ServerConnector(server, new HttpConnectionFactory(httpConfig));
@@ -187,7 +190,7 @@ public class HugeResourceTest
 
         WebAppContext context = new WebAppContext();
         context.setContextPath("/");
-        context.setBaseResource(new PathResource(staticBase));
+        context.setBaseResource(context.getResourceFactory().newResource(staticBase));
 
         context.addServlet(PostServlet.class, "/post");
         context.addServlet(ChunkedServlet.class, "/chunked/*");
@@ -201,7 +204,10 @@ public class HugeResourceTest
         ServletHolder holder = context.addServlet(MultipartServlet.class, "/multipart");
         holder.getRegistration().setMultipartConfig(multipartConfig);
 
-        server.setHandler(new Handler.Collection(context.getCoreContextHandler(), new DefaultHandler()));
+        DefaultHandler defaultHandler = new DefaultHandler();
+        defaultHandler.setServer(server);
+
+        server.setHandler(context);
         server.start();
     }
 
@@ -209,6 +215,7 @@ public class HugeResourceTest
     public void stopServer() throws Exception
     {
         server.stop();
+        assertThat(FileSystemPool.INSTANCE.mounts(), empty());
     }
 
     @BeforeEach
@@ -351,7 +358,7 @@ public class HugeResourceTest
         MultiPartRequestContent multipart = new MultiPartRequestContent();
         Path inputFile = staticBase.resolve(filename);
         String name = String.format("file-%d", expectedSize);
-        multipart.addFilePart(name, filename, new PathRequestContent(inputFile), null);
+        multipart.addPart(new MultiPart.PathPart(name, filename, HttpFields.EMPTY, inputFile));
         multipart.close();
 
         URI destUri = server.getURI().resolve("/multipart");

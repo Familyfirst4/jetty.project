@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,44 +13,145 @@
 
 package org.eclipse.jetty.server.handler;
 
-import org.eclipse.jetty.http.HttpHeader;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+
+import org.eclipse.jetty.http.HttpField;
+import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.io.Content;
 import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.util.Callback;
-import org.eclipse.jetty.util.StringUtil;
+import org.eclipse.jetty.util.IO;
+import org.eclipse.jetty.util.Promise;
 
 /**
  * Dump request handler.
  * Dumps GET and POST requests.
  * Useful for testing and debugging.
  */
-public class EchoHandler extends Handler.Processor
+public class EchoHandler extends Handler.Abstract
 {
     public EchoHandler()
     {
-        super(InvocationType.NON_BLOCKING);
     }
 
     @Override
-    public void process(Request request, Response response, Callback callback)
+    public InvocationType getInvocationType()
+    {
+        return InvocationType.NON_BLOCKING;
+    }
+
+    @Override
+    public boolean handle(Request request, Response response, Callback callback)
     {
         response.setStatus(200);
-        String contentType = request.getHeaders().get(HttpHeader.CONTENT_TYPE);
-        if (StringUtil.isNotBlank(contentType))
-            response.getHeaders().put(HttpHeader.CONTENT_TYPE, contentType);
 
-        if (request.getHeaders().contains(HttpHeader.TRAILER))
-            response.getOrCreateTrailers();
+        long contentLength = -1;
+        for (HttpField field : request.getHeaders())
+        {
+            if (field.getHeader() != null)
+            {
+                switch (field.getHeader())
+                {
+                    case CONTENT_LENGTH ->
+                    {
+                        response.getHeaders().add(field);
+                        contentLength = field.getLongValue();
+                    }
+                    case CONTENT_TYPE -> response.getHeaders().add(field);
+                    case TRAILER -> response.setTrailersSupplier(HttpFields.build());
+                    case TRANSFER_ENCODING -> contentLength = Long.MAX_VALUE;
+                }
+            }
+        }
 
-        long contentLength = request.getHeaders().getLongField(HttpHeader.CONTENT_LENGTH);
-        if (contentLength >= 0)
-            response.getHeaders().putLongField(HttpHeader.CONTENT_LENGTH, contentLength);
-
-        if (contentLength > 0 || contentLength == -1 && request.getHeaders().contains(HttpHeader.TRANSFER_ENCODING))
-            Content.copy(request, response, response::writeTrailers, callback);
+        if (contentLength > 0)
+            copy(request, response, callback);
         else
             callback.succeeded();
+        return true;
+    }
+
+    protected void copy(Request request, Response response, Callback callback)
+    {
+        Content.copy(request, response, Response.newTrailersChunkProcessor(response), callback);
+    }
+
+    public static class Reactive extends EchoHandler
+    {
+        @Override
+        protected void copy(Request request, Response response, Callback callback)
+        {
+            Content.Source.asPublisher(request).subscribe(Content.Sink.asSubscriber(response, callback));
+        }
+    }
+
+    public static class Stream extends EchoHandler
+    {
+        @Override
+        public InvocationType getInvocationType()
+        {
+            return InvocationType.BLOCKING;
+        }
+
+        @Override
+        protected void copy(Request request, Response response, Callback callback)
+        {
+            try
+            {
+                IO.copy(Content.Source.asInputStream(request), Content.Sink.asOutputStream(response));
+                callback.succeeded();
+            }
+            catch (IOException e)
+            {
+                callback.failed(e);
+            }
+        }
+    }
+
+    public static class Buffered extends EchoHandler
+    {
+        @Override
+        public InvocationType getInvocationType()
+        {
+            return InvocationType.BLOCKING;
+        }
+
+        @Override
+        protected void copy(Request request, Response response, Callback callback)
+        {
+            try
+            {
+                response.write(true, Content.Source.asByteBuffer(request), callback);
+            }
+            catch (IOException e)
+            {
+                callback.failed(e);
+            }
+        }
+    }
+
+    public static class BufferedAsync extends EchoHandler
+    {
+        @Override
+        protected void copy(Request request, Response response, Callback callback)
+        {
+            Content.Source.asByteBuffer(request, new Promise<>()
+            {
+                @Override
+                public void succeeded(ByteBuffer result)
+                {
+                    response.write(true, result, callback);
+                }
+
+                @Override
+                public void failed(Throwable x)
+                {
+                    callback.failed(x);
+                }
+            });
+        }
     }
 }

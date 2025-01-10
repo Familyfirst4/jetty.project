@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -66,10 +66,13 @@ import org.slf4j.LoggerFactory;
  * avoided if the semaphore is shortly available.  If the semaphore cannot be obtained, the request will be suspended
  * for the default suspend period of the container or the valued set as the "suspendMs" init parameter.
  * <p>
- * If the "managedAttr" init parameter is set to true, then this servlet is set as a {@link ServletContext} attribute with the
- * filter name as the attribute name.  This allows context external mechanism (eg JMX via {@link ContextHandler#MANAGED_ATTRIBUTES}) to
- * manage the configuration of the filter.
+ * If the "managedAttr" init parameter is set to true, then this servlet is set as a {@link ServletContext} attribute
+ * with the filter name as the attribute name.  This allows context external mechanism (eg JMX via {@link ContextHandler}
+ * managed attribute) to manage the configuration of the filter.
+ *
+ * @deprecated use {@link org.eclipse.jetty.server.handler.QoSHandler} instead.
  */
+@Deprecated
 @ManagedObject("Quality of Service Filter")
 public class QoSFilter implements Filter
 {
@@ -288,18 +291,6 @@ public class QoSFilter implements Filter
         return _waitMs;
     }
 
-    /**
-     * Set the (short) amount of time (in milliseconds) that the filter would wait
-     * for the semaphore to become available before suspending a request.
-     *
-     * @param value wait time (in milliseconds)
-     * @deprecated use init-param waitMs instead
-     */
-    @Deprecated
-    public void setWaitMs(long value)
-    {
-        LOG.warn("Setter ignored: use waitMs init-param for QoSFilter");
-    }
 
     /**
      * Get the amount of time (in milliseconds) that the filter would suspend
@@ -314,19 +305,6 @@ public class QoSFilter implements Filter
     }
 
     /**
-     * Set the amount of time (in milliseconds) that the filter would suspend
-     * a request for while waiting for the semaphore to become available.
-     *
-     * @param value suspend time (in milliseconds)
-     * @deprecated use init-param suspendMs instead
-     */
-    @Deprecated
-    public void setSuspendMs(long value)
-    {
-        LOG.warn("Setter ignored: use suspendMs init-param for QoSFilter");
-    }
-
-    /**
      * Get the maximum number of requests allowed to be processed
      * at the same time.
      *
@@ -336,19 +314,6 @@ public class QoSFilter implements Filter
     public int getMaxRequests()
     {
         return _maxRequests;
-    }
-
-    /**
-     * Set the maximum number of requests allowed to be processed
-     * at the same time.
-     *
-     * @param value the number of requests
-     * @deprecated use init-param maxRequests instead
-     */
-    @Deprecated
-    public void setMaxRequests(int value)
-    {
-        LOG.warn("Setter ignored: use maxRequests init-param for QoSFilter instead");
     }
 
     private class QoSAsyncListener implements AsyncListener

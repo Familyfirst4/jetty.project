@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -344,7 +344,7 @@ public class ContextHandlerGetResourceTest
 
             Resource resource = context.getResource(path);
             assertNotNull(resource);
-            assertEquals(context.getResource("/subdir/TextFile.Long.txt").getURI(), resource.getAlias());
+            assertEquals(context.getResource("/subdir/TextFile.Long.txt").getURI(), resource.getRealURI());
 
             URL url = context.getServletContext().getResource(path);
             assertNotNull(url);

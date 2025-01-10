@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -21,10 +21,10 @@ import javax.naming.InitialContext;
 import org.eclipse.jetty.ee9.annotations.AnnotationIntrospector;
 import org.eclipse.jetty.ee9.annotations.ResourceAnnotationHandler;
 import org.eclipse.jetty.ee9.annotations.ResourcesAnnotationHandler;
-import org.eclipse.jetty.ee9.plus.annotation.Injection;
-import org.eclipse.jetty.ee9.plus.annotation.InjectionCollection;
-import org.eclipse.jetty.ee9.plus.jndi.EnvEntry;
 import org.eclipse.jetty.ee9.webapp.WebAppContext;
+import org.eclipse.jetty.plus.annotation.Injection;
+import org.eclipse.jetty.plus.annotation.InjectionCollection;
+import org.eclipse.jetty.plus.jndi.EnvEntry;
 import org.eclipse.jetty.server.Server;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;

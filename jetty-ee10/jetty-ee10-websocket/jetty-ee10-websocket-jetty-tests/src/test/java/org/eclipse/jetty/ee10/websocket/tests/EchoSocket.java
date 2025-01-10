@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -16,9 +16,9 @@ package org.eclipse.jetty.ee10.websocket.tests;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 
-import org.eclipse.jetty.ee10.websocket.api.annotations.WebSocket;
+import org.eclipse.jetty.websocket.api.Callback;
+import org.eclipse.jetty.websocket.api.annotations.WebSocket;
 
-@SuppressWarnings("unused")
 @WebSocket
 public class EchoSocket extends EventSocket
 {
@@ -26,13 +26,13 @@ public class EchoSocket extends EventSocket
     public void onMessage(String message) throws IOException
     {
         super.onMessage(message);
-        session.getRemote().sendString(message);
+        session.sendText(message, Callback.NOOP);
     }
 
     @Override
-    public void onMessage(byte[] buf, int offset, int len) throws IOException
+    public void onMessage(ByteBuffer message, Callback callback)
     {
-        super.onMessage(buf, offset, len);
-        session.getRemote().sendBytes(ByteBuffer.wrap(buf, offset, len));
+        super.onMessage(message, Callback.NOOP);
+        session.sendBinary(message, callback);
     }
 }

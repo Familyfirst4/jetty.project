@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -27,11 +27,12 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.UnaryOperator;
 
 import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpVersion;
 import org.eclipse.jetty.http.MetaData;
+import org.eclipse.jetty.http2.ErrorCode;
+import org.eclipse.jetty.http2.Flags;
 import org.eclipse.jetty.http2.api.Stream;
 import org.eclipse.jetty.http2.api.server.ServerSessionListener;
 import org.eclipse.jetty.http2.frames.DataFrame;
@@ -42,13 +43,12 @@ import org.eclipse.jetty.http2.frames.PingFrame;
 import org.eclipse.jetty.http2.frames.PrefaceFrame;
 import org.eclipse.jetty.http2.frames.PriorityFrame;
 import org.eclipse.jetty.http2.frames.SettingsFrame;
-import org.eclipse.jetty.http2.internal.ErrorCode;
-import org.eclipse.jetty.http2.internal.Flags;
-import org.eclipse.jetty.http2.internal.generator.Generator;
-import org.eclipse.jetty.http2.internal.parser.Parser;
+import org.eclipse.jetty.http2.generator.Generator;
+import org.eclipse.jetty.http2.parser.Parser;
 import org.eclipse.jetty.http2.server.HTTP2ServerConnectionFactory;
 import org.eclipse.jetty.io.ByteBufferPool;
 import org.eclipse.jetty.io.ManagedSelector;
+import org.eclipse.jetty.io.RetainableByteBuffer;
 import org.eclipse.jetty.io.SocketChannelEndPoint;
 import org.eclipse.jetty.logging.StacklessLogging;
 import org.eclipse.jetty.server.Handler;
@@ -72,75 +72,78 @@ public class HTTP2ServerTest extends AbstractServerTest
     @Test
     public void testNoPrefaceBytes() throws Exception
     {
-        startServer(new Handler.Processor()
+        startServer(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 callback.succeeded();
+                return true;
             }
         });
 
         // No preface bytes.
         MetaData.Request metaData = newRequest("GET", HttpFields.EMPTY);
-        ByteBufferPool.Lease lease = new ByteBufferPool.Lease(byteBufferPool);
-        generator.control(lease, new HeadersFrame(1, metaData, null, true));
+        ByteBufferPool.Accumulator accumulator = new ByteBufferPool.Accumulator();
+        generator.control(accumulator, new HeadersFrame(1, metaData, null, true));
 
         try (Socket client = new Socket("localhost", connector.getLocalPort()))
         {
             OutputStream output = client.getOutputStream();
-            for (ByteBuffer buffer : lease.getByteBuffers())
+            for (ByteBuffer buffer : accumulator.getByteBuffers())
             {
                 output.write(BufferUtil.toArray(buffer));
             }
 
-            final CountDownLatch latch = new CountDownLatch(1);
-            Parser parser = new Parser(byteBufferPool, new Parser.Listener.Adapter()
+            CountDownLatch latch = new CountDownLatch(1);
+            Parser parser = new Parser(bufferPool, 8192);
+            parser.init(new Parser.Listener()
             {
                 @Override
                 public void onGoAway(GoAwayFrame frame)
                 {
                     latch.countDown();
                 }
-            }, 4096, 8192);
-            parser.init(UnaryOperator.identity());
+            });
 
             parseResponse(client, parser);
 
-            assertTrue(latch.await(555, TimeUnit.SECONDS));
+            assertTrue(latch.await(5, TimeUnit.SECONDS));
         }
     }
 
     @Test
     public void testRequestResponseNoContent() throws Exception
     {
-        final CountDownLatch latch = new CountDownLatch(3);
-        startServer(new Handler.Processor()
+        CountDownLatch latch = new CountDownLatch(3);
+        startServer(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 latch.countDown();
                 callback.succeeded();
+                return true;
             }
         });
 
-        ByteBufferPool.Lease lease = new ByteBufferPool.Lease(byteBufferPool);
-        generator.control(lease, new PrefaceFrame());
-        generator.control(lease, new SettingsFrame(new HashMap<>(), false));
+        ByteBufferPool.Accumulator accumulator = new ByteBufferPool.Accumulator();
+        generator.control(accumulator, new PrefaceFrame());
+        generator.control(accumulator, new SettingsFrame(new HashMap<>(), false));
         MetaData.Request metaData = newRequest("GET", HttpFields.EMPTY);
-        generator.control(lease, new HeadersFrame(1, metaData, null, true));
+        generator.control(accumulator, new HeadersFrame(1, metaData, null, true));
 
         try (Socket client = new Socket("localhost", connector.getLocalPort()))
         {
             OutputStream output = client.getOutputStream();
-            for (ByteBuffer buffer : lease.getByteBuffers())
+            for (ByteBuffer buffer : accumulator.getByteBuffers())
             {
                 output.write(BufferUtil.toArray(buffer));
             }
 
-            final AtomicReference<HeadersFrame> frameRef = new AtomicReference<>();
-            Parser parser = new Parser(byteBufferPool, new Parser.Listener.Adapter()
+            AtomicReference<HeadersFrame> frameRef = new AtomicReference<>();
+            Parser parser = new Parser(bufferPool, 8192);
+            parser.init(new Parser.Listener()
             {
                 @Override
                 public void onSettings(SettingsFrame frame)
@@ -154,8 +157,7 @@ public class HTTP2ServerTest extends AbstractServerTest
                     frameRef.set(frame);
                     latch.countDown();
                 }
-            }, 4096, 8192);
-            parser.init(UnaryOperator.identity());
+            });
 
             parseResponse(client, parser);
 
@@ -171,35 +173,37 @@ public class HTTP2ServerTest extends AbstractServerTest
     @Test
     public void testRequestResponseContent() throws Exception
     {
-        final byte[] content = "Hello, world!".getBytes(StandardCharsets.UTF_8);
-        final CountDownLatch latch = new CountDownLatch(4);
-        startServer(new Handler.Processor()
+        byte[] content = "Hello, world!".getBytes(StandardCharsets.UTF_8);
+        CountDownLatch latch = new CountDownLatch(4);
+        startServer(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 latch.countDown();
                 response.write(true, ByteBuffer.wrap(content), callback);
+                return true;
             }
         });
 
-        ByteBufferPool.Lease lease = new ByteBufferPool.Lease(byteBufferPool);
-        generator.control(lease, new PrefaceFrame());
-        generator.control(lease, new SettingsFrame(new HashMap<>(), false));
+        ByteBufferPool.Accumulator accumulator = new ByteBufferPool.Accumulator();
+        generator.control(accumulator, new PrefaceFrame());
+        generator.control(accumulator, new SettingsFrame(new HashMap<>(), false));
         MetaData.Request metaData = newRequest("GET", HttpFields.EMPTY);
-        generator.control(lease, new HeadersFrame(1, metaData, null, true));
+        generator.control(accumulator, new HeadersFrame(1, metaData, null, true));
 
         try (Socket client = new Socket("localhost", connector.getLocalPort()))
         {
             OutputStream output = client.getOutputStream();
-            for (ByteBuffer buffer : lease.getByteBuffers())
+            for (ByteBuffer buffer : accumulator.getByteBuffers())
             {
                 output.write(BufferUtil.toArray(buffer));
             }
 
-            final AtomicReference<HeadersFrame> headersRef = new AtomicReference<>();
-            final AtomicReference<DataFrame> dataRef = new AtomicReference<>();
-            Parser parser = new Parser(byteBufferPool, new Parser.Listener.Adapter()
+            AtomicReference<HeadersFrame> headersRef = new AtomicReference<>();
+            AtomicReference<DataFrame> dataRef = new AtomicReference<>();
+            Parser parser = new Parser(bufferPool, 8192);
+            parser.init(new Parser.Listener()
             {
                 @Override
                 public void onSettings(SettingsFrame frame)
@@ -220,8 +224,7 @@ public class HTTP2ServerTest extends AbstractServerTest
                     dataRef.set(frame);
                     latch.countDown();
                 }
-            }, 4096, 8192);
-            parser.init(UnaryOperator.identity());
+            });
 
             parseResponse(client, parser);
 
@@ -234,39 +237,41 @@ public class HTTP2ServerTest extends AbstractServerTest
 
             DataFrame responseData = dataRef.get();
             assertNotNull(responseData);
-            assertArrayEquals(content, BufferUtil.toArray(responseData.getData()));
+            assertArrayEquals(content, BufferUtil.toArray(responseData.getByteBuffer()));
         }
     }
 
     @Test
     public void testBadPingWrongPayload() throws Exception
     {
-        startServer(new Handler.Processor()
+        startServer(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 callback.succeeded();
+                return true;
             }
         });
 
-        ByteBufferPool.Lease lease = new ByteBufferPool.Lease(byteBufferPool);
-        generator.control(lease, new PrefaceFrame());
-        generator.control(lease, new SettingsFrame(new HashMap<>(), false));
-        generator.control(lease, new PingFrame(new byte[8], false));
+        ByteBufferPool.Accumulator accumulator = new ByteBufferPool.Accumulator();
+        generator.control(accumulator, new PrefaceFrame());
+        generator.control(accumulator, new SettingsFrame(new HashMap<>(), false));
+        generator.control(accumulator, new PingFrame(new byte[8], false));
         // Modify the length of the frame to a wrong one.
-        lease.getByteBuffers().get(2).putShort(0, (short)7);
+        accumulator.getByteBuffers().get(2).putShort(0, (short)7);
 
-        final CountDownLatch latch = new CountDownLatch(1);
+        CountDownLatch latch = new CountDownLatch(1);
         try (Socket client = new Socket("localhost", connector.getLocalPort()))
         {
             OutputStream output = client.getOutputStream();
-            for (ByteBuffer buffer : lease.getByteBuffers())
+            for (ByteBuffer buffer : accumulator.getByteBuffers())
             {
                 output.write(BufferUtil.toArray(buffer));
             }
 
-            Parser parser = new Parser(byteBufferPool, new Parser.Listener.Adapter()
+            Parser parser = new Parser(bufferPool, 8192);
+            parser.init(new Parser.Listener()
             {
                 @Override
                 public void onGoAway(GoAwayFrame frame)
@@ -274,8 +279,7 @@ public class HTTP2ServerTest extends AbstractServerTest
                     assertEquals(ErrorCode.FRAME_SIZE_ERROR.code, frame.getError());
                     latch.countDown();
                 }
-            }, 4096, 8192);
-            parser.init(UnaryOperator.identity());
+            });
 
             parseResponse(client, parser);
 
@@ -286,32 +290,34 @@ public class HTTP2ServerTest extends AbstractServerTest
     @Test
     public void testBadPingWrongStreamId() throws Exception
     {
-        startServer(new Handler.Processor()
+        startServer(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 callback.succeeded();
+                return true;
             }
         });
 
-        ByteBufferPool.Lease lease = new ByteBufferPool.Lease(byteBufferPool);
-        generator.control(lease, new PrefaceFrame());
-        generator.control(lease, new SettingsFrame(new HashMap<>(), false));
-        generator.control(lease, new PingFrame(new byte[8], false));
+        ByteBufferPool.Accumulator accumulator = new ByteBufferPool.Accumulator();
+        generator.control(accumulator, new PrefaceFrame());
+        generator.control(accumulator, new SettingsFrame(new HashMap<>(), false));
+        generator.control(accumulator, new PingFrame(new byte[8], false));
         // Modify the streamId of the frame to non zero.
-        lease.getByteBuffers().get(2).putInt(4, 1);
+        accumulator.getByteBuffers().get(2).putInt(4, 1);
 
-        final CountDownLatch latch = new CountDownLatch(1);
+        CountDownLatch latch = new CountDownLatch(1);
         try (Socket client = new Socket("localhost", connector.getLocalPort()))
         {
             OutputStream output = client.getOutputStream();
-            for (ByteBuffer buffer : lease.getByteBuffers())
+            for (ByteBuffer buffer : accumulator.getByteBuffers())
             {
                 output.write(BufferUtil.toArray(buffer));
             }
 
-            Parser parser = new Parser(byteBufferPool, new Parser.Listener.Adapter()
+            Parser parser = new Parser(bufferPool, 8192);
+            parser.init(new Parser.Listener()
             {
                 @Override
                 public void onGoAway(GoAwayFrame frame)
@@ -319,8 +325,7 @@ public class HTTP2ServerTest extends AbstractServerTest
                     assertEquals(ErrorCode.PROTOCOL_ERROR.code, frame.getError());
                     latch.countDown();
                 }
-            }, 4096, 8192);
-            parser.init(UnaryOperator.identity());
+            });
 
             parseResponse(client, parser);
 
@@ -331,17 +336,18 @@ public class HTTP2ServerTest extends AbstractServerTest
     @Test
     public void testCommitFailure() throws Exception
     {
-        final long delay = 1000;
-        final AtomicBoolean broken = new AtomicBoolean();
-        startServer(new Handler.Processor()
+        long delay = 1000;
+        AtomicBoolean broken = new AtomicBoolean();
+        startServer(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback) throws Exception
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
             {
                 // Wait for the SETTINGS frames to be exchanged.
                 Thread.sleep(delay);
                 broken.set(true);
                 callback.succeeded();
+                return true;
             }
         });
         server.stop();
@@ -367,23 +373,23 @@ public class HTTP2ServerTest extends AbstractServerTest
         server.addConnector(connector2);
         server.start();
 
-        ByteBufferPool.Lease lease = new ByteBufferPool.Lease(byteBufferPool);
-        generator.control(lease, new PrefaceFrame());
-        generator.control(lease, new SettingsFrame(new HashMap<>(), false));
+        ByteBufferPool.Accumulator accumulator = new ByteBufferPool.Accumulator();
+        generator.control(accumulator, new PrefaceFrame());
+        generator.control(accumulator, new SettingsFrame(new HashMap<>(), false));
         MetaData.Request metaData = newRequest("GET", HttpFields.EMPTY);
-        generator.control(lease, new HeadersFrame(1, metaData, null, true));
+        generator.control(accumulator, new HeadersFrame(1, metaData, null, true));
         try (Socket client = new Socket("localhost", connector2.getLocalPort()))
         {
             OutputStream output = client.getOutputStream();
-            for (ByteBuffer buffer : lease.getByteBuffers())
+            for (ByteBuffer buffer : accumulator.getByteBuffers())
             {
                 output.write(BufferUtil.toArray(buffer));
             }
 
             // The server will close the connection abruptly since it
             // cannot write and therefore cannot even send the GO_AWAY.
-            Parser parser = new Parser(byteBufferPool, new Parser.Listener.Adapter(), 4096, 8192);
-            parser.init(UnaryOperator.identity());
+            Parser parser = new Parser(bufferPool, 8192);
+            parser.init(new Parser.Listener() {});
             boolean closed = parseResponse(client, parser, 2 * delay);
             assertTrue(closed);
         }
@@ -394,38 +400,48 @@ public class HTTP2ServerTest extends AbstractServerTest
     {
         try (StacklessLogging ignored = new StacklessLogging(HttpChannelState.class))
         {
-            startServer(new Handler.Processor()
+            startServer(new Handler.Abstract()
             {
                 @Override
-                public void process(Request request, Response response, Callback callback)
+                public boolean handle(Request request, Response response, Callback callback)
                 {
                     // @checkstyle-disable-check : AvoidEscapedUnicodeCharactersCheck
                     // Invalid header name, the connection must be closed.
                     response.getHeaders().put("Euro_(\u20AC)", "42");
                     callback.succeeded();
+                    return true;
                 }
             });
 
-            ByteBufferPool.Lease lease = new ByteBufferPool.Lease(byteBufferPool);
-            generator.control(lease, new PrefaceFrame());
-            generator.control(lease, new SettingsFrame(new HashMap<>(), false));
+            ByteBufferPool.Accumulator accumulator = new ByteBufferPool.Accumulator();
+            generator.control(accumulator, new PrefaceFrame());
+            generator.control(accumulator, new SettingsFrame(new HashMap<>(), false));
             MetaData.Request metaData = newRequest("GET", HttpFields.EMPTY);
-            generator.control(lease, new HeadersFrame(1, metaData, null, true));
+            generator.control(accumulator, new HeadersFrame(1, metaData, null, true));
 
             try (Socket client = new Socket("localhost", connector.getLocalPort()))
             {
                 OutputStream output = client.getOutputStream();
-                for (ByteBuffer buffer : lease.getByteBuffers())
+                for (ByteBuffer buffer : accumulator.getByteBuffers())
                 {
                     output.write(BufferUtil.toArray(buffer));
                 }
                 output.flush();
 
-                Parser parser = new Parser(byteBufferPool, new Parser.Listener.Adapter(), 4096, 8192);
-                parser.init(UnaryOperator.identity());
+                AtomicBoolean goAway = new AtomicBoolean();
+                Parser parser = new Parser(bufferPool, 8192);
+                parser.init(new Parser.Listener()
+                {
+                    @Override
+                    public void onGoAway(GoAwayFrame frame)
+                    {
+                        goAway.set(true);
+                    }
+                });
                 boolean closed = parseResponse(client, parser);
 
-                assertTrue(closed);
+                assertFalse(closed);
+                assertTrue(goAway.get());
             }
         }
     }
@@ -435,12 +451,12 @@ public class HTTP2ServerTest extends AbstractServerTest
     {
         testRequestWithContinuationFrames(null, () ->
         {
-            ByteBufferPool.Lease lease = new ByteBufferPool.Lease(byteBufferPool);
-            generator.control(lease, new PrefaceFrame());
-            generator.control(lease, new SettingsFrame(new HashMap<>(), false));
+            ByteBufferPool.Accumulator accumulator = new ByteBufferPool.Accumulator();
+            generator.control(accumulator, new PrefaceFrame());
+            generator.control(accumulator, new SettingsFrame(new HashMap<>(), false));
             MetaData.Request metaData = newRequest("GET", HttpFields.EMPTY);
-            generator.control(lease, new HeadersFrame(1, metaData, null, true));
-            return lease;
+            generator.control(accumulator, new HeadersFrame(1, metaData, null, true));
+            return accumulator;
         });
     }
 
@@ -450,12 +466,12 @@ public class HTTP2ServerTest extends AbstractServerTest
         PriorityFrame priority = new PriorityFrame(1, 13, 200, true);
         testRequestWithContinuationFrames(priority, () ->
         {
-            ByteBufferPool.Lease lease = new ByteBufferPool.Lease(byteBufferPool);
-            generator.control(lease, new PrefaceFrame());
-            generator.control(lease, new SettingsFrame(new HashMap<>(), false));
+            ByteBufferPool.Accumulator accumulator = new ByteBufferPool.Accumulator();
+            generator.control(accumulator, new PrefaceFrame());
+            generator.control(accumulator, new SettingsFrame(new HashMap<>(), false));
             MetaData.Request metaData = newRequest("GET", HttpFields.EMPTY);
-            generator.control(lease, new HeadersFrame(1, metaData, priority, true));
-            return lease;
+            generator.control(accumulator, new HeadersFrame(1, metaData, priority, true));
+            return accumulator;
         });
     }
 
@@ -464,19 +480,19 @@ public class HTTP2ServerTest extends AbstractServerTest
     {
         testRequestWithContinuationFrames(null, () ->
         {
-            ByteBufferPool.Lease lease = new ByteBufferPool.Lease(byteBufferPool);
-            generator.control(lease, new PrefaceFrame());
-            generator.control(lease, new SettingsFrame(new HashMap<>(), false));
+            ByteBufferPool.Accumulator accumulator = new ByteBufferPool.Accumulator();
+            generator.control(accumulator, new PrefaceFrame());
+            generator.control(accumulator, new SettingsFrame(new HashMap<>(), false));
             MetaData.Request metaData = newRequest("GET", HttpFields.EMPTY);
-            generator.control(lease, new HeadersFrame(1, metaData, null, true));
+            generator.control(accumulator, new HeadersFrame(1, metaData, null, true));
             // Take the HeadersFrame header and set the length to zero.
-            List<ByteBuffer> buffers = lease.getByteBuffers();
+            List<ByteBuffer> buffers = accumulator.getByteBuffers();
             ByteBuffer headersFrameHeader = buffers.get(2);
             headersFrameHeader.put(0, (byte)0);
             headersFrameHeader.putShort(1, (short)0);
             // Insert a CONTINUATION frame header for the body of the HEADERS frame.
-            lease.insert(3, buffers.get(4).slice(), false);
-            return lease;
+            accumulator.insert(3, RetainableByteBuffer.wrap(buffers.get(4).slice()));
+            return accumulator;
         });
     }
 
@@ -486,19 +502,19 @@ public class HTTP2ServerTest extends AbstractServerTest
         PriorityFrame priority = new PriorityFrame(1, 13, 200, true);
         testRequestWithContinuationFrames(null, () ->
         {
-            ByteBufferPool.Lease lease = new ByteBufferPool.Lease(byteBufferPool);
-            generator.control(lease, new PrefaceFrame());
-            generator.control(lease, new SettingsFrame(new HashMap<>(), false));
+            ByteBufferPool.Accumulator accumulator = new ByteBufferPool.Accumulator();
+            generator.control(accumulator, new PrefaceFrame());
+            generator.control(accumulator, new SettingsFrame(new HashMap<>(), false));
             MetaData.Request metaData = newRequest("GET", HttpFields.EMPTY);
-            generator.control(lease, new HeadersFrame(1, metaData, priority, true));
+            generator.control(accumulator, new HeadersFrame(1, metaData, priority, true));
             // Take the HeadersFrame header and set the length to just the priority frame.
-            List<ByteBuffer> buffers = lease.getByteBuffers();
+            List<ByteBuffer> buffers = accumulator.getByteBuffers();
             ByteBuffer headersFrameHeader = buffers.get(2);
             headersFrameHeader.put(0, (byte)0);
             headersFrameHeader.putShort(1, (short)PriorityFrame.PRIORITY_LENGTH);
             // Insert a CONTINUATION frame header for the body of the HEADERS frame.
-            lease.insert(3, buffers.get(4).slice(), false);
-            return lease;
+            accumulator.insert(3, RetainableByteBuffer.wrap(buffers.get(4).slice()));
+            return accumulator;
         });
     }
 
@@ -507,13 +523,13 @@ public class HTTP2ServerTest extends AbstractServerTest
     {
         testRequestWithContinuationFrames(null, () ->
         {
-            ByteBufferPool.Lease lease = new ByteBufferPool.Lease(byteBufferPool);
-            generator.control(lease, new PrefaceFrame());
-            generator.control(lease, new SettingsFrame(new HashMap<>(), false));
+            ByteBufferPool.Accumulator accumulator = new ByteBufferPool.Accumulator();
+            generator.control(accumulator, new PrefaceFrame());
+            generator.control(accumulator, new SettingsFrame(new HashMap<>(), false));
             MetaData.Request metaData = newRequest("GET", HttpFields.EMPTY);
-            generator.control(lease, new HeadersFrame(1, metaData, null, true));
+            generator.control(accumulator, new HeadersFrame(1, metaData, null, true));
             // Take the ContinuationFrame header, duplicate it, and set the length to zero.
-            List<ByteBuffer> buffers = lease.getByteBuffers();
+            List<ByteBuffer> buffers = accumulator.getByteBuffers();
             ByteBuffer continuationFrameHeader = buffers.get(4);
             ByteBuffer duplicate = ByteBuffer.allocate(continuationFrameHeader.remaining());
             duplicate.put(continuationFrameHeader).flip();
@@ -521,8 +537,8 @@ public class HTTP2ServerTest extends AbstractServerTest
             continuationFrameHeader.put(0, (byte)0);
             continuationFrameHeader.putShort(1, (short)0);
             // Insert a CONTINUATION frame header for the body of the previous CONTINUATION frame.
-            lease.insert(5, duplicate, false);
-            return lease;
+            accumulator.insert(5, RetainableByteBuffer.wrap(duplicate));
+            return accumulator;
         });
     }
 
@@ -531,13 +547,13 @@ public class HTTP2ServerTest extends AbstractServerTest
     {
         testRequestWithContinuationFrames(null, () ->
         {
-            ByteBufferPool.Lease lease = new ByteBufferPool.Lease(byteBufferPool);
-            generator.control(lease, new PrefaceFrame());
-            generator.control(lease, new SettingsFrame(new HashMap<>(), false));
+            ByteBufferPool.Accumulator accumulator = new ByteBufferPool.Accumulator();
+            generator.control(accumulator, new PrefaceFrame());
+            generator.control(accumulator, new SettingsFrame(new HashMap<>(), false));
             MetaData.Request metaData = newRequest("GET", HttpFields.EMPTY);
-            generator.control(lease, new HeadersFrame(1, metaData, null, true));
+            generator.control(accumulator, new HeadersFrame(1, metaData, null, true));
             // Take the last CONTINUATION frame and reset the flag.
-            List<ByteBuffer> buffers = lease.getByteBuffers();
+            List<ByteBuffer> buffers = accumulator.getByteBuffers();
             ByteBuffer continuationFrameHeader = buffers.get(buffers.size() - 2);
             continuationFrameHeader.put(4, (byte)0);
             // Add a last, empty, CONTINUATION frame.
@@ -547,15 +563,15 @@ public class HTTP2ServerTest extends AbstractServerTest
                 (byte)Flags.END_HEADERS,
                 0, 0, 0, 1 // Stream ID
             });
-            lease.append(last, false);
-            return lease;
+            accumulator.append(RetainableByteBuffer.wrap(last));
+            return accumulator;
         });
     }
 
-    private void testRequestWithContinuationFrames(PriorityFrame priorityFrame, Callable<ByteBufferPool.Lease> frames) throws Exception
+    private void testRequestWithContinuationFrames(PriorityFrame priorityFrame, Callable<ByteBufferPool.Accumulator> frames) throws Exception
     {
-        final CountDownLatch serverLatch = new CountDownLatch(1);
-        startServer(new ServerSessionListener.Adapter()
+        CountDownLatch serverLatch = new CountDownLatch(1);
+        startServer(new ServerSessionListener()
         {
             @Override
             public Stream.Listener onNewStream(Stream stream, HeadersFrame frame)
@@ -572,20 +588,20 @@ public class HTTP2ServerTest extends AbstractServerTest
 
                 serverLatch.countDown();
 
-                MetaData.Response metaData = new MetaData.Response(HttpVersion.HTTP_2, 200, HttpFields.EMPTY);
+                MetaData.Response metaData = new MetaData.Response(200, null, HttpVersion.HTTP_2, HttpFields.EMPTY);
                 HeadersFrame responseFrame = new HeadersFrame(stream.getId(), metaData, null, true);
                 stream.headers(responseFrame, Callback.NOOP);
                 return null;
             }
         });
-        generator = new Generator(byteBufferPool, 4096, 4);
+        generator = new Generator(bufferPool, 4);
 
-        ByteBufferPool.Lease lease = frames.call();
+        ByteBufferPool.Accumulator accumulator = frames.call();
 
         try (Socket client = new Socket("localhost", connector.getLocalPort()))
         {
             OutputStream output = client.getOutputStream();
-            for (ByteBuffer buffer : lease.getByteBuffers())
+            for (ByteBuffer buffer : accumulator.getByteBuffers())
             {
                 output.write(BufferUtil.toArray(buffer));
             }
@@ -593,8 +609,9 @@ public class HTTP2ServerTest extends AbstractServerTest
 
             assertTrue(serverLatch.await(5, TimeUnit.SECONDS));
 
-            final CountDownLatch clientLatch = new CountDownLatch(1);
-            Parser parser = new Parser(byteBufferPool, new Parser.Listener.Adapter()
+            CountDownLatch clientLatch = new CountDownLatch(1);
+            Parser parser = new Parser(bufferPool, 8192);
+            parser.init(new Parser.Listener()
             {
                 @Override
                 public void onHeaders(HeadersFrame frame)
@@ -602,8 +619,7 @@ public class HTTP2ServerTest extends AbstractServerTest
                     if (frame.isEndStream())
                         clientLatch.countDown();
                 }
-            }, 4096, 8192);
-            parser.init(UnaryOperator.identity());
+            });
             boolean closed = parseResponse(client, parser);
 
             assertTrue(clientLatch.await(5, TimeUnit.SECONDS));

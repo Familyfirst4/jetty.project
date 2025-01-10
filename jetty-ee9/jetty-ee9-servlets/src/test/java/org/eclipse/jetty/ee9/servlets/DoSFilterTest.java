@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,6 +13,7 @@
 
 package org.eclipse.jetty.ee9.servlets;
 
+import java.nio.file.Path;
 import java.util.Collections;
 import java.util.Enumeration;
 
@@ -24,6 +25,7 @@ import org.eclipse.jetty.ee9.nested.ContextHandler;
 import org.eclipse.jetty.ee9.servlets.DoSFilter.RateTracker;
 import org.eclipse.jetty.toolchain.test.jupiter.WorkDir;
 import org.eclipse.jetty.toolchain.test.jupiter.WorkDirExtension;
+import org.eclipse.jetty.util.NanoTime;
 import org.hamcrest.Matchers;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
@@ -39,7 +41,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @ExtendWith(WorkDirExtension.class)
 public class DoSFilterTest extends AbstractDoSFilterTest
 {
-    public WorkDir workDir;
+    private Path tmpPath;
 
     private static class RemoteAddressRequest extends org.eclipse.jetty.ee9.nested.Request
     {
@@ -100,9 +102,10 @@ public class DoSFilterTest extends AbstractDoSFilterTest
     }
 
     @BeforeEach
-    public void setUp() throws Exception
+    public void setUp(WorkDir workDir) throws Exception
     {
-        startServer(workDir, DoSFilter.class);
+        tmpPath = workDir.getEmptyPathDir();
+        startServer(tmpPath, DoSFilter.class);
     }
 
     // TODO Remove mock request. Use a real one
@@ -194,12 +197,12 @@ public class DoSFilterTest extends AbstractDoSFilterTest
         boolean exceeded = false;
         ContextHandler contextHandler = new ContextHandler();
         ServletContext context = contextHandler.getServletContext();
-        RateTracker rateTracker = new RateTracker(context, doSFilter.getName(), "test2", DoSFilter.RateType.UNKNOWN, 4);
+        RateTracker rateTracker = new RateTracker(context, doSFilter.getName(), "test2", 4);
 
         for (int i = 0; i < 5; i++)
         {
             Thread.sleep(sleep);
-            if (rateTracker.isRateExceeded(System.nanoTime()) != null)
+            if (rateTracker.isRateExceeded(NanoTime.now()) != null)
                 exceeded = true;
         }
         return exceeded;

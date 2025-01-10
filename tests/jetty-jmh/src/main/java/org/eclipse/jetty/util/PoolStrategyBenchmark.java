@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -34,18 +34,12 @@ public class PoolStrategyBenchmark
     private Pool<String> pool;
 
     @Param({
-        "Pool.Linear",
-        "Pool.Random",
-        "Pool.RoundRobin",
-        "Pool.ThreadId",
+        "First",
+        "Random",
+        "RoundRobin",
+        "ThreadId"
     })
     public static String POOL_TYPE;
-
-    @Param({
-        "false",
-        "true",
-    })
-    public static boolean CACHE;
 
     @Param({
         "4",
@@ -62,28 +56,18 @@ public class PoolStrategyBenchmark
     {
         misses.reset();
 
-        switch (POOL_TYPE)
+        pool = switch (POOL_TYPE)
         {
-            case "Pool.Linear" :
-                pool = new Pool<>(Pool.StrategyType.FIRST, SIZE, CACHE);
-                break;
-            case "Pool.Random" :
-                pool = new Pool<>(Pool.StrategyType.RANDOM, SIZE, CACHE);
-                break;
-            case "Pool.ThreadId" :
-                pool = new Pool<>(Pool.StrategyType.THREAD_ID, SIZE, CACHE);
-                break;
-            case "Pool.RoundRobin" :
-                pool = new Pool<>(Pool.StrategyType.ROUND_ROBIN, SIZE, CACHE);
-                break;
-
-            default:
-                throw new IllegalStateException();
-        }
+            case "First" -> new ConcurrentPool<>(ConcurrentPool.StrategyType.FIRST, SIZE);
+            case "Random" -> new ConcurrentPool<>(ConcurrentPool.StrategyType.RANDOM, SIZE);
+            case "ThreadId" -> new ConcurrentPool<>(ConcurrentPool.StrategyType.THREAD_ID, SIZE);
+            case "RoundRobin" -> new ConcurrentPool<>(ConcurrentPool.StrategyType.ROUND_ROBIN, SIZE);
+            default -> throw new IllegalStateException();
+        };
 
         for (int i = 0; i < SIZE; i++)
         {
-            pool.reserve(1).enable(Integer.toString(i), false);
+            pool.reserve().enable(Integer.toString(i), false);
         }
     }
 
@@ -92,7 +76,7 @@ public class PoolStrategyBenchmark
     {
         System.err.printf("%nMISSES = %d (%d%%)%n", misses.longValue(), 100 * misses.longValue() / (hits.longValue() + misses.longValue()));
         System.err.printf("AVERAGE = %d%n", total.longValue() / hits.longValue());
-        pool.close();
+        pool.terminate();
         pool = null;
     }
 
@@ -100,7 +84,7 @@ public class PoolStrategyBenchmark
     public void testAcquireReleasePoolWithStrategy()
     {
         // Now really benchmark the strategy we are interested in
-        Pool<String>.Entry entry = pool.acquire();
+        Pool.Entry<String> entry = pool.acquire();
         if (entry == null || entry.isIdle())
         {
             misses.increment();

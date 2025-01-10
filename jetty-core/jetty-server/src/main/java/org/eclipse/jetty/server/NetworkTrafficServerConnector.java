@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -49,9 +49,9 @@ public class NetworkTrafficServerConnector extends ServerConnector
         super(server, connectionFactory);
     }
 
-    public NetworkTrafficServerConnector(Server server, Executor executor, Scheduler scheduler, ByteBufferPool pool, int acceptors, int selectors, ConnectionFactory... factories)
+    public NetworkTrafficServerConnector(Server server, Executor executor, Scheduler scheduler, ByteBufferPool bufferPool, int acceptors, int selectors, ConnectionFactory... factories)
     {
-        super(server, executor, scheduler, pool, acceptors, selectors, factories);
+        super(server, executor, scheduler, bufferPool, acceptors, selectors, factories);
     }
 
     public NetworkTrafficServerConnector(Server server, SslContextFactory.Server sslContextFactory)
@@ -60,6 +60,7 @@ public class NetworkTrafficServerConnector extends ServerConnector
     }
 
     /**
+     * Set the listener to set, or null to unset.
      * @param listener the listener to set, or null to unset
      */
     public void setNetworkTrafficListener(NetworkTrafficListener listener)
@@ -68,6 +69,7 @@ public class NetworkTrafficServerConnector extends ServerConnector
     }
 
     /**
+     * Get the listener.
      * @return the listener
      */
     public NetworkTrafficListener getNetworkTrafficListener()

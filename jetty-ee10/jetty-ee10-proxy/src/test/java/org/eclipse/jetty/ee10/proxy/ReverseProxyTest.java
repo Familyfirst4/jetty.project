@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -21,8 +21,8 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.eclipse.jetty.client.ContentResponse;
 import org.eclipse.jetty.client.HttpClient;
-import org.eclipse.jetty.client.api.ContentResponse;
 import org.eclipse.jetty.ee10.servlet.ServletContextHandler;
 import org.eclipse.jetty.ee10.servlet.ServletHolder;
 import org.eclipse.jetty.server.HttpConfiguration;
@@ -49,7 +49,8 @@ public class ReverseProxyTest
         serverConnector = new ServerConnector(server);
         server.addConnector(serverConnector);
 
-        ServletContextHandler appCtx = new ServletContextHandler(server, "/", true, false);
+        ServletContextHandler appCtx = new ServletContextHandler("/", true, false);
+        server.setHandler(appCtx);
         ServletHolder appServletHolder = new ServletHolder(servlet);
         appCtx.addServlet(appServletHolder, "/*");
 
@@ -66,7 +67,8 @@ public class ReverseProxyTest
         proxyConnector = new ServerConnector(proxy, new HttpConnectionFactory(configuration));
         proxy.addConnector(proxyConnector);
 
-        ServletContextHandler proxyContext = new ServletContextHandler(proxy, "/", true, false);
+        ServletContextHandler proxyContext = new ServletContextHandler("/", true, false);
+        proxy.setHandler(proxyContext);
         ServletHolder proxyServletHolder = new ServletHolder(new AsyncMiddleManServlet()
         {
             @Override

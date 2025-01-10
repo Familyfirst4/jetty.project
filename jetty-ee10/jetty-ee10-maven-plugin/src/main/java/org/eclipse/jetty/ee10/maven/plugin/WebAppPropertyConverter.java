@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -15,9 +15,10 @@ package org.eclipse.jetty.ee10.maven.plugin;
 
 import java.io.BufferedWriter;
 import java.io.File;
-import java.io.FileInputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -27,8 +28,9 @@ import java.util.stream.Collectors;
 import org.eclipse.jetty.ee10.quickstart.QuickStartConfiguration;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.util.StringUtil;
+import org.eclipse.jetty.util.resource.CombinedResource;
 import org.eclipse.jetty.util.resource.Resource;
-import org.eclipse.jetty.util.resource.ResourceCollection;
+import org.eclipse.jetty.util.resource.ResourceFactory;
 import org.eclipse.jetty.xml.XmlConfiguration;
 
 /**
@@ -61,10 +63,10 @@ public class WebAppPropertyConverter
      * @param webApp the webapp to convert
      * @param propsFile the file to put the properties into
      * @param contextXml the optional context xml file related to the webApp
-     * @throws Exception if any I/O exception occurs
+     * @throws IOException if any I/O exception occurs
      */
     public static void toProperties(MavenWebAppContext webApp, File propsFile, String contextXml)
-        throws Exception
+        throws IOException
     {
         if (webApp == null)
             throw new IllegalArgumentException("No webapp");
@@ -99,14 +101,14 @@ public class WebAppPropertyConverter
         //tmp dir
         props.put(TMP_DIR, webApp.getTempDirectory().getAbsolutePath());
         //props.put("tmp.dir.persist", Boolean.toString(originalPersistTemp));
-        props.put(TMP_DIR_PERSIST, Boolean.toString(webApp.isPersistTempDirectory()));
+        props.put(TMP_DIR_PERSIST, Boolean.toString(webApp.isTempDirectoryPersistent()));
 
         //send over the calculated resource bases that includes unpacked overlays
-        Resource baseResource = webApp.getResourceBase();
-        if (baseResource instanceof ResourceCollection)
-            props.put(BASE_DIRS, toCSV(((ResourceCollection)webApp.getResourceBase()).getResources()));
+        Resource baseResource = webApp.getBaseResource();
+        if (baseResource instanceof CombinedResource)
+            props.put(BASE_DIRS, toCSV(((CombinedResource)webApp.getBaseResource()).getResources()));
         else if (baseResource instanceof Resource)
-            props.put(BASE_DIRS, webApp.getResourceBase().toString());
+            props.put(BASE_DIRS, webApp.getBaseResource().toString());
         
         //if there is a war file, use that
         if (webApp.getWar() != null)
@@ -163,7 +165,7 @@ public class WebAppPropertyConverter
      * @param resource the properties file to apply
      * @param server the Server instance to use
      * @param jettyProperties jetty properties to use if there is a context xml file to apply
-     * @throws Exception
+     * @throws Exception if there is an unspecified problem
      */
     public static void fromProperties(MavenWebAppContext webApp, String resource, Server server, Map<String, String> jettyProperties)
         throws Exception
@@ -171,7 +173,7 @@ public class WebAppPropertyConverter
         if (resource == null)
             throw new IllegalStateException("No resource");
 
-        fromProperties(webApp, Resource.newResource(resource).getFile(), server, jettyProperties);
+        fromProperties(webApp, webApp.getResourceFactory().newResource(resource).getPath(), server, jettyProperties);
     }
 
     /**
@@ -182,7 +184,7 @@ public class WebAppPropertyConverter
      * @param server the jetty Server instance
      * @param jettyProperties jetty properties
      * 
-     * @throws Exception
+     * @throws Exception if there is an unspecified problem
      */
     public static void fromProperties(MavenWebAppContext webApp, Properties webAppProperties, Server server, Map<String, String> jettyProperties)
         throws Exception
@@ -206,7 +208,7 @@ public class WebAppPropertyConverter
         str = webAppProperties.getProperty(QUICKSTART_WEB_XML);
         if (!StringUtil.isBlank(str))
         {
-            webApp.setAttribute(QuickStartConfiguration.QUICKSTART_WEB_XML, Resource.newResource(str));
+            webApp.setAttribute(QuickStartConfiguration.QUICKSTART_WEB_XML, webApp.getResourceFactory().newResource(str));
         }
 
         // - the tmp directory
@@ -216,15 +218,15 @@ public class WebAppPropertyConverter
 
         str = webAppProperties.getProperty(TMP_DIR_PERSIST);
         if (!StringUtil.isBlank(str))
-            webApp.setPersistTempDirectory(Boolean.valueOf(str));
+            webApp.setTempDirectoryPersistent(Boolean.valueOf(str));
 
         //Get the calculated base dirs which includes the overlays
         str = webAppProperties.getProperty(BASE_DIRS);
         if (!StringUtil.isBlank(str))
         {
-            ResourceCollection bases = new ResourceCollection(StringUtil.csvSplit(str));
+            // This is a use provided list of overlays, which could have mountable entries.
             webApp.setWar(null);
-            webApp.setBaseResource(bases);
+            webApp.setBaseResource(ResourceFactory.combine(webApp.getResourceFactory().split(str)));
         }
 
         str = webAppProperties.getProperty(WAR_FILE);
@@ -286,7 +288,7 @@ public class WebAppPropertyConverter
         str = (String)webAppProperties.getProperty(CONTEXT_XML);
         if (!StringUtil.isBlank(str))
         {
-            XmlConfiguration xmlConfiguration = new XmlConfiguration(Resource.newResource(str));
+            XmlConfiguration xmlConfiguration = new XmlConfiguration(webApp.getResourceFactory().newResource(str));
             xmlConfiguration.getIdMap().put("Server", server);
             //add in any properties
             if (jettyProperties != null)
@@ -306,20 +308,20 @@ public class WebAppPropertyConverter
      * @param propsFile the properties to apply
      * @param server the Server instance to use if there is a context xml file to apply
      * @param jettyProperties jetty properties to use if there is a context xml file to apply
-     * @throws Exception
+     * @throws Exception if there is an unspecified problem
      */
-    public static void fromProperties(MavenWebAppContext webApp, File propsFile, Server server, Map<String, String> jettyProperties)
+    public static void fromProperties(MavenWebAppContext webApp, Path propsFile, Server server, Map<String, String> jettyProperties)
         throws Exception
     {
 
         if (propsFile == null)
             throw new IllegalArgumentException("No properties file");
-        
-        if (!propsFile.exists())
-            throw new IllegalArgumentException(propsFile.getCanonicalPath() + " does not exist");
-        
+
+        if (!Files.exists(propsFile))
+            throw new IllegalArgumentException(propsFile + " does not exist");
+
         Properties props = new Properties();
-        try (InputStream in = new FileInputStream(propsFile))
+        try (InputStream in = Files.newInputStream(propsFile))
         {
             props.load(in);
         }

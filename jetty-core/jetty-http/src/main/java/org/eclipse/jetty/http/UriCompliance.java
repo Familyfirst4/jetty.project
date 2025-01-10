@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,6 +13,7 @@
 
 package org.eclipse.jetty.http;
 
+import java.util.Collections;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Objects;
@@ -25,6 +26,7 @@ import org.slf4j.LoggerFactory;
 import static java.util.Arrays.asList;
 import static java.util.Collections.unmodifiableSet;
 import static java.util.EnumSet.allOf;
+import static java.util.EnumSet.complementOf;
 import static java.util.EnumSet.noneOf;
 import static java.util.EnumSet.of;
 
@@ -35,7 +37,7 @@ import static java.util.EnumSet.of;
  */
 public final class UriCompliance implements ComplianceViolation.Mode
 {
-    protected static final Logger LOG = LoggerFactory.getLogger(UriCompliance.class);
+    private static final Logger LOG = LoggerFactory.getLogger(UriCompliance.class);
 
     /**
      * These are URI compliance "violations", which may be allowed by the compliance mode. These are actual
@@ -47,29 +49,72 @@ public final class UriCompliance implements ComplianceViolation.Mode
     public enum Violation implements ComplianceViolation
     {
         /**
-         * Allow ambiguous path segments e.g. <code>/foo/%2e%2e/bar</code>
+         * Allow ambiguous path segments e.g. <code>/foo/%2e%2e/bar</code>.
+         * When allowing this {@code Violation}, the application developer/deployer must ensure that the decoded URI path is not
+         * passed to any API that may inadvertently normalize dot or double dot segments.
+         * Any resulting '.' characters in the decoded path should be treated as literal characters.
          */
         AMBIGUOUS_PATH_SEGMENT("https://tools.ietf.org/html/rfc3986#section-3.3", "Ambiguous URI path segment"),
+
         /**
-         * Allow ambiguous empty segments e.g. <code>//</code>
+         * Allow ambiguous empty segments e.g. <code>//</code>.
+         * When allowing this {@code Violation}, the application developer/deployer must ensure that the application behaves
+         * as desired when it receives a URI path containing <code>//</code>. Specifically, any URI pattern matching for
+         * security concerns needs to be carefully audited.
          */
         AMBIGUOUS_EMPTY_SEGMENT("https://tools.ietf.org/html/rfc3986#section-3.3", "Ambiguous URI empty segment"),
+
         /**
          * Allow ambiguous path separator within a URI segment e.g. <code>/foo/b%2fr</code>
+         * When allowing this {@code Violation}, the application developer/deployer must be aware that the decoded URI path is
+         * ambiguous and that it is not possible to distinguish in the decoded path a real path separator versus an encoded
+         * separator character. Any URI matching based on decoded segments may be affected by this ambiguity. It is highly
+         * recommended that applications using this violation work only with encoded URI paths.  Some APIs that return
+         * decoded paths may throw an exception rather than return such an ambiguous path.
          */
         AMBIGUOUS_PATH_SEPARATOR("https://tools.ietf.org/html/rfc3986#section-3.3", "Ambiguous URI path separator"),
+
         /**
-         * Allow ambiguous path parameters within a URI segment e.g. <code>/foo/..;/bar</code> or <code>/foo/%2e%2e;param/bar</code>
+         * Allow ambiguous path parameters within a URI segment e.g. <code>/foo/..;/bar</code> or <code>/foo/%2e%2e;param/bar</code>.
+         * Since a dot or double dot segment with a parameter will not be normalized, then when allowing this {@code Violation},
+         * the application developer/deployer must ensure that the decoded URI path is not passed to any API that may
+         * inadvertently normalize dot or double dot segments.
          */
         AMBIGUOUS_PATH_PARAMETER("https://tools.ietf.org/html/rfc3986#section-3.3", "Ambiguous URI path parameter"),
+
         /**
-         * Allow ambiguous path encoding within a URI segment e.g. <code>/%2557EB-INF</code>
+         * Allow ambiguous path encoding within a URI segment e.g. <code>/%2557EB-INF</code>.  When allowing this
+         * {@code Violation}, the deployer must ensure that the decoded URI path is not passed to any API that may inadvertently
+         * further decode any percent encoded characters. Any resulting `%` character in the decoded path should be treated as
+         * a literal character.
          */
         AMBIGUOUS_PATH_ENCODING("https://tools.ietf.org/html/rfc3986#section-3.3", "Ambiguous URI path encoding"),
+
         /**
          * Allow UTF-16 encoding eg <code>/foo%u2192bar</code>.
          */
-        UTF16_ENCODINGS("https://www.w3.org/International/iri-edit/draft-duerst-iri.html#anchor29", "UTF16 encoding");
+        UTF16_ENCODINGS("https://www.w3.org/International/iri-edit/draft-duerst-iri.html#anchor29", "UTF-16 encoding"),
+
+        /**
+         * Allow Bad UTF-8 encodings to be substituted by the replacement character.
+         */
+        BAD_UTF8_ENCODING("https://datatracker.ietf.org/doc/html/rfc5987#section-3.2.1", "Bad UTF-8 encoding"),
+
+        /**
+         * Allow encoded path characters not allowed by the Servlet spec rules.
+         */
+        SUSPICIOUS_PATH_CHARACTERS("https://jakarta.ee/specifications/servlet/6.0/jakarta-servlet-spec-6.0.html#uri-path-canonicalization", "Suspicious Path Character"),
+
+        /**
+         * Allow path characters not allowed in the path portion of the URI and HTTP specs.
+         * <p>This would allow characters that fall outside of the {@code unreserved / pct-encoded / sub-delims / ":" / "@"} ABNF</p>
+         */
+        ILLEGAL_PATH_CHARACTERS("https://datatracker.ietf.org/doc/html/rfc3986#section-3.3", "Illegal Path Character"),
+
+        /**
+         * Allow user info in the authority portion of the URI and HTTP specs.
+         */
+        USER_INFO("https://datatracker.ietf.org/doc/html/rfc9110#name-deprecation-of-userinfo-in-", "Deprecated User Info");
 
         private final String _url;
         private final String _description;
@@ -99,60 +144,78 @@ public final class UriCompliance implements ComplianceViolation.Mode
         }
     }
 
+    public static final Set<Violation> NO_VIOLATION = Collections.unmodifiableSet(EnumSet.noneOf(Violation.class));
+
     /**
-     * The default compliance mode that extends <a href="https://tools.ietf.org/html/rfc3986">RFC3986</a> compliance with
-     * additional violations to avoid most ambiguous URIs.
-     * This mode does allow {@link Violation#AMBIGUOUS_PATH_SEPARATOR}, but disallows all out {@link Violation}s.
+     * Set of violations that can trigger a HttpURI.isAmbiguous violation.
      */
-    public static final UriCompliance DEFAULT = new UriCompliance("DEFAULT",
-        of(Violation.AMBIGUOUS_PATH_SEPARATOR,
-            Violation.AMBIGUOUS_PATH_ENCODING));
+    public static final Set<Violation> AMBIGUOUS_VIOLATIONS = Collections.unmodifiableSet(EnumSet.of(
+        Violation.AMBIGUOUS_EMPTY_SEGMENT,
+        Violation.AMBIGUOUS_PATH_ENCODING,
+        Violation.AMBIGUOUS_PATH_PARAMETER,
+        Violation.AMBIGUOUS_PATH_SEGMENT,
+        Violation.AMBIGUOUS_PATH_SEPARATOR));
+
+    /**
+     * List of Violations that apply only to the HttpURI.path section.
+     */
+    private static final Set<Violation> PATH_VIOLATIONS = Collections.unmodifiableSet(EnumSet.of(
+        Violation.AMBIGUOUS_EMPTY_SEGMENT,
+        Violation.AMBIGUOUS_PATH_ENCODING,
+        Violation.AMBIGUOUS_PATH_PARAMETER,
+        Violation.AMBIGUOUS_PATH_SEGMENT,
+        Violation.AMBIGUOUS_PATH_SEPARATOR,
+        Violation.SUSPICIOUS_PATH_CHARACTERS,
+        Violation.ILLEGAL_PATH_CHARACTERS));
+
+    /**
+     * Compliance mode that exactly follows <a href="https://tools.ietf.org/html/rfc3986">RFC3986</a>,
+     * excluding all URI Violations.
+     */
+    public static final UriCompliance RFC3986 = new UriCompliance("RFC3986", noneOf(Violation.class));
+
+    /**
+     * Compliance mode that allows all unambiguous violations.
+     */
+    public static final UriCompliance UNAMBIGUOUS = new UriCompliance("UNAMBIGUOUS",
+        complementOf(EnumSet.copyOf(AMBIGUOUS_VIOLATIONS)));
+
+    /**
+     * The default compliance mode allows no violations from <a href="https://tools.ietf.org/html/rfc3986">RFC3986</a>
+     * and is equivalent to {@link #RFC3986} compliance.
+     */
+    public static final UriCompliance DEFAULT = new UriCompliance("DEFAULT", RFC3986.getAllowed());
 
     /**
      * LEGACY compliance mode that models Jetty-9.4 behavior by allowing {@link Violation#AMBIGUOUS_PATH_SEGMENT},
      * {@link Violation#AMBIGUOUS_EMPTY_SEGMENT}, {@link Violation#AMBIGUOUS_PATH_SEPARATOR}, {@link Violation#AMBIGUOUS_PATH_ENCODING}
-     * and {@link Violation#UTF16_ENCODINGS}
+     * and {@link Violation#UTF16_ENCODINGS}.
      */
     public static final UriCompliance LEGACY = new UriCompliance("LEGACY",
         of(Violation.AMBIGUOUS_PATH_SEGMENT,
             Violation.AMBIGUOUS_PATH_SEPARATOR,
             Violation.AMBIGUOUS_PATH_ENCODING,
             Violation.AMBIGUOUS_EMPTY_SEGMENT,
-            Violation.UTF16_ENCODINGS));
+            Violation.UTF16_ENCODINGS,
+            Violation.USER_INFO));
 
     /**
-     * Compliance mode that exactly follows <a href="https://tools.ietf.org/html/rfc3986">RFC3986</a>,
-     * including allowing all additional ambiguous URI Violations.
-     */
-    public static final UriCompliance RFC3986 = new UriCompliance("RFC3986", allOf(Violation.class));
-
-    /**
-     * Compliance mode that follows <a href="https://tools.ietf.org/html/rfc3986">RFC3986</a>
-     * plus it does not allow any ambiguous URI {@link Violation}s.
-     */
-    public static final UriCompliance RFC3986_UNAMBIGUOUS = new UriCompliance("RFC3986_UNAMBIGUOUS", noneOf(Violation.class));
-
-    /**
-     * Compliance mode that allows all URI Violations, including allowing ambiguous paths in non canonicalized form.
+     * Compliance mode that allows all URI Violations, including allowing ambiguous paths in non-canonical form, and illegal characters
      */
     public static final UriCompliance UNSAFE = new UriCompliance("UNSAFE", allOf(Violation.class));
 
-    /**
-     * @deprecated equivalent to DEFAULT
-     */
-    @SuppressWarnings("DeprecatedIsStillUsed")
-    @Deprecated
-    public static final UriCompliance SAFE = new UriCompliance("SAFE", DEFAULT.getAllowed());
-
-    /**
-     * @deprecated equivalent to RFC3986
-     */
-    @SuppressWarnings("DeprecatedIsStillUsed")
-    @Deprecated
-    public static final UriCompliance STRICT = new UriCompliance("STRICT", RFC3986.getAllowed());
-
     private static final AtomicInteger __custom = new AtomicInteger();
-    private static final List<UriCompliance> KNOWN_MODES = List.of(DEFAULT, LEGACY, RFC3986, RFC3986_UNAMBIGUOUS, UNSAFE, SAFE, STRICT);
+    private static final List<UriCompliance> KNOWN_MODES = List.of(DEFAULT, LEGACY, RFC3986, UNAMBIGUOUS, UNSAFE);
+
+    public static boolean isAmbiguous(Set<Violation> violations)
+    {
+        if (violations.isEmpty())
+            return false;
+        for (Violation v : AMBIGUOUS_VIOLATIONS)
+            if (violations.contains(v))
+                return true;
+        return false;
+    }
 
     public static UriCompliance valueOf(String name)
     {
@@ -161,7 +224,8 @@ public final class UriCompliance implements ComplianceViolation.Mode
             if (compliance.getName().equals(name))
                 return compliance;
         }
-        LOG.warn("Unknown UriCompliance mode {}", name);
+        if (name.indexOf(',') == -1) // skip warning if delimited, will be handled by .from() properly as a CUSTOM mode.
+            LOG.warn("Unknown UriCompliance mode {}", name);
         return null;
     }
 
@@ -202,47 +266,38 @@ public final class UriCompliance implements ComplianceViolation.Mode
      */
     public static UriCompliance from(String spec)
     {
-        Set<Violation> violations;
-        String[] elements = spec.split("\\s*,\\s*");
-        switch (elements[0])
+        UriCompliance compliance = valueOf(spec);
+        if (compliance == null)
         {
-            case "0":
-                violations = noneOf(Violation.class);
-                break;
+            String[] elements = spec.split("\\s*,\\s*");
 
-            case "*":
-                violations = allOf(Violation.class);
-                break;
-
-            default:
+            Set<Violation> violations = switch (elements[0])
             {
-                UriCompliance mode = UriCompliance.valueOf(elements[0]);
-                violations = (mode == null) ? noneOf(Violation.class) : copyOf(mode.getAllowed());
-                break;
+                case "0" -> noneOf(Violation.class);
+                case "*" -> allOf(Violation.class);
+                default ->
+                {
+                    UriCompliance mode = UriCompliance.valueOf(elements[0]);
+                    yield (mode == null) ? noneOf(Violation.class) : copyOf(mode.getAllowed());
+                }
+            };
+
+            for (int i = 1; i < elements.length; i++)
+            {
+                String element = elements[i];
+                boolean exclude = element.startsWith("-");
+                if (exclude)
+                    element = element.substring(1);
+
+                Violation section = Violation.valueOf(element);
+                if (exclude)
+                    violations.remove(section);
+                else
+                    violations.add(section);
             }
+
+            compliance = new UriCompliance("CUSTOM" + __custom.getAndIncrement(), violations);
         }
-
-        for (int i = 1; i < elements.length; i++)
-        {
-            String element = elements[i];
-            boolean exclude = element.startsWith("-");
-            if (exclude)
-                element = element.substring(1);
-
-            // Ignore removed name. TODO: remove in future release.
-            if (element.equals("NON_CANONICAL_AMBIGUOUS_PATHS"))
-                continue;
-
-            Violation section = Violation.valueOf(element);
-            if (exclude)
-                violations.remove(section);
-            else
-                violations.add(section);
-        }
-
-        UriCompliance compliance = new UriCompliance("CUSTOM" + __custom.getAndIncrement(), violations);
-        if (LOG.isDebugEnabled())
-            LOG.debug("UriCompliance from {}->{}", spec, compliance);
         return compliance;
     }
 
@@ -253,7 +308,7 @@ public final class UriCompliance implements ComplianceViolation.Mode
     {
         Objects.requireNonNull(violations);
         _name = name;
-        _allowed = unmodifiableSet(violations.isEmpty() ? noneOf(Violation.class) : copyOf(violations));
+        _allowed = violations.isEmpty() ? NO_VIOLATION : unmodifiableSet(copyOf(violations));
     }
 
     @Override
@@ -313,6 +368,17 @@ public final class UriCompliance implements ComplianceViolation.Mode
         return new UriCompliance(name, remainder);
     }
 
+    /**
+     * Test if violation is referencing a HttpURI.path violation.
+     *
+     * @param violation the violation to test.
+     * @return true if violation is a path violation.
+     */
+    public static boolean isPathViolation(UriCompliance.Violation violation)
+    {
+        return PATH_VIOLATIONS.contains(violation);
+    }
+
     @Override
     public String toString()
     {
@@ -333,12 +399,27 @@ public final class UriCompliance implements ComplianceViolation.Mode
         return EnumSet.copyOf(violations);
     }
 
-    public static String checkUriCompliance(UriCompliance compliance, HttpURI uri)
+    public static String checkUriCompliance(UriCompliance compliance, HttpURI uri, ComplianceViolation.Listener listener)
     {
-        for (UriCompliance.Violation violation : UriCompliance.Violation.values())
+        if (uri.hasViolations())
         {
-            if (uri.hasViolation(violation) && (compliance == null || !compliance.allows(violation)))
-                return violation.getDescription();
+            StringBuilder violations = null;
+            for (UriCompliance.Violation violation : uri.getViolations())
+            {
+                if (compliance == null || !compliance.allows(violation))
+                {
+                    if (listener != null)
+                        listener.onComplianceViolation(new ComplianceViolation.Event(compliance, violation, uri.toString()));
+
+                    if (violations == null)
+                        violations = new StringBuilder();
+                    else
+                        violations.append(", ");
+                    violations.append(violation.getDescription());
+                }
+            }
+            if (violations != null)
+                return violations.toString();
         }
         return null;
     }

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -29,6 +29,8 @@ import jakarta.servlet.ServletOutputStream;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.eclipse.jetty.util.ExceptionUtil;
+import org.eclipse.jetty.util.IO;
 import org.eclipse.jetty.util.thread.AutoLock;
 
 /**
@@ -199,11 +201,20 @@ public abstract class EventSourceServlet extends HttpServlet
                 // We could write, reschedule heartbeat
                 scheduleHeartBeat();
             }
-            catch (IOException x)
+            catch (Throwable x)
             {
-                // The other peer closed the connection
-                close();
-                eventSource.onClose();
+                IO.close(this::close);
+
+                try
+                {
+                    // The other peer closed the connection
+                    eventSource.onClose();
+                }
+                catch (Throwable t)
+                {
+                    ExceptionUtil.addSuppressedIfNotAssociated(x, t);
+                    getServletContext().log("failure", x);
+                }
             }
         }
 

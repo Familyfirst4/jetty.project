@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -32,15 +32,22 @@ public class FrameEcho implements FrameHandler
     {
         this.coreSession = coreSession;
         callback.succeeded();
+        coreSession.demand();
     }
 
     @Override
     public void onFrame(Frame frame, Callback callback)
     {
-        if (frame.isControlFrame())
+        Runnable succeedAndDemand = () ->
+        {
             callback.succeeded();
+            coreSession.demand();
+        };
+
+        if (frame.isControlFrame())
+            succeedAndDemand.run();
         else
-            coreSession.sendFrame(Frame.copy(frame), callback, false);
+            coreSession.sendFrame(Frame.copy(frame), Callback.from(succeedAndDemand, callback::failed), false);
     }
 
     @Override

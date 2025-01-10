@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -95,7 +95,7 @@ public enum HttpMethod
 
     public boolean is(String s)
     {
-        return toString().equalsIgnoreCase(s);
+        return name().equals(s);
     }
 
     /**
@@ -157,53 +157,38 @@ public enum HttpMethod
     /**
      * Optimized lookup to find a method name and trailing space in a byte array.
      *
-     * @param bytes Array containing ISO-8859-1 characters
-     * @param position The first valid index
-     * @param limit The first non valid index
-     * @return An HttpMethod if a match or null if no easy match.
-     * @deprecated Not used
-     */
-    @Deprecated
-    public static HttpMethod lookAheadGet(byte[] bytes, final int position, int limit)
-    {
-        return LOOK_AHEAD.getBest(bytes, position, limit - position);
-    }
-
-    /**
-     * Optimized lookup to find a method name and trailing space in a byte array.
-     *
      * @param buffer buffer containing ISO-8859-1 characters, it is not modified.
      * @return An HttpMethod if a match or null if no easy match.
      */
     public static HttpMethod lookAheadGet(ByteBuffer buffer)
     {
         int len = buffer.remaining();
-        // Short cut for 3 char methods, mostly for GET optimisation
-        if (len > 3)
-        {
-            switch (buffer.getInt(buffer.position()))
-            {
-                case ACL_AS_INT:
-                    return ACL;
-                case GET_AS_INT:
-                    return GET;
-                case PRI_AS_INT:
-                    return PRI;
-                case PUT_AS_INT:
-                    return PUT;
-                case POST_AS_INT:
-                    if (len > 4 && buffer.get(buffer.position() + 4) == ' ')
-                        return POST;
-                    break;
-                case HEAD_AS_INT:
-                    if (len > 4 && buffer.get(buffer.position() + 4) == ' ')
-                        return HEAD;
-                    break;
-                default:
-                    break;
-            }
-        }
+        // Shortcut for 3 or 4 char methods, mostly for GET optimisation
+        if (len > 4)
+            return lookAheadGet(buffer, buffer.getInt(buffer.position()));
         return LOOK_AHEAD.getBest(buffer, 0, len);
+    }
+
+    /**
+     * Optimized lookup to find a method name and trailing space in a byte array.
+     *
+     * @param buffer buffer containing ISO-8859-1 characters, it is not modified, which must have at least 5 bytes remaining
+     * @param lookAhead The integer representation of the first 4 bytes of the buffer that has previously been fetched
+     *                  with the equivalent of {@code buffer.getInt(buffer.position())}
+     * @return An HttpMethod if a match or null if no easy match.
+     */
+    static HttpMethod lookAheadGet(ByteBuffer buffer, int lookAhead)
+    {
+        return switch (lookAhead)
+        {
+            case ACL_AS_INT -> ACL;
+            case GET_AS_INT -> GET;
+            case PRI_AS_INT -> PRI;
+            case PUT_AS_INT -> PUT;
+            case POST_AS_INT -> (buffer.get(buffer.position() + 4) == ' ') ? POST : LOOK_AHEAD.getBest(buffer, 0, buffer.remaining());
+            case HEAD_AS_INT -> (buffer.get(buffer.position() + 4) == ' ') ? HEAD : LOOK_AHEAD.getBest(buffer, 0, buffer.remaining());
+            default -> LOOK_AHEAD.getBest(buffer, 0, buffer.remaining());
+        };
     }
 
     /**
