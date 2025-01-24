@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -15,6 +15,10 @@ package org.eclipse.jetty.ee9.security;
 
 import java.util.List;
 
+import org.eclipse.jetty.security.AbstractLoginService;
+import org.eclipse.jetty.security.RolePrincipal;
+import org.eclipse.jetty.security.UserPrincipal;
+import org.eclipse.jetty.security.UserStore;
 import org.eclipse.jetty.util.security.Credential;
 
 /**
@@ -23,7 +27,7 @@ import org.eclipse.jetty.util.security.Credential;
 public class TestLoginService extends AbstractLoginService
 {
 
-    UserStore userStore = new UserStore();
+    org.eclipse.jetty.security.UserStore userStore = new UserStore();
 
     public TestLoginService(String name)
     {

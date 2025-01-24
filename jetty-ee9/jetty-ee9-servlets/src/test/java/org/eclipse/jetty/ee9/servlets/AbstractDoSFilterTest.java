@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -35,7 +35,6 @@ import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.session.DefaultSessionCache;
 import org.eclipse.jetty.session.FileSessionDataStore;
 import org.eclipse.jetty.toolchain.test.FS;
-import org.eclipse.jetty.toolchain.test.jupiter.WorkDir;
 import org.eclipse.jetty.util.IO;
 import org.eclipse.jetty.util.component.LifeCycle;
 import org.hamcrest.Matchers;
@@ -46,9 +45,7 @@ import org.junit.jupiter.api.Test;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.is;
-import static org.hamcrest.Matchers.lessThan;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public abstract class AbstractDoSFilterTest
 {
@@ -56,7 +53,7 @@ public abstract class AbstractDoSFilterTest
     private ServerConnector _connector;
     protected long _requestMaxTime = 200;
 
-    public void startServer(WorkDir workDir, Class<? extends Filter> filter) throws Exception
+    public void startServer(Path workDir, Class<? extends Filter> filter) throws Exception
     {
         _server = new Server();
         _connector = new ServerConnector(_server);
@@ -66,7 +63,7 @@ public abstract class AbstractDoSFilterTest
         DefaultSessionCache sessionCache = new DefaultSessionCache(context.getSessionHandler().getSessionManager());
         FileSessionDataStore fileStore = new FileSessionDataStore();
 
-        Path p = workDir.getPathFile("sessions");
+        Path p = workDir.resolve("sessions");
         FS.ensureEmpty(p);
         fileStore.setStoreDir(p.toFile());
         sessionCache.setSessionDataStore(fileStore);
@@ -247,61 +244,6 @@ public abstract class AbstractDoSFilterTest
         assertEquals(1, count(responses, "DoSFilter: unavailable"));
 
         other.join();
-    }
-
-    @Test
-    public void testSessionTracking() throws Exception
-    {
-        // get a session, first
-        String requestSession = "GET /ctx/dos/test?session=true HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-        String response = doRequests("", 1, 0, 0, requestSession);
-        String sessionId = response.substring(response.indexOf("Set-Cookie: ") + 12, response.indexOf(";"));
-
-        // all other requests use this session
-        String request = "GET /ctx/dos/test HTTP/1.1\r\nHost: localhost\r\nCookie: " + sessionId + "\r\n\r\n";
-        String last = "GET /ctx/dos/test HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nCookie: " + sessionId + "\r\n\r\n";
-        String responses = doRequests(request + request + request + request + request, 2, 1100, 1100, last);
-
-        assertEquals(11, count(responses, "HTTP/1.1 200 OK"));
-        assertEquals(2, count(responses, "DoSFilter: delayed"));
-    }
-
-    @Test
-    @Disabled("this test fails due to: 400 duplicate valid session cookies")
-    public void testMultipleSessionTracking() throws Exception
-    {
-        // get some session ids, first
-        String requestSession = "GET /ctx/dos/test?session=true HTTP/1.1\r\nHost: localhost\r\n\r\n";
-        String closeRequest = "GET /ctx/dos/test?session=true HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-        String response = doRequests(requestSession + requestSession, 1, 0, 0, closeRequest);
-
-        String[] sessions = response.split("\r\n\r\n");
-
-        String sessionId1 = sessions[0].substring(sessions[0].indexOf("Set-Cookie: ") + 12, sessions[0].indexOf(";"));
-        String sessionId2 = sessions[1].substring(sessions[1].indexOf("Set-Cookie: ") + 12, sessions[1].indexOf(";"));
-
-        // alternate between sessions
-        String request1 = "GET /ctx/dos/test HTTP/1.1\r\nHost: localhost\r\nCookie: " + sessionId1 + "\r\n\r\n";
-        String request2 = "GET /ctx/dos/test HTTP/1.1\r\nHost: localhost\r\nCookie: " + sessionId2 + "\r\n\r\n";
-        String last = "GET /ctx/dos/test HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nCookie: " + sessionId2 + "\r\n\r\n";
-
-        // ensure the sessions are new
-        doRequests(request1 + request2, 1, 1100, 1100, last);
-        Thread.sleep(1000);
-
-        String responses = doRequests(request1 + request2 + request1 + request2 + request1, 2, 1100, 1100, last);
-
-        assertEquals(11, count(responses, "HTTP/1.1 200 OK"));
-        // This test is system speed dependent, so allow some (20%-ish) requests to be delayed, but not more.
-        assertThat("delayed count", count(responses, "DoSFilter: delayed"), lessThan(2));
-
-        // alternate between sessions
-        responses = doRequests(request1 + request2 + request1 + request2 + request1, 2, 250, 250, last);
-
-        // System.err.println(responses);
-        assertEquals(11, count(responses, "HTTP/1.1 200 OK"));
-        int delayedRequests = count(responses, "DoSFilter: delayed");
-        assertTrue(delayedRequests >= 2 && delayedRequests <= 5, "delayedRequests: " + delayedRequests + " is not between 2 and 5");
     }
 
     @Test

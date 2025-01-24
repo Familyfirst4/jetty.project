@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -217,6 +217,11 @@ public class ByteArrayEndPoint extends AbstractEndPoint
     public void addInput(String s, Charset charset)
     {
         addInput(BufferUtil.toBuffer(s, charset));
+    }
+
+    public void addInputAndExecute(String s)
+    {
+        addInputAndExecute(BufferUtil.toBuffer(s, StandardCharsets.UTF_8));
     }
 
     public void addInputAndExecute(ByteBuffer in)
@@ -475,6 +480,7 @@ public class ByteArrayEndPoint extends AbstractEndPoint
     }
 
     /**
+     * Set the growOutput to set.
      * @param growOutput the growOutput to set
      */
     public void setGrowOutput(boolean growOutput)
@@ -486,13 +492,14 @@ public class ByteArrayEndPoint extends AbstractEndPoint
     public String toString()
     {
         int q;
-        ByteBuffer b;
+        Object b;
         String o;
-        try (AutoLock lock = _lock.lock())
+        try (AutoLock lock = _lock.tryLock())
         {
-            q = _inQ.size();
-            b = _inQ.peek();
-            o = BufferUtil.toDetailString(_out);
+            boolean held = lock.isHeldByCurrentThread();
+            q = held ? _inQ.size() : -1;
+            b = held ? _inQ.peek() : "?";
+            o = held ? BufferUtil.toDetailString(_out) : "?";
         }
         return String.format("%s[q=%d,q[0]=%s,o=%s]", super.toString(), q, b, o);
     }

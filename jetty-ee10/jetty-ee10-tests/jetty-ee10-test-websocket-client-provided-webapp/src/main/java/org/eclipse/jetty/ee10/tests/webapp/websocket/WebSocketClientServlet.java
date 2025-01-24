@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -25,13 +25,14 @@ import jakarta.servlet.annotation.WebServlet;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import org.eclipse.jetty.ee10.websocket.api.Session;
-import org.eclipse.jetty.ee10.websocket.api.annotations.OnWebSocketClose;
-import org.eclipse.jetty.ee10.websocket.api.annotations.OnWebSocketConnect;
-import org.eclipse.jetty.ee10.websocket.api.annotations.OnWebSocketMessage;
-import org.eclipse.jetty.ee10.websocket.api.annotations.WebSocket;
-import org.eclipse.jetty.ee10.websocket.api.util.WSURI;
-import org.eclipse.jetty.ee10.websocket.client.WebSocketClient;
+import org.eclipse.jetty.websocket.api.Callback;
+import org.eclipse.jetty.websocket.api.Session;
+import org.eclipse.jetty.websocket.api.annotations.OnWebSocketClose;
+import org.eclipse.jetty.websocket.api.annotations.OnWebSocketMessage;
+import org.eclipse.jetty.websocket.api.annotations.OnWebSocketOpen;
+import org.eclipse.jetty.websocket.api.annotations.WebSocket;
+import org.eclipse.jetty.websocket.api.util.WSURI;
+import org.eclipse.jetty.websocket.client.WebSocketClient;
 
 @WebServlet("/")
 public class WebSocketClientServlet extends HttpServlet
@@ -78,7 +79,7 @@ public class WebSocketClientServlet extends HttpServlet
             ClientSocket clientSocket = new ClientSocket();
             URI wsUri = WSURI.toWebsocket(req.getRequestURL()).resolve("echo");
             client.connect(clientSocket, wsUri).get(5, TimeUnit.SECONDS);
-            clientSocket.session.getRemote().sendString("test message");
+            clientSocket.session.sendText("test message", Callback.NOOP);
             String response = clientSocket.textMessages.poll(5, TimeUnit.SECONDS);
             clientSocket.session.close();
             clientSocket.closeLatch.await(5, TimeUnit.SECONDS);
@@ -106,7 +107,7 @@ public class WebSocketClientServlet extends HttpServlet
         public CountDownLatch closeLatch = new CountDownLatch(1);
         public ArrayBlockingQueue<String> textMessages = new ArrayBlockingQueue<>(10);
 
-        @OnWebSocketConnect
+        @OnWebSocketOpen
         public void onOpen(Session session)
         {
             this.session = session;

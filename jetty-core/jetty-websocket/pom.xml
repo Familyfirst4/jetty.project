@@ -1,22 +1,27 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+
+  <modelVersion>4.0.0</modelVersion>
   <parent>
     <groupId>org.eclipse.jetty</groupId>
     <artifactId>jetty-core</artifactId>
-    <version>12.0.0-SNAPSHOT</version>
+    <version>12.0.17-SNAPSHOT</version>
   </parent>
-
-  <modelVersion>4.0.0</modelVersion>
   <groupId>org.eclipse.jetty.websocket</groupId>
-  <artifactId>websocket</artifactId>
+  <artifactId>jetty-websocket</artifactId>
   <packaging>pom</packaging>
-  <name>Jetty Core :: WebSocket</name>
+  <name>Core :: WebSocket</name>
 
   <modules>
-    <module>websocket-core-client</module>
-    <module>websocket-core-common</module>
-    <module>websocket-core-server</module>
-    <module>websocket-core-tests</module>
+    <module>jetty-websocket-core-client</module>
+    <module>jetty-websocket-core-common</module>
+    <module>jetty-websocket-core-server</module>
+    <module>jetty-websocket-core-tests</module>
+    <module>jetty-websocket-jetty-api</module>
+    <module>jetty-websocket-jetty-client</module>
+    <module>jetty-websocket-jetty-common</module>
+    <module>jetty-websocket-jetty-server</module>
+    <module>jetty-websocket-jetty-tests</module>
   </modules>
 
 </project>

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -20,7 +20,7 @@ import org.slf4j.LoggerFactory;
 /**
  * <p>JAAS Configuration</p>
  * <p>This configuration configures the WebAppContext server/system classes to
- * be able to see the org.eclipse.jetty.jaas package.
+ * be able to see the org.eclipse.jetty.security.jaas package.
  * This class is defined in the webapp package, as it implements the {@link Configuration} interface,
  * which is unknown to the jaas package.
  * </p>
@@ -31,9 +31,10 @@ public class JaasConfiguration extends AbstractConfiguration
 
     public JaasConfiguration()
     {
-        addDependencies(WebXmlConfiguration.class, MetaInfConfiguration.class, WebInfConfiguration.class, FragmentConfiguration.class);
-        addDependents(WebAppConfiguration.class);
-        protectAndExpose("org.eclipse.jetty.ee10.jaas.");
+        super(new Builder()
+            .addDependencies(WebXmlConfiguration.class, MetaInfConfiguration.class, WebInfConfiguration.class, FragmentConfiguration.class)
+            .addDependents(WebAppConfiguration.class)
+            .protectAndExpose("org.eclipse.jetty.security.jaas."));            
     }
 
     @Override
@@ -41,7 +42,7 @@ public class JaasConfiguration extends AbstractConfiguration
     {
         try
         {
-            return Loader.loadClass("org.eclipse.jetty.ee10.jaas.JAASLoginService") != null;
+            return Loader.loadClass("org.eclipse.jetty.security.jaas.JAASLoginService") != null;
         }
         catch (Throwable e)
         {

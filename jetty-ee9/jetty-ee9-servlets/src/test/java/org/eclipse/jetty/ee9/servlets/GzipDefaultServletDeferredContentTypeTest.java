@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -33,13 +33,12 @@ import org.eclipse.jetty.server.handler.gzip.GzipHandler;
 import org.eclipse.jetty.toolchain.test.FS;
 import org.eclipse.jetty.toolchain.test.Sha1Sum;
 import org.eclipse.jetty.util.component.LifeCycle;
-import org.eclipse.jetty.util.resource.PathResource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
-import static org.hamcrest.Matchers.emptyOrNullString;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
 
@@ -68,12 +67,12 @@ public class GzipDefaultServletDeferredContentTypeTest extends AbstractGzipTest
         LocalConnector localConnector = new LocalConnector(server);
         server.addConnector(localConnector);
 
-        Path contextDir = workDir.resolve("context");
+        Path contextDir = workDir.getEmptyPathDir().resolve("context");
         FS.ensureDirExists(contextDir);
 
         ServletContextHandler servletContextHandler = new ServletContextHandler();
         servletContextHandler.setContextPath("/context");
-        servletContextHandler.setBaseResource(new PathResource(contextDir));
+        servletContextHandler.setBaseResource(ResourceFactory.of(server).newResource(contextDir));
         ServletHolder holder = new ServletHolder("default", new DefaultServlet()
         {
             @Override
@@ -123,7 +122,7 @@ public class GzipDefaultServletDeferredContentTypeTest extends AbstractGzipTest
         assertThat("Response[Content-Encoding]", response.get("Content-Encoding"), not(containsString("gzip")));
 
         // Response Vary check
-        assertThat("Response[Vary]", response.get("Vary"), is(emptyOrNullString()));
+        assertThat("Response[Vary]", response.get("Vary"), containsString("Accept-Encoding"));
 
         // Response Content checks
         UncompressedMetadata metadata = parseResponseContent(response);

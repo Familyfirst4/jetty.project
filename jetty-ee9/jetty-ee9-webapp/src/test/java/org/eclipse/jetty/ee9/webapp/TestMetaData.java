@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,17 +13,25 @@
 
 package org.eclipse.jetty.ee9.webapp;
 
-import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
 import org.acme.webapp.TestAnnotation;
+import org.eclipse.jetty.toolchain.test.FS;
 import org.eclipse.jetty.toolchain.test.MavenTestingUtils;
-import org.eclipse.jetty.util.resource.EmptyResource;
+import org.eclipse.jetty.toolchain.test.jupiter.WorkDir;
+import org.eclipse.jetty.toolchain.test.jupiter.WorkDirExtension;
+import org.eclipse.jetty.util.IO;
 import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
+import org.eclipse.jetty.util.resource.Resources;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.contains;
@@ -33,12 +41,14 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@ExtendWith(WorkDirExtension.class)
 public class TestMetaData
 {
-    File fragFile;
-    File nonFragFile;
+    Path fragFile;
+    Path nonFragFile;
     Resource fragResource;
     Resource nonFragResource;
+    ResourceFactory.Closeable resourceFactory;
     Resource webfragxml;
     Resource containerDir;
     Resource webInfClassesDir;
@@ -51,19 +61,44 @@ public class TestMetaData
     List<TestAnnotation> applications;
 
     @BeforeEach
-    public void setUp() throws Exception
+    public void setUp(WorkDir workDir) throws Exception
     {
-        File jarDir = new File(MavenTestingUtils.getTargetFile("test-classes"), "fragments");
-        assertTrue(jarDir.exists());
-        fragFile = new File(jarDir, "zeta.jar");
-        assertTrue(fragFile.exists());
-        fragResource = Resource.newResource(fragFile);
-        nonFragFile = new File(jarDir, "sigma.jar");
-        nonFragResource = Resource.newResource(nonFragFile);
-        assertTrue(nonFragFile.exists());
-        webfragxml = Resource.newResource("jar:" + fragFile.toURI().toString() + "!/META-INF/web-fragment.xml");
-        containerDir = Resource.newResource(MavenTestingUtils.getTargetTestingDir("container"));
-        webInfClassesDir = Resource.newResource(MavenTestingUtils.getTargetTestingDir("webinfclasses"));
+        Path testDir = workDir.getEmptyPathDir();
+        resourceFactory = ResourceFactory.closeable();
+
+        Path jarsDir = testDir.resolve("jars");
+        FS.ensureDirExists(jarsDir);
+
+        // Zeta JAR
+        fragFile = jarsDir.resolve("zeta.jar");
+        Files.copy(MavenTestingUtils.getTargetPath().resolve("test-classes/fragments/zeta.jar"), fragFile);
+        assertTrue(Files.exists(fragFile));
+        fragResource = resourceFactory.newResource(fragFile);
+        assertNotNull(fragResource);
+
+        // Sigma JAR
+        nonFragFile = jarsDir.resolve("sigma.jar");
+        Files.copy(MavenTestingUtils.getTargetPath().resolve("test-classes/fragments/sigma.jar"), nonFragFile);
+        assertTrue(Files.exists(nonFragFile));
+        nonFragResource = resourceFactory.newResource(nonFragFile);
+        assertNotNull(nonFragResource);
+
+        // Various Resources
+        Resource fragMount = resourceFactory.newJarFileResource(fragFile.toUri());
+        assertNotNull(fragMount);
+        webfragxml = fragMount.resolve("/META-INF/web-fragment.xml");
+        assertTrue(Resources.isReadableFile(webfragxml));
+
+        Path testContainerDir = testDir.resolve("container");
+        FS.ensureDirExists(testContainerDir);
+        Path testWebInfClassesDir = testDir.resolve("webinfclasses");
+        FS.ensureDirExists(testWebInfClassesDir);
+
+        containerDir = resourceFactory.newResource(testContainerDir);
+        assertTrue(Resources.isReadableDirectory(containerDir));
+        webInfClassesDir = resourceFactory.newResource(testWebInfClassesDir);
+        assertTrue(Resources.isReadableDirectory(webInfClassesDir));
+
         wac = new WebAppContext();
         applications = new ArrayList<>();
         annotationA = new TestAnnotation(wac, "com.acme.A", fragResource, applications);
@@ -71,6 +106,12 @@ public class TestMetaData
         annotationC = new TestAnnotation(wac, "com.acme.C", null, applications);
         annotationD = new TestAnnotation(wac, "com.acme.D", containerDir, applications);
         annotationE = new TestAnnotation(wac, "com.acme.E", webInfClassesDir, applications);
+    }
+
+    @AfterEach
+    public void tearDown()
+    {
+        IO.close(resourceFactory);
     }
 
     @Test
@@ -90,9 +131,7 @@ public class TestMetaData
         wac.getMetaData().addWebInfResource(nonFragResource);
         wac.getMetaData().addFragmentDescriptor(fragResource, new FragmentDescriptor(webfragxml));
         assertThrows(NullPointerException.class, () ->
-        {
-            wac.getMetaData().addFragmentDescriptor(nonFragResource, null);
-        });
+                wac.getMetaData().addFragmentDescriptor(nonFragResource, null));
 
         assertNotNull(wac.getMetaData().getFragmentDescriptorForJar(fragResource));
         assertNull(wac.getMetaData().getFragmentDescriptorForJar(nonFragResource));
@@ -160,7 +199,7 @@ public class TestMetaData
         assertThat(list, hasSize(1));
 
         //test an annotation that didn't have an associated resource
-        list = wac.getMetaData()._annotations.get(EmptyResource.INSTANCE);
+        list = wac.getMetaData()._annotations.get(null);
         assertThat(list, contains(annotationC));
         assertThat(list, hasSize(1));
 

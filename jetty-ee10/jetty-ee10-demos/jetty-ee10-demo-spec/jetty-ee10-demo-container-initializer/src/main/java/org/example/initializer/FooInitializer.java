@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -83,8 +83,8 @@ public class FooInitializer implements ServletContainerInitializer
         if (context.getAttribute("org.example.Foo") != null)
             throw new IllegalStateException("FooInitializer on Startup already called");
 
-        context.setAttribute("org.example.Foo", new ArrayList<Class>(classes));
-        ServletRegistration.Dynamic reg = context.addServlet("AnnotationTest", "org.example.AnnotationTest");
+        context.setAttribute("org.example.Foo", new ArrayList<>(classes));
+        ServletRegistration.Dynamic reg = context.addServlet("AnnotationTest", "org.example.test.AnnotationTest");
         context.setAttribute("org.example.AnnotationTest.complete", (reg == null));
         context.addListener(new FooListener());
 

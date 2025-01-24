@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,19 +14,14 @@
 package org.eclipse.jetty.ee9.plus.webapp;
 
 import java.net.URL;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import javax.naming.Binding;
+import java.util.Set;
 import javax.naming.Context;
 import javax.naming.InitialContext;
 import javax.naming.Name;
 import javax.naming.NameNotFoundException;
 import javax.naming.NamingException;
 
-import org.eclipse.jetty.ee9.plus.jndi.EnvEntry;
-import org.eclipse.jetty.ee9.plus.jndi.NamingDump;
-import org.eclipse.jetty.ee9.plus.jndi.NamingEntryUtil;
+import org.eclipse.jetty.ee9.nested.ContextHandler;
 import org.eclipse.jetty.ee9.webapp.AbstractConfiguration;
 import org.eclipse.jetty.ee9.webapp.FragmentConfiguration;
 import org.eclipse.jetty.ee9.webapp.JettyWebXmlConfiguration;
@@ -35,10 +30,14 @@ import org.eclipse.jetty.ee9.webapp.WebAppClassLoader;
 import org.eclipse.jetty.ee9.webapp.WebAppContext;
 import org.eclipse.jetty.ee9.webapp.WebXmlConfiguration;
 import org.eclipse.jetty.jndi.ContextFactory;
-import org.eclipse.jetty.jndi.NamingContext;
-import org.eclipse.jetty.jndi.NamingUtil;
-import org.eclipse.jetty.jndi.local.localContextRoot;
+import org.eclipse.jetty.plus.jndi.EnvEntry;
+import org.eclipse.jetty.plus.jndi.NamingEntryUtil;
+import org.eclipse.jetty.util.IO;
+import org.eclipse.jetty.util.jndi.NamingDump;
+import org.eclipse.jetty.util.jndi.NamingUtil;
 import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
+import org.eclipse.jetty.util.resource.Resources;
 import org.eclipse.jetty.xml.XmlConfiguration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -51,8 +50,11 @@ public class EnvConfiguration extends AbstractConfiguration
     private static final Logger LOG = LoggerFactory.getLogger(EnvConfiguration.class);
 
     private static final String JETTY_ENV_BINDINGS = "org.eclipse.jetty.jndi.EnvConfiguration";
+    private static final String JETTY_ENV_XML = "jetty-env.xml";
+    private static final String JETTY_EE_ENV_XML = "jetty-ee9-env.xml";
     private Resource jettyEnvXmlResource;
     private NamingDump _dumper;
+    private ResourceFactory.Closeable _resourceFactory;
 
     public EnvConfiguration()
     {
@@ -68,12 +70,13 @@ public class EnvConfiguration extends AbstractConfiguration
 
     public void setJettyEnvXml(URL url)
     {
-        this.jettyEnvXmlResource = Resource.newResource(url);
+        this.jettyEnvXmlResource = _resourceFactory.newResource(url);
     }
 
     @Override
     public void preConfigure(WebAppContext context) throws Exception
     {
+        _resourceFactory = ResourceFactory.closeable();
         //create a java:comp/env
         createEnvContext(context);
     }
@@ -88,56 +91,31 @@ public class EnvConfiguration extends AbstractConfiguration
         //look in WEB-INF/jetty-env.xml
         if (jettyEnvXmlResource == null)
         {
-            //look for a file called WEB-INF/jetty-env.xml
-            //and process it if it exists
-            org.eclipse.jetty.util.resource.Resource webInf = context.getWebInf();
-            if (webInf != null && webInf.isDirectory())
-            {
-                org.eclipse.jetty.util.resource.Resource jettyEnv = webInf.addPath("jetty-env.xml");
-                if (jettyEnv.exists())
-                {
-                    jettyEnvXmlResource = jettyEnv;
-                }
-            }
+            //look for a configuration file
+            jettyEnvXmlResource = resolveJettyEnvXml(context.getWebInf());
         }
 
         if (jettyEnvXmlResource != null)
         {
-            synchronized (localContextRoot.getRoot())
+            //need to parse jetty-env.xml, but we also need to be able to delete
+            //any NamingEntries that it creates when this WebAppContext is destroyed.
+            Set<String> boundNamesBefore = NamingUtil.flattenBindings(new InitialContext(), "").keySet();
+
+            try
             {
-                // create list and listener to remember the bindings we make.
-                final List<Bound> bindings = new ArrayList<Bound>();
-                NamingContext.Listener listener = new NamingContext.Listener()
+                XmlConfiguration configuration = new XmlConfiguration(jettyEnvXmlResource);
+                configuration.setJettyStandardIdsAndProperties(context.getServer(), null);
+                WebAppClassLoader.runWithServerClassAccess(() ->
                 {
-                    @Override
-                    public void unbind(NamingContext ctx, Binding binding)
-                    {
-                    }
-
-                    @Override
-                    public Binding bind(NamingContext ctx, Binding binding)
-                    {
-                        bindings.add(new Bound(ctx, binding.getName()));
-                        return binding;
-                    }
-                };
-
-                try
-                {
-                    localContextRoot.getRoot().addListener(listener);
-                    XmlConfiguration configuration = new XmlConfiguration(jettyEnvXmlResource);
-                    configuration.setJettyStandardIdsAndProperties(context.getServer(), null);
-                    WebAppClassLoader.runWithServerClassAccess(() ->
-                    {
-                        configuration.configure(context);
-                        return null;
-                    });
-                }
-                finally
-                {
-                    localContextRoot.getRoot().removeListener(listener);
-                    context.setAttribute(JETTY_ENV_BINDINGS, bindings);
-                }
+                    configuration.configure(context);
+                    return null;
+                });
+            }
+            finally
+            {
+                Set<String> boundNamesAfter = NamingUtil.flattenBindings(new InitialContext(), "").keySet();
+                boundNamesAfter.removeAll(boundNamesBefore);
+                context.setAttribute(JETTY_ENV_BINDINGS, boundNamesAfter);
             }
         }
 
@@ -171,14 +149,13 @@ public class EnvConfiguration extends AbstractConfiguration
 
             //unbind any NamingEntries that were configured in this webapp's name space
             @SuppressWarnings("unchecked")
-            List<Bound> bindings = (List<Bound>)context.getAttribute(JETTY_ENV_BINDINGS);
+            Set<String> jettyEnvBoundNames = (Set<String>)context.getAttribute(JETTY_ENV_BINDINGS);
             context.setAttribute(JETTY_ENV_BINDINGS, null);
-            if (bindings != null)
+            if (jettyEnvBoundNames != null)
             {
-                Collections.reverse(bindings);
-                for (Bound b : bindings)
+                for (String name : jettyEnvBoundNames)
                 {
-                    b._context.destroySubcontext(b._name);
+                    NamingUtil.unbind(ic, name, true);
                 }
             }
         }
@@ -190,6 +167,8 @@ public class EnvConfiguration extends AbstractConfiguration
         {
             ContextFactory.disassociateClassLoader();
             Thread.currentThread().setContextClassLoader(oldLoader);
+            IO.close(_resourceFactory);
+            _resourceFactory = null;
         }
     }
 
@@ -203,9 +182,8 @@ public class EnvConfiguration extends AbstractConfiguration
     {
         try
         {
-            //unbind any NamingEntries that were configured in this webapp's name space           
-            NamingContext scopeContext = (NamingContext)NamingEntryUtil.getContextForScope(context);
-            scopeContext.getParent().destroySubcontext(scopeContext.getName());
+            //unbind any NamingEntries that were configured in this webapp's name space
+            NamingEntryUtil.destroyContextForScope(context);
         }
         catch (NameNotFoundException e)
         {
@@ -238,6 +216,9 @@ public class EnvConfiguration extends AbstractConfiguration
 
         LOG.debug("Binding env entries from the server scope");
         doBindings(envCtx, context.getServer());
+        
+        LOG.debug("Binding env entries from environment {} scope", ContextHandler.ENVIRONMENT.getName());
+        doBindings(envCtx, ContextHandler.ENVIRONMENT.getName());
 
         LOG.debug("Binding env entries from the context scope");
         doBindings(envCtx, context);
@@ -258,12 +239,23 @@ public class EnvConfiguration extends AbstractConfiguration
     {
         ClassLoader oldLoader = Thread.currentThread().getContextClassLoader();
         Thread.currentThread().setContextClassLoader(wac.getClassLoader());
+        //ensure that we create a unique comp/env context for this webapp based off
+        //its classloader
         ContextFactory.associateClassLoader(wac.getClassLoader());
+
         try
         {
-            Context context = new InitialContext();
-            Context compCtx = (Context)context.lookup("java:comp");
-            compCtx.createSubcontext("env");
+            WebAppClassLoader.runWithServerClassAccess(() ->
+            {
+                Context context = new InitialContext();
+                Context compCtx = (Context)context.lookup("java:comp");
+                compCtx.createSubcontext("env");
+                return null;
+            });
+        }
+        catch (Exception e)
+        {
+            throw new RuntimeException(e);
         }
         finally
         {
@@ -272,15 +264,37 @@ public class EnvConfiguration extends AbstractConfiguration
         }
     }
 
-    private static class Bound
+    /**
+     * Obtain a WEB-INF/jetty-ee9-env.xml, falling back to
+     * looking for WEB-INF/jetty-env.xml.
+     *
+     * @param webInf the WEB-INF of the context to search
+     * @return the file if it exists or null otherwise
+     */
+    private Resource resolveJettyEnvXml(Resource webInf)
     {
-        final NamingContext _context;
-        final String _name;
-
-        Bound(NamingContext context, String name)
+        try
         {
-            _context = context;
-            _name = name;
+            if (webInf == null || !webInf.isDirectory())
+                return null;
+
+            //try to find jetty-ee9-env.xml
+            Resource xmlResource = webInf.resolve(JETTY_EE_ENV_XML);
+            if (!Resources.missing(xmlResource))
+                return xmlResource;
+
+            //failing that, look for jetty-env.xml
+            xmlResource = webInf.resolve(JETTY_ENV_XML);
+            if (!Resources.missing(xmlResource))
+                return xmlResource;
+
+            return null;
+        }
+        catch (Exception e)
+        {
+            if (LOG.isDebugEnabled())
+                LOG.debug("Error resolving", e);
+            return null;
         }
     }
 }

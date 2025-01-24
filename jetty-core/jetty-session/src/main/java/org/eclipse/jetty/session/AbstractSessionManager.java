@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,11 +14,15 @@
 package org.eclipse.jetty.session;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
@@ -26,16 +30,19 @@ import java.util.stream.Collectors;
 
 import org.eclipse.jetty.http.BadMessageException;
 import org.eclipse.jetty.http.HttpCookie;
+import org.eclipse.jetty.http.HttpScheme;
 import org.eclipse.jetty.http.HttpURI;
 import org.eclipse.jetty.http.MetaData;
 import org.eclipse.jetty.http.Syntax;
+import org.eclipse.jetty.server.Context;
 import org.eclipse.jetty.server.HttpStream;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.server.Session;
 import org.eclipse.jetty.server.handler.ContextHandler;
-import org.eclipse.jetty.server.handler.ContextHandler.Context;
 import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.StringUtil;
+import org.eclipse.jetty.util.URIUtil;
 import org.eclipse.jetty.util.annotation.ManagedAttribute;
 import org.eclipse.jetty.util.component.ContainerLifeCycle;
 import org.eclipse.jetty.util.statistic.CounterStatistic;
@@ -61,7 +68,7 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
      * -1 means no timeout
      */
     private int _dftMaxIdleSecs = -1;
-    private boolean _usingURLs;
+    private boolean _usingUriParameters;
     private boolean _usingCookies = true;
     private SessionIdManager _sessionIdManager;
     private ClassLoader _loader;
@@ -70,35 +77,31 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
     private SessionCache _sessionCache;
     private Scheduler _scheduler;
     private boolean _ownScheduler = false;
-    private boolean _httpOnly = false;
-    private String _sessionCookie = __DefaultSessionCookie;
-    private String _sessionIdPathParameterName = __DefaultSessionIdPathParameterName;
-    private String _sessionIdPathParameterNamePrefix = ";" + _sessionIdPathParameterName + "=";
-    private String _sessionDomain;
-    private String _sessionPath;
-    private String _sessionComment;
-    private boolean _secureCookies = false;
+    private String _sessionCookie;
+    private String _sessionIdPathParameterName;
+    private String _sessionIdPathParameterNamePrefix;
+    private final Map<String, String> _sessionCookieAttributes = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+    private Map<String, String> _sessionCookieSecureAttributes;
     private boolean _secureRequestOnly = true;
-    private int _maxCookieAge = -1;
     private int _refreshCookieAge;
     private boolean _checkingRemoteSessionIdEncoding;
-    
+    private List<Session.LifeCycleListener> _sessionLifeCycleListeners = Collections.emptyList();
+
     public AbstractSessionManager()
     {
     }
     
     /**
      * Called when a session is first accessed by request processing.
-     *
      * Updates the last access time for the session and generates a fresh cookie if necessary.
      *
      * @param session the session object
      * @param secure whether the request is secure or not
      * @return the session cookie. If not null, this cookie should be set on the response to either migrate
      * the session or to refresh a session cookie that may expire.
-     * @see #complete(Session)
+     * @see #complete(ManagedSession)
      */
-    public HttpCookie access(Session session, boolean secure)
+    public HttpCookie access(ManagedSession session, boolean secure)
     {
         if (session == null)
             return null;
@@ -113,7 +116,7 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
                     (getMaxCookieAge() > 0 && getRefreshCookieAge() > 0 &&
                         ((now - session.getCookieSetTime()) / 1000 > getRefreshCookieAge()))))
             {
-                return getSessionCookie(session, _context == null ? "/" : (_context.getContextPath()), secure);
+                return getSessionCookie(session, secure);
             }
         }
         return null;
@@ -193,7 +196,7 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
      * will see the modifications.
      */
     @Override
-    public void commit(Session session)
+    public void commit(ManagedSession session)
     {
         if (session == null)
             return;
@@ -214,7 +217,7 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
      * @param session the session object
      */
     @Override
-    public void complete(Session session)
+    public void complete(ManagedSession session)
     {
         if (LOG.isDebugEnabled())
             LOG.debug("Complete called with session {}", session);
@@ -237,8 +240,22 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
         //check if session management is set up, if not set up defaults
         final Server server = getServer();
 
-        _context = ContextHandler.getCurrentContext();
+        _context = ContextHandler.getCurrentContext(server);
         _loader = Thread.currentThread().getContextClassLoader();
+
+        //default the session cookie name
+        if (getSessionCookie() == null)
+            setSessionCookie(__DefaultSessionCookie);
+
+        //default the session id parameter name
+        if (getSessionIdPathParameterName() == null)
+            setSessionIdPathParameterName(__DefaultSessionIdPathParameterName);
+
+
+        // ensure a session path is set
+        String contextPath = _context == null ? "/" : _context.getContextPath();
+        if (getSessionPath() == null)
+            setSessionPath(contextPath);
 
         // Use a coarser lock to serialize concurrent start of many contexts.
         synchronized (server)
@@ -285,7 +302,7 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
                 addBean(_sessionIdManager, false);
             }
 
-            _scheduler = server.getBean(Scheduler.class);
+            _scheduler = server.getScheduler();
             if (_scheduler == null)
             {
                 _scheduler = new ScheduledExecutorScheduler(String.format("Session-Scheduler-%x", hashCode()), false);
@@ -297,7 +314,18 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
         _sessionContext = new SessionContext(this);
         _sessionCache.initialize(_sessionContext);
 
+        secureRequestOnlyAttributes();
         super.doStart();
+
+        if (_context != null)
+        {
+            _sessionLifeCycleListeners = _context.getAttributeNameSet().stream()
+                .map(_context::getAttribute)
+                .filter(Session.LifeCycleListener.class::isInstance)
+                .map(Session.LifeCycleListener.class::cast)
+                .toList();
+            addBean(_sessionLifeCycleListeners);
+        }
     }
     
     public org.eclipse.jetty.server.Context getContext()
@@ -308,17 +336,20 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
     @Override
     public int getMaxCookieAge()
     {
-        return _maxCookieAge;
+        String mca = _sessionCookieAttributes.get(HttpCookie.MAX_AGE_ATTRIBUTE);
+        return mca == null ? -1 : Integer.parseInt(mca);
     }
 
     @Override
     public void setMaxCookieAge(int maxCookieAge)
     {
-        _maxCookieAge = maxCookieAge;
+        _sessionCookieAttributes.put(HttpCookie.MAX_AGE_ATTRIBUTE, Integer.toString(maxCookieAge));
+        secureRequestOnlyAttributes();
     }
 
     /**
      * @return the max period of inactivity, after which the session is invalidated, in seconds.
+     *         If less than or equal to zero, then the session is immortal
      * @see #setMaxInactiveInterval(int)
      */
     @Override
@@ -330,7 +361,7 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
     /**
      * Sets the max period of inactivity, after which the session is invalidated, in seconds.
      *
-     * @param seconds the max inactivity period, in seconds.
+     * @param seconds the max inactivity period, in seconds. If less than or equal to zero, then the session is immortal
      * @see #getMaxInactiveInterval()
      */
     public void setMaxInactiveInterval(int seconds)
@@ -356,44 +387,22 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
     {
         _refreshCookieAge = ageInSeconds;
     }
-
-    @Override
-    public HttpCookie.SameSite getSameSite()
-    {
-        // TODO do this properly
-        return HttpCookie.getSameSiteFromComment(_sessionComment);
-    }
-    
-    /**
-     * Set Session cookie sameSite mode.
-     *
-     * @param sameSite The sameSite setting for Session cookies (or null for no sameSite setting)
-     */
-    @Override
-    public void setSameSite(HttpCookie.SameSite sameSite)
-    {
-        // TODO this can be done properly now?
-        // Encode in comment whilst not supported by SessionConfig, so that it can be set/saved in
-        // web.xml and quickstart.
-        // Always pass false for httpOnly as it has it's own setter.
-        _sessionComment = HttpCookie.getCommentWithAttributes(_sessionComment, false, sameSite);
-    }
     
     public abstract Server getServer();
 
     /**
      * Get a known existing session
      *
-     * @param extendedId The session id, possibly imcluding worker name suffix.
+     * @param extendedId The session id, possibly including worker name suffix.
      * @return the Session matching the id or null if none exists
      */
     @Override
-    public Session getSession(String extendedId)
+    public ManagedSession getManagedSession(String extendedId)
     {
         String id = getSessionIdManager().getId(extendedId);
         try
         {
-            Session session = _sessionCache.get(id);
+            ManagedSession session = _sessionCache.get(id);
             if (session != null)
             {
                 //If the session we got back has expired
@@ -406,7 +415,8 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
                     }
                     catch (Exception e)
                     {
-                        LOG.warn("Invalidating session {} found to be expired when requested", id, e);
+                        if (LOG.isDebugEnabled())
+                            LOG.warn("Invalidating session {} found to be expired when requested", id, e);
                     }
 
                     return null;
@@ -425,7 +435,7 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
             LOG.warn("Error loading session {}", id, e);
             try
             {
-                //tell id mgr to remove session from all other contexts
+                //tell id mgr to remove session from all contexts
                 getSessionIdManager().invalidateAll(id);
             }
             catch (Exception x)
@@ -465,77 +475,32 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
     @Override
     public String getSessionComment()
     {
-        return _sessionComment;
+        return _sessionCookieAttributes.get(HttpCookie.COMMENT_ATTRIBUTE);
     }
 
     @Override
     public void setSessionComment(String sessionComment)
     {
-        _sessionComment = sessionComment;
+        _sessionCookieAttributes.put(HttpCookie.COMMENT_ATTRIBUTE, sessionComment);
+        secureRequestOnlyAttributes();
+    }
+
+    @Override
+    public HttpCookie.SameSite getSameSite()
+    {
+        return HttpCookie.SameSite.from(_sessionCookieAttributes.get(HttpCookie.SAME_SITE_ATTRIBUTE));
+    }
+
+    @Override
+    public void setSameSite(HttpCookie.SameSite sessionSameSite)
+    {
+        _sessionCookieAttributes.put(HttpCookie.SAME_SITE_ATTRIBUTE, sessionSameSite.getAttributeValue());
+        secureRequestOnlyAttributes();
     }
 
     public SessionContext getSessionContext()
     {
         return _sessionContext;
-    }
-
-    /**
-     * A session cookie is marked as secure IFF any of the following conditions are true:
-     * <ol>
-     * <li>SessionCookieConfig.setSecure == true</li>
-     * <li>SessionCookieConfig.setSecure == false &amp;&amp; _secureRequestOnly==true &amp;&amp; request is HTTPS</li>
-     * </ol>
-     * According to SessionCookieConfig javadoc, case 1 can be used when:
-     * "... even though the request that initiated the session came over HTTP,
-     * is to support a topology where the web container is front-ended by an
-     * SSL offloading load balancer. In this case, the traffic between the client
-     * and the load balancer will be over HTTPS, whereas the traffic between the
-     * load balancer and the web container will be over HTTP."
-     * <p>
-     * For case 2, you can use _secureRequestOnly to determine if you want the
-     * Servlet Spec 3.0  default behavior when SessionCookieConfig.setSecure==false,
-     * which is:
-     * <cite>
-     * "they shall be marked as secure only if the request that initiated the
-     * corresponding session was also secure"
-     * </cite>
-     * <p>
-     * The default for _secureRequestOnly is true, which gives the above behavior. If
-     * you set it to false, then a session cookie is NEVER marked as secure, even if
-     * the initiating request was secure.
-     *
-     * @param session the session to which the cookie should refer.
-     * @param contextPath the context to which the cookie should be linked.
-     * The client will only send the cookie value when requesting resources under this path.
-     * @param requestIsSecure whether the client is accessing the server over a secure protocol (i.e. HTTPS).
-     * @return if this <code>SessionManager</code> uses cookies, then this method will return a new
-     * {@link HttpCookie cookie object} that should be set on the client in order to link future HTTP requests
-     * with the <code>session</code>. If cookies are not in use, this method returns <code>null</code>.
-     */
-    @Override
-    public HttpCookie getSessionCookie(Session session, String contextPath, boolean requestIsSecure)
-    {
-        if (isUsingCookies())
-        {
-            String sessionPath = (_sessionPath == null) ? contextPath : _sessionPath;
-            sessionPath = (StringUtil.isEmpty(sessionPath)) ? "/" : sessionPath;
-            String id = session.getExtendedId();
-            HttpCookie cookie = new HttpCookie(
-                (_sessionCookie == null ? __DefaultSessionCookie : _sessionCookie),
-                id,
-                _sessionDomain,
-                sessionPath,
-                _maxCookieAge,
-                _httpOnly,
-                _secureCookies || (isSecureRequestOnly() && requestIsSecure),
-                HttpCookie.getCommentWithoutAttributes(_sessionComment),
-                0,
-                HttpCookie.getSameSiteFromComment(_sessionComment));
-
-            session.onSetCookieGenerated();
-            return cookie;
-        }
-        return null;
     }
 
     @Override
@@ -556,13 +521,34 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
     @Override
     public String getSessionDomain()
     {
-        return _sessionDomain;
+        return _sessionCookieAttributes.get(HttpCookie.DOMAIN_ATTRIBUTE);
     }
     
     @Override
     public void setSessionDomain(String domain)
     {
-        _sessionDomain = domain;
+        _sessionCookieAttributes.put(HttpCookie.DOMAIN_ATTRIBUTE, domain);
+        secureRequestOnlyAttributes();
+    }
+    
+    public void setSessionCookieAttribute(String name, String value)
+    {
+        _sessionCookieAttributes.put(name, value);
+        secureRequestOnlyAttributes();
+    }
+    
+    public String getSessionCookieAttribute(String name)
+    {
+        return _sessionCookieAttributes.get(name);
+    }
+    
+    /**
+     * @return all of the cookie config attributes EXCEPT for
+     * those that have explicit setter/getters
+     */
+    public Map<String, String> getSessionCookieAttributes()
+    {
+        return Collections.unmodifiableMap(_sessionCookieAttributes);
     }
     
     @Override
@@ -622,13 +608,14 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
     @Override
     public String getSessionPath()
     {
-        return _sessionPath;
+        return _sessionCookieAttributes.get(HttpCookie.PATH_ATTRIBUTE);
     }
 
     @Override
     public void setSessionPath(String sessionPath)
     {
-        _sessionPath = sessionPath;
+        _sessionCookieAttributes.put(HttpCookie.PATH_ATTRIBUTE, sessionPath);
+        secureRequestOnlyAttributes();
     }
     
     /**
@@ -667,7 +654,120 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
     {
         return (int)_sessionsCreatedStats.getCurrent();
     }
-    
+
+    @Override
+    public String encodeURI(Request request, String uri, boolean cookiesInUse)
+    {
+        HttpURI httpURI = null;
+        if (isCheckingRemoteSessionIdEncoding() && URIUtil.hasScheme(uri))
+        {
+            httpURI = HttpURI.from(uri);
+            String path = httpURI.getPath();
+            path = (path == null ? "" : path);
+            int port = httpURI.getPort();
+            if (port < 0)
+            {
+                String scheme = httpURI.getScheme();
+                port = URIUtil.getDefaultPortForScheme(scheme);
+            }
+
+            // Is it the same server?
+            if (!Request.getServerName(request).equalsIgnoreCase(httpURI.getHost()))
+                return uri;
+            if (Request.getServerPort(request) != port)
+                return uri;
+            if (request.getContext() != null && !path.startsWith(request.getContext().getContextPath()))
+                return uri;
+        }
+
+        String sessionURLPrefix = getSessionIdPathParameterNamePrefix();
+        if (sessionURLPrefix == null)
+            return uri;
+
+        if (uri == null)
+            return null;
+
+        // should not encode if cookies in evidence
+        if ((isUsingCookies() && cookiesInUse) || !isUsingUriParameters())
+        {
+            // strip session param from URI
+            int prefix = uri.indexOf(sessionURLPrefix);
+            if (prefix != -1)
+            {
+                int suffix = uri.indexOf("?", prefix);
+                if (suffix < 0)
+                    suffix = uri.indexOf("#", prefix);
+
+                if (suffix <= prefix)
+                    return uri.substring(0, prefix);
+                return uri.substring(0, prefix) + uri.substring(suffix);
+            }
+            return uri;
+        }
+
+        // get session;
+        Session session = request.getSession(false);
+
+        // no session
+        if (session == null || !session.isValid())
+            return uri;
+
+        String id = session.getExtendedId();
+
+        if (httpURI == null)
+            httpURI = HttpURI.from(uri);
+
+        // Already encoded
+        int prefix = uri.indexOf(sessionURLPrefix);
+        if (prefix != -1)
+        {
+            int suffix = uri.indexOf("?", prefix);
+            if (suffix < 0)
+                suffix = uri.indexOf("#", prefix);
+
+            if (suffix <= prefix)
+                return uri.substring(0, prefix + sessionURLPrefix.length()) + id;
+            return uri.substring(0, prefix + sessionURLPrefix.length()) + id +
+                uri.substring(suffix);
+        }
+
+        // edit the session
+        int suffix = uri.indexOf('?');
+        if (suffix < 0)
+            suffix = uri.indexOf('#');
+        if (suffix < 0)
+        {
+            return uri +
+                ((HttpScheme.HTTPS.is(httpURI.getScheme()) || HttpScheme.HTTP.is(httpURI.getScheme())) && httpURI.getPath() == null ? "/" : "") + //if no path, insert the root path
+                sessionURLPrefix + id;
+        }
+
+        return uri.substring(0, suffix) +
+            ((HttpScheme.HTTPS.is(httpURI.getScheme()) || HttpScheme.HTTP.is(httpURI.getScheme())) && httpURI.getPath() == null ? "/" : "") + //if no path so insert the root path
+            sessionURLPrefix + id + uri.substring(suffix);
+    }
+
+    @Override
+    public void onSessionIdChanged(Session session, String oldId)
+    {
+        for (Session.LifeCycleListener listener : _sessionLifeCycleListeners)
+            listener.onSessionIdChanged(session, oldId);
+    }
+
+    @Override
+    public void onSessionCreated(Session session)
+    {
+        for (Session.LifeCycleListener listener : _sessionLifeCycleListeners)
+            listener.onSessionCreated(session);
+    }
+
+    @Override
+    public void onSessionDestroyed(Session session)
+    {
+        for (Session.LifeCycleListener listener : _sessionLifeCycleListeners)
+            listener.onSessionDestroyed(session);
+    }
+
     /**
      * Called by SessionIdManager to remove a session that has been invalidated,
      * either by this context or another context. Also called by
@@ -679,15 +779,13 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
     @Override
     public void invalidate(String id) throws Exception
     {
-
         if (StringUtil.isBlank(id))
             return;
-
         try
         {
             // Remove the Session object from the session cache and any backing
             // data store
-            Session session = _sessionCache.delete(id);
+            ManagedSession session = _sessionCache.delete(id);
             if (session != null)
             {
                 //start invalidating if it is not already begun, and call the listeners
@@ -697,7 +795,7 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
                     {
                         try
                         {
-                            callSessionDestroyedListeners(session);
+                            onSessionDestroyed(session);
                         }
                         catch (Exception e)
                         {
@@ -739,13 +837,13 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
     }
 
     /**
-     * @return true if session cookies should be HTTP-only (Microsoft extension)
-     * @see org.eclipse.jetty.http.HttpCookie#isHttpOnly()
+     * @return true if session cookies should be HTTP only
+     * @see HttpCookie#isHttpOnly()
      */
     @Override
     public boolean isHttpOnly()
     {
-        return _httpOnly;
+        return Boolean.parseBoolean(_sessionCookieAttributes.get(HttpCookie.HTTP_ONLY_ATTRIBUTE));
     }
 
     /**
@@ -757,9 +855,31 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
     @Override
     public void setHttpOnly(boolean httpOnly)
     {
-        _httpOnly = httpOnly;
+        _sessionCookieAttributes.put(HttpCookie.HTTP_ONLY_ATTRIBUTE, Boolean.toString(httpOnly));
     }
     
+    /**
+     * @return true if session cookies should have the {@code Partitioned} attribute
+     * @see HttpCookie#isPartitioned()
+     */
+    @Override
+    public boolean isPartitioned()
+    {
+        return Boolean.parseBoolean(_sessionCookieAttributes.get(HttpCookie.PARTITIONED_ATTRIBUTE));
+    }
+
+    /**
+     * Sets whether session cookies should have the {@code Partitioned} attribute
+     *
+     * @param partitioned whether session cookies should have the {@code Partitioned} attribute
+     * @see HttpCookie
+     */
+    @Override
+    public void setPartitioned(boolean partitioned)
+    {
+        _sessionCookieAttributes.put(HttpCookie.PARTITIONED_ATTRIBUTE, Boolean.toString(partitioned));
+    }
+
     /**
      * Check if id is in use by this context
      *
@@ -782,13 +902,14 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
     @Override
     public boolean isSecureCookies()
     {
-        return _secureCookies;
+        return Boolean.parseBoolean(_sessionCookieAttributes.get(HttpCookie.SECURE_ATTRIBUTE));
     }
     
     @Override
     public void setSecureCookies(boolean secure)
     {
-        _secureCookies = secure;
+        _sessionCookieAttributes.put(HttpCookie.SECURE_ATTRIBUTE, Boolean.toString(secure));
+        secureRequestOnlyAttributes();
     }
 
     /**
@@ -810,6 +931,22 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
     public void setSecureRequestOnly(boolean secureRequestOnly)
     {
         _secureRequestOnly = secureRequestOnly;
+        secureRequestOnlyAttributes();
+    }
+
+    private void secureRequestOnlyAttributes()
+    {
+        if (isSecureRequestOnly() && !Boolean.parseBoolean(_sessionCookieAttributes.get(HttpCookie.SECURE_ATTRIBUTE)))
+        {
+            Map<String, String> attributes = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+            attributes.putAll(_sessionCookieAttributes);
+            attributes.put(HttpCookie.SECURE_ATTRIBUTE, Boolean.TRUE.toString());
+            _sessionCookieSecureAttributes = attributes;
+        }
+        else
+        {
+            _sessionCookieSecureAttributes = _sessionCookieAttributes;
+        }
     }
     
     /**
@@ -834,27 +971,45 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
      * @return whether the session management is handled via URLs.
      */
     @Override
-    public boolean isUsingURLs()
+    public boolean isUsingUriParameters()
     {
-        return _usingURLs;
+        return _usingUriParameters;
     }
 
+    public void setUsingUriParameters(boolean usingUriParameters)
+    {
+        _usingUriParameters = usingUriParameters;
+    }
+
+    /**
+     * @deprecated use {@link #isUsingUriParameters()} instead, will be removed in Jetty 12.1.0
+     */
+    @Deprecated(since = "12.0.1", forRemoval = true)
+    public boolean isUsingURLs()
+    {
+        return isUsingUriParameters();
+    }
+
+    /**
+     * @deprecated use {@link #setUsingUriParameters(boolean)} instead, will be removed in Jetty 12.1.0
+     */
+    @Deprecated(since = "12.0.1", forRemoval = true)
     public void setUsingURLs(boolean usingURLs)
     {
-        _usingURLs = usingURLs;
+        setUsingUriParameters(usingURLs);
     }
-    
+
     /**
      * Create a new Session, using the requested session id if possible.
      * @param request the inbound request
      * @param requestedSessionId the session id used by the request
      */
     @Override
-    public void newSession(Request request, String requestedSessionId, Consumer<Session> consumer)
+    public void newSession(Request request, String requestedSessionId, Consumer<ManagedSession> consumer)
     {
         long created = System.currentTimeMillis();
         String id = _sessionIdManager.newSessionId(request, requestedSessionId, created);
-        Session session = _sessionCache.newSession(id, created, (_dftMaxIdleSecs > 0 ? _dftMaxIdleSecs * 1000L : -1));
+        ManagedSession session = _sessionCache.newSession(id, created, (_dftMaxIdleSecs > 0 ? _dftMaxIdleSecs * 1000L : -1));
         session.setExtendedId(_sessionIdManager.getExtendedId(id, request));
         session.getSessionData().setLastNode(_sessionIdManager.getWorkerName());
         try
@@ -864,10 +1019,10 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
             _sessionsCreatedStats.increment();
 
             if (request != null && request.getConnectionMetaData().isSecure())
-                session.setAttribute(Session.SESSION_CREATED_SECURE, Boolean.TRUE);
+                session.setAttribute(ManagedSession.SESSION_CREATED_SECURE, Boolean.TRUE);
 
             consumer.accept(session);
-            callSessionCreatedListeners(session);
+            onSessionCreated(session);
         }
         catch (Exception e)
         {
@@ -880,7 +1035,7 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
      * @param session the session to time
      */
     @Override
-    public SessionInactivityTimer newSessionInactivityTimer(Session session)
+    public SessionInactivityTimer newSessionInactivityTimer(ManagedSession session)
     {
         return new SessionInactivityTimer(this, session, _scheduler);
     }
@@ -892,7 +1047,7 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
      * @param session the session whose time to record
      */
     @Override
-    public void recordSessionTime(Session session)
+    public void recordSessionTime(ManagedSession session)
     {
         _sessionTimeStats.record(Math.round((System.currentTimeMillis() - session.getSessionData().getCreated()) / 1000.0));
     }
@@ -908,7 +1063,7 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
     @Override
     public void renewSessionId(String oldId, String oldExtendedId, String newId, String newExtendedId)
     {
-        Session session = null;
+        ManagedSession session = null;
         try
         {
             //the use count for the session will be incremented in renewSessionId
@@ -920,7 +1075,7 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
             }
 
             //inform the listeners
-            callSessionIdListeners(session, oldId);
+            onSessionIdChanged(session, oldId);
         }
         catch (Exception e)
         {
@@ -991,12 +1146,12 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
      * when either the session has not been accessed for a
      * configurable amount of time, or the session itself
      * has passed its expiry.
-     *
+     * <p>
      * If it has passed its expiry, then we will mark it for
      * scavenging by next run of the HouseKeeper; if it has
      * been idle longer than the configured eviction period,
      * we evict from the cache.
-     *
+     * <p>
      * If none of the above are true, then the System timer
      * is inconsistent and the caller of this method will
      * need to reset the timer.
@@ -1005,12 +1160,12 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
      * @param now the time at which to check for expiry
      */
     @Override
-    public void sessionTimerExpired(Session session, long now)
+    public void sessionTimerExpired(ManagedSession session, long now)
     {
         if (session == null)
             return;
 
-        try (AutoLock lock = session.lock())
+        try (AutoLock ignored = session.lock())
         {
             if (session.isExpiredAt(now))
             {
@@ -1052,6 +1207,8 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
         _scheduler = null;
         super.doStop();
         _loader = null;
+        removeBean(_sessionLifeCycleListeners);
+        _sessionLifeCycleListeners = Collections.emptyList();
     }
 
     /**
@@ -1063,9 +1220,11 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
     {
         String requestedSessionId = null;
         boolean requestedSessionIdFromCookie = false;
-        Session session = null;
+        ManagedSession session = null;
 
-        //first try getting id from a cookie
+        List<String> ids = null;
+
+        //first try getting list of id from cookies
         if (isUsingCookies())
         {
             //Cookie[] cookies = request.getCookies();
@@ -1077,126 +1236,209 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
                 {
                     if (sessionCookie.equalsIgnoreCase(cookie.getName()))
                     {
-                        String id = cookie.getValue();
-                        requestedSessionIdFromCookie = true;
-                        if (LOG.isDebugEnabled())
-                            LOG.debug("Got Session ID {} from cookie {}", id, sessionCookie);
-
-                        if (session == null)
-                        {
-                            //we currently do not have a session selected, use this one if it is valid
-                            Session s = getSession(id);
-                            if (s != null && s.isValid())
-                            {
-                                //associate it with the request so its reference count is decremented as the
-                                //request exits
-                                requestedSessionId = id;
-                                session = s;
-
-                                if (LOG.isDebugEnabled())
-                                    LOG.debug("Selected session {}", session);
-                            }
-                            else
-                            {
-                                if (LOG.isDebugEnabled())
-                                    LOG.debug("No session found for session cookie id {}", id);
-
-                                //if we don't have a valid session id yet, just choose the current id
-                                if (requestedSessionId == null)
-                                    requestedSessionId = id;
-                            }
-                        }
-                        else
-                        {
-                            //we currently have a valid session selected. We will throw an error
-                            //if there is a _different_ valid session id cookie. Duplicate ids, or
-                            //invalid session ids are ignored
-                            if (!session.getId().equals(getSessionIdManager().getId(id)))
-                            {
-                                if (LOG.isDebugEnabled())
-                                    LOG.debug("Multiple different valid session ids: {}, {}", requestedSessionId, id);
-
-                                //load the session to see if it is valid or not
-                                Session s = getSession(id);
-                                if (s != null && s.isValid())
-                                {
-                                    //release both sessions straight away??
-                                    try
-                                    {
-                                        _sessionCache.release(session);
-                                        _sessionCache.release(s);
-                                    }
-                                    catch (Exception x)
-                                    {
-                                        if (LOG.isDebugEnabled())
-                                            LOG.debug("Error releasing duplicate valid session: {}", id);
-                                    }
-
-                                    throw new BadMessageException("Duplicate valid session cookies: " + requestedSessionId + " ," + id);
-                                }
-                            }
-                            else
-                            {
-                                if (LOG.isDebugEnabled())
-                                    LOG.debug("Duplicate valid session cookie id: {}", id);
-                            }
-                        }
+                        if (ids == null)
+                            ids = new ArrayList<>();
+                        ids.add(cookie.getValue());
                     }
                 }
             }
         }
+        int cookieIds = ids == null ? 0 : ids.size();
 
         //try getting id from a url
-        if (isUsingURLs() && (requestedSessionId == null))
+        if (isUsingUriParameters())
         {
             HttpURI uri = request.getHttpURI();
             String param = uri.getParam();
-            param = (param == null ? "" : param.trim());
-            int start = param.indexOf(getSessionIdPathParameterName());
-            if (start >= 0)
+            if (StringUtil.isNotBlank(param))
             {
-                int s = start;
-                s += getSessionIdPathParameterName().length();
-                if (param.charAt(s) == '=')
-                    s++;
-                int i = s;
-                while (i < param.length())
+                String name = getSessionIdPathParameterName();
+                String[] params = param.split(";");
+                for (String p : params)
                 {
-                    char c = param.charAt(i);
-                    if (c == ';' || c == '#' || c == '?' || c == '/')
-                        break;
-                    i++;
+                    if (!p.startsWith(name) || p.length() <= name.length() || p.charAt(name.length()) != '=')
+                        continue;
+
+                    if (ids == null)
+                        ids = new ArrayList<>();
+                    ids.add(p.substring(name.length() + 1).trim());
                 }
-                requestedSessionId = param.substring(s, i);
-                requestedSessionIdFromCookie = false;
+            }
+        }
 
+        //try getting a session id for our context that has been newly created by another context
+        if (request.getContext().isCrossContextDispatch(request))
+        {
+            String tmp = (String)request.getAttribute(DefaultSessionIdManager.__NEW_SESSION_ID);
+            if (!StringUtil.isEmpty(tmp))
+            {
+                if (ids == null)
+                    ids = new ArrayList<>();
+                ids.add(tmp);
+            }
+        }
+
+        if (ids == null)
+            return NO_REQUESTED_SESSION;
+
+        if (LOG.isDebugEnabled())
+            LOG.debug("Got Session IDs {} from cookies {}", ids, cookieIds);
+
+        for (int i = 0; i < ids.size(); i++)
+        {
+            String id = ids.get(i);
+            if (session == null)
+            {
+                //we currently do not have a session selected, use this one if it is valid
+                ManagedSession s = getManagedSession(id);
+                if (s != null && s.isValid())
+                {
+                    //associate it with the request so its reference count is decremented as the
+                    //request exits
+                    requestedSessionId = id;
+                    requestedSessionIdFromCookie = i < cookieIds;
+                    session = s;
+
+                    if (LOG.isDebugEnabled())
+                        LOG.debug("Selected session {}", session);
+                }
+                else
+                {
+                    if (LOG.isDebugEnabled())
+                        LOG.debug("No session found for session id {}", id);
+
+                    //if we don't have a valid session id yet, just choose the first one
+                    if (requestedSessionId == null)
+                    {
+                        requestedSessionId = id;
+                        requestedSessionIdFromCookie = i < cookieIds;
+                    }
+                }
+            }
+            else if (session.getId().equals(getSessionIdManager().getId(id)))
+            {
+                //we already have a valid session and now have a duplicate ID for it
                 if (LOG.isDebugEnabled())
-                    LOG.debug("Got Session ID {} from URL", requestedSessionId);
+                    LOG.debug(duplicateSession(
+                        requestedSessionId, true, requestedSessionIdFromCookie,
+                        id, false, i < cookieIds));
+            }
+            else
+            {
+                //we already have a valid session and now have an ID for a different session
+                //load the session to see if it is valid or not
+                ManagedSession s = getManagedSession(id);
+                if (s != null && s.isValid())
+                {
+                    try
+                    {
+                        _sessionCache.release(session);
+                    }
+                    catch (Exception x)
+                    {
+                        if (LOG.isDebugEnabled())
+                            LOG.debug("Error releasing duplicate valid session: {}", requestedSessionId);
+                    }
+                    try
+                    {
+                        _sessionCache.release(s);
+                    }
+                    catch (Exception x)
+                    {
+                        if (LOG.isDebugEnabled())
+                            LOG.debug("Error releasing duplicate valid session: {}", id);
+                    }
 
-                session = getSession(requestedSessionId);
+                    throw new BadMessageException(duplicateSession(
+                        requestedSessionId, true, requestedSessionIdFromCookie,
+                        id, true, i < cookieIds));
+                }
+                else if (LOG.isDebugEnabled())
+                {
+                    LOG.debug(duplicateSession(
+                        requestedSessionId, true, requestedSessionIdFromCookie,
+                        id, false, i < cookieIds));
+                }
             }
         }
 
         return new RequestedSession((session != null && session.isValid()) ? session : null, requestedSessionId, requestedSessionIdFromCookie);
     }
-    
+
+    private static String duplicateSession(String id0, boolean valid0, boolean cookie0, String id1, boolean valid1, boolean cookie1)
+    {
+        return "Duplicate sessions: %s[%s,%s] & %s[%s,%s]".formatted(
+            id0, valid0 ? "valid" : "unknown", cookie0 ? "cookie" : "param",
+            id1, valid1 ? "valid" : "unknown", cookie1 ? "cookie" : "param");
+    }
+
     /**
      * Prepare sessions for session manager shutdown
-     *
-     * @throws Exception if unable to shutdown sesssions
      */
-    private void shutdownSessions() throws Exception
+    private void shutdownSessions()
     {
         _sessionCache.shutdown();
     }
     
-    public record RequestedSession(Session session, String sessionId, boolean sessionIdFromCookie)
+    public record RequestedSession(ManagedSession session, String sessionId, boolean sessionIdFromCookie)
     {
+    }
+
+    private static final  RequestedSession NO_REQUESTED_SESSION = new RequestedSession(null, null, false);
+
+    /**
+     * A session cookie is marked as secure IFF any of the following conditions are true:
+     * <ol>
+     * <li>SessionCookieConfig.setSecure == true</li>
+     * <li>SessionCookieConfig.setSecure == false &amp;&amp; _secureRequestOnly==true &amp;&amp; request is HTTPS</li>
+     * </ol>
+     * According to SessionCookieConfig javadoc, case 1 can be used when:
+     * "... even though the request that initiated the session came over HTTP,
+     * is to support a topology where the web container is front-ended by an
+     * SSL offloading load balancer. In this case, the traffic between the client
+     * and the load balancer will be over HTTPS, whereas the traffic between the
+     * load balancer and the web container will be over HTTP."
+     * <p>
+     * For case 2, you can use _secureRequestOnly to determine if you want the
+     * Servlet Spec 3.0  default behavior when SessionCookieConfig.setSecure==false,
+     * which is:
+     * <cite>
+     * "they shall be marked as secure only if the request that initiated the
+     * corresponding session was also secure"
+     * </cite>
+     * <p>
+     * The default for _secureRequestOnly is true, which gives the above behavior. If
+     * you set it to false, then a session cookie is NEVER marked as secure, even if
+     * the initiating request was secure.
+     *
+     * @param session the session to which the cookie should refer.
+     * @param requestIsSecure whether the client is accessing the server over a secure protocol (i.e. HTTPS).
+     * @return if this <code>SessionManager</code> uses cookies, then this method will return a new
+     * {@link HttpCookie cookie object} that should be set on the client in order to link future HTTP requests
+     * with the <code>session</code>. If cookies are not in use, this method returns <code>null</code>.
+     */
+    @Override
+    public HttpCookie getSessionCookie(ManagedSession session, boolean requestIsSecure)
+    {
+        if (isUsingCookies())
+        {
+            String name = getSessionCookie();
+            if (name == null)
+                name = _sessionCookieAttributes.get("name");
+            if (name == null)
+                name =  __DefaultSessionCookie;
+            if (isSecureRequestOnly() && requestIsSecure && _sessionCookieSecureAttributes != null && _sessionCookieAttributes != _sessionCookieSecureAttributes)
+                return session.generateSetCookie(name, _sessionCookieSecureAttributes);
+            return session.generateSetCookie(name, _sessionCookieAttributes);
+        }
+
+        return null;
     }
 
     /**
      * StreamWrapper to intercept commit and complete events to ensure
-     * session handling happens in context, with request available.
+     * session handling happens in context, with the request available.
+     * This implementation assumes that a request only has a single session.
      */
     private class SessionStreamWrapper extends HttpStream.Wrapper
     {
@@ -1241,12 +1483,12 @@ public abstract class AbstractSessionManager extends ContainerLifeCycle implemen
 
         private void doCommit()
         {
-            commit(_sessionManager.getSession(_request));
+            commit(_sessionManager.getManagedSession(_request));
         }
 
         private void doComplete()
         {
-            complete(_sessionManager.getSession(_request));
+            complete(_sessionManager.getManagedSession(_request));
         }
     }
 }

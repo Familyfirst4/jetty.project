@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<!DOCTYPE Configure PUBLIC "-//Jetty//Configure//EN" "https://www.eclipse.org/jetty/configure_9_3.dtd">
+<!DOCTYPE Configure PUBLIC "-//Jetty//Configure//EN" "https://jetty.org/configure_9_3.dtd">
 
 <Configure id="Server" class="org.eclipse.jetty.server.Server">
   <New id="httpConfig" class="org.eclipse.jetty.server.HttpConfiguration">
@@ -19,18 +19,7 @@
   <!-- Set handler Collection Structure                            -->
   <!-- =========================================================== -->
   <Set name="handler">
-    <New id="Handlers" class="org.eclipse.jetty.server.handler.HandlerList">
-      <Set name="handlers">
-        <Array type="org.eclipse.jetty.server.Handler">
-          <Item>
-            <New id="WebappContexts" class="org.eclipse.jetty.server.handler.ContextHandlerCollection" />
-          </Item>
-          <Item>
-            <New id="defcontext" class="org.eclipse.jetty.server.handler.DefaultHandler" />
-          </Item>
-        </Array>
-      </Set>
-    </New>
+    <New id="Contexts" class="org.eclipse.jetty.server.handler.ContextHandlerCollection" />
   </Set>
 
   <!-- =========================================================== -->

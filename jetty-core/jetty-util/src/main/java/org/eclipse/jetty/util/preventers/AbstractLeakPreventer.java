@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -30,7 +30,7 @@ import org.slf4j.LoggerFactory;
  */
 public abstract class AbstractLeakPreventer extends AbstractLifeCycle
 {
-    protected static final Logger LOG = LoggerFactory.getLogger(AbstractLeakPreventer.class);
+    static final Logger LOG = LoggerFactory.getLogger(AbstractLeakPreventer.class);
 
     public abstract void prevent(ClassLoader loader);
 

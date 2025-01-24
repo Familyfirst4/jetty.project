@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -26,6 +26,7 @@ import javax.inject.Inject;
 import aQute.bnd.osgi.Constants;
 import org.eclipse.jetty.ee9.annotations.ClassInheritanceHandler;
 import org.eclipse.jetty.ee9.osgi.annotations.AnnotationParser;
+import org.eclipse.jetty.util.resource.ResourceFactory;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.ops4j.pax.exam.Configuration;
@@ -39,7 +40,6 @@ import org.osgi.framework.BundleContext;
 
 import static org.junit.Assert.assertTrue;
 import static org.ops4j.pax.exam.CoreOptions.mavenBundle;
-
 
 /**
  * TestJettyOSGiAnnotationParser
@@ -67,7 +67,7 @@ public class TestJettyOSGiAnnotationParser
         options.add(mavenBundle().groupId("org.eclipse.jetty").artifactId("jetty-alpn-client").versionAsInProject().start());
 
         //get a reference to a pre-prepared module-info
-        Path path = Paths.get("src", "test", "resources", "module-info.clazz");
+        Path path = Paths.get("target", "test-classes", "module-info.clazz");
         File moduleInfo = path.toFile();
         assertTrue(moduleInfo.exists());
         
@@ -87,8 +87,8 @@ public class TestJettyOSGiAnnotationParser
         //test the osgi annotation parser ignore the module-info.class file in the fake bundle
         //Get a reference to the deployed fake bundle
         Bundle b = TestOSGiUtil.getBundle(bundleContext, "bundle.with.module.info");
-        AnnotationParser parser = new AnnotationParser(0);
-        parser.indexBundle(b);
+        AnnotationParser parser = new AnnotationParser();
+        parser.indexBundle(ResourceFactory.root(), b);
         ClassInheritanceHandler handler = new ClassInheritanceHandler(new ConcurrentHashMap<>());
         parser.parse(Collections.singleton(handler), b);
 

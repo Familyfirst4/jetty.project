@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,15 +13,18 @@
 
 package org.eclipse.jetty.ee10.servlet;
 
+import java.io.Closeable;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.io.OutputStreamWriter;
+import java.io.PrintWriter;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.Enumeration;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.stream.Collectors;
 
 import jakarta.servlet.DispatcherType;
 import jakarta.servlet.RequestDispatcher;
@@ -29,6 +32,7 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.ServletOutputStream;
 import jakarta.servlet.ServletRequest;
 import jakarta.servlet.ServletResponse;
+import jakarta.servlet.WriteListener;
 import jakarta.servlet.http.HttpServletMapping;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletRequestWrapper;
@@ -36,16 +40,15 @@ import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpServletResponseWrapper;
 import org.eclipse.jetty.ee10.servlet.util.ServletOutputStreamWrapper;
 import org.eclipse.jetty.http.HttpURI;
-import org.eclipse.jetty.util.MultiMap;
+import org.eclipse.jetty.http.pathmap.MatchedResource;
+import org.eclipse.jetty.io.WriterOutputStream;
+import org.eclipse.jetty.util.Fields;
+import org.eclipse.jetty.util.IO;
 import org.eclipse.jetty.util.StringUtil;
 import org.eclipse.jetty.util.UrlEncoded;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 public class Dispatcher implements RequestDispatcher
 {
-    private static final Logger LOG = LoggerFactory.getLogger(Dispatcher.class);
-
     /**
      * Dispatch include attribute names
      */
@@ -55,32 +58,44 @@ public class Dispatcher implements RequestDispatcher
      * Dispatch include attribute names
      */
     public static final String __FORWARD_PREFIX = "jakarta.servlet.forward.";
+    
+    /**
+     * Name of original request attribute
+     */ 
+    public static final String __ORIGINAL_REQUEST = "org.eclipse.jetty.originalRequest";
+
+    public static final String JETTY_INCLUDE_HEADER_PREFIX = "org.eclipse.jetty.server.include.";
 
     private final ServletContextHandler _contextHandler;
     private final HttpURI _uri;
-    private final String _pathInContext;
+    private final String _decodedPathInContext;
     private final String _named;
     private final ServletHandler.MappedServlet _mappedServlet;
     private final ServletHandler _servletHandler;
     private final ServletPathMapping _servletPathMapping;
 
-    public Dispatcher(ServletContextHandler contextHandler, HttpURI uri, String pathInContext)
+    public Dispatcher(ServletContextHandler contextHandler, HttpURI uri, String decodedPathInContext)
     {
         _contextHandler = contextHandler;
         _uri = uri.asImmutable();
-        _pathInContext = pathInContext;
+        _decodedPathInContext = decodedPathInContext;
         _named = null;
 
         _servletHandler = _contextHandler.getServletHandler();
-        _mappedServlet = _servletHandler.getMappedServlet(pathInContext);
-        _servletPathMapping = _mappedServlet.getServletPathMapping(_pathInContext);
+        MatchedResource<ServletHandler.MappedServlet> matchedServlet = _servletHandler.getMatchedServlet(decodedPathInContext);
+        if (matchedServlet == null)
+            throw new IllegalArgumentException("No servlet matching: " + decodedPathInContext);
+        _mappedServlet = matchedServlet.getResource();
+        _servletPathMapping = _mappedServlet.getServletPathMapping(_decodedPathInContext, matchedServlet.getMatchedPath());
+        if (_servletPathMapping == null)
+            throw new IllegalArgumentException("No servlet path mapping: " + _servletPathMapping);
     }
 
     public Dispatcher(ServletContextHandler contextHandler, String name) throws IllegalStateException
     {
         _contextHandler = contextHandler;
         _uri = null;
-        _pathInContext = null;
+        _decodedPathInContext = null;
         _named = name;
 
         _servletHandler = _contextHandler.getServletHandler();
@@ -90,10 +105,14 @@ public class Dispatcher implements RequestDispatcher
 
     public void error(ServletRequest request, ServletResponse response) throws ServletException, IOException
     {
+        assert _named == null : "not allowed to have a named dispatch on error";
+        assert _servletPathMapping != null : "Servlet Path Mapping required";
+        assert _uri != null : "URI is required";
+
         HttpServletRequest httpRequest = (request instanceof HttpServletRequest) ? (HttpServletRequest)request : new ServletRequestHttpWrapper(request);
         HttpServletResponse httpResponse = (response instanceof HttpServletResponse) ? (HttpServletResponse)response : new ServletResponseHttpWrapper(response);
 
-        _mappedServlet.handle(_servletHandler, _pathInContext, new ErrorRequest(httpRequest), httpResponse);
+        _mappedServlet.handle(_servletHandler, _decodedPathInContext, new ErrorRequest(httpRequest), httpResponse);
     }
 
     @Override
@@ -102,21 +121,23 @@ public class Dispatcher implements RequestDispatcher
         HttpServletRequest httpRequest = (request instanceof HttpServletRequest) ? (HttpServletRequest)request : new ServletRequestHttpWrapper(request);
         HttpServletResponse httpResponse = (response instanceof HttpServletResponse) ? (HttpServletResponse)response : new ServletResponseHttpWrapper(response);
 
-        ServletContextRequest baseRequest = Objects.requireNonNull(ServletContextRequest.getBaseRequest(request));
-        baseRequest.getResponse().resetForForward();
-        _mappedServlet.handle(_servletHandler, _pathInContext, new ForwardRequest(httpRequest), httpResponse);
+        ServletContextRequest servletContextRequest = ServletContextRequest.getServletContextRequest(request);
+        servletContextRequest.getServletContextResponse().resetForForward();
+        _mappedServlet.handle(_servletHandler, _decodedPathInContext, new ForwardRequest(httpRequest), httpResponse);
 
         // If we are not async and not closed already, then close via the possibly wrapped response.
-        if (!baseRequest.getState().isAsync() && !baseRequest.getHttpOutput().isClosed())
+        if (!servletContextRequest.getState().isAsync() && !servletContextRequest.getServletContextResponse().hasLastWrite())
         {
+            Closeable closeable;
             try
             {
-                response.getOutputStream().close();
+                closeable = response.getOutputStream();
             }
             catch (IllegalStateException e)
             {
-                response.getWriter().close();
+                closeable = response.getWriter();
             }
+            IO.close(closeable);
         }
     }
 
@@ -125,8 +146,18 @@ public class Dispatcher implements RequestDispatcher
     {
         HttpServletRequest httpRequest = (request instanceof HttpServletRequest) ? (HttpServletRequest)request : new ServletRequestHttpWrapper(request);
         HttpServletResponse httpResponse = (response instanceof HttpServletResponse) ? (HttpServletResponse)response : new ServletResponseHttpWrapper(response);
+        ServletContextResponse servletContextResponse = ServletContextResponse.getServletContextResponse(response);
 
-        _mappedServlet.handle(_servletHandler, _pathInContext, new IncludeRequest(httpRequest), new IncludeResponse(httpResponse));
+        IncludeResponse includeResponse = new IncludeResponse(httpResponse);
+        try
+        {
+            _mappedServlet.handle(_servletHandler, _decodedPathInContext, new IncludeRequest(httpRequest), includeResponse);
+        }
+        finally
+        {
+            includeResponse.onIncluded();
+            servletContextResponse.included();
+        }
     }
 
     public void async(ServletRequest request, ServletResponse response) throws ServletException, IOException
@@ -134,90 +165,114 @@ public class Dispatcher implements RequestDispatcher
         HttpServletRequest httpRequest = (request instanceof HttpServletRequest) ? (HttpServletRequest)request : new ServletRequestHttpWrapper(request);
         HttpServletResponse httpResponse = (response instanceof HttpServletResponse) ? (HttpServletResponse)response : new ServletResponseHttpWrapper(response);
 
-        _mappedServlet.handle(_servletHandler, _pathInContext, new AsyncRequest(httpRequest), httpResponse);
+        _mappedServlet.handle(_servletHandler, _decodedPathInContext, new AsyncRequest(httpRequest), httpResponse);
     }
 
     public class ParameterRequestWrapper extends HttpServletRequestWrapper
     {
-        private Map<String, String[]> params;
+        private Fields _parameters = null;
 
         public ParameterRequestWrapper(HttpServletRequest request)
         {
             super(request);
         }
 
+        private Fields getParameters()
+        {
+            if (_parameters == null)
+            {
+                String targetQuery = (_uri == null) ? null : _uri.getQuery();
+
+                if (getRequest() instanceof ServletApiRequest servletApiRequest)
+                {
+                    Fields parameters = servletApiRequest.getParameters();
+
+                    if (targetQuery == null)
+                    {
+                        _parameters = parameters;
+                    }
+                    else
+                    {
+                        _parameters = new Fields(true);
+                        UrlEncoded.decodeTo(targetQuery, _parameters::add, UrlEncoded.ENCODING);
+                        _parameters.addAll(parameters);
+                    }
+                }
+                else
+                {
+                    _parameters = new Fields(true);
+                    // Have to assume ENCODING because we can't know otherwise.
+                    if (targetQuery != null)
+                        UrlEncoded.decodeTo(targetQuery, _parameters::add, UrlEncoded.ENCODING);
+                    for (Enumeration<String> names = getRequest().getParameterNames(); names.hasMoreElements(); )
+                    {
+                        String name = names.nextElement();
+                        _parameters.add(name, getRequest().getParameterValues(name));
+                    }
+                }
+            }
+            return _parameters;
+        }
+
+        @Override
+        public String getQueryString()
+        {
+            // The current behaviour is to return the target query if not null, else the original query is returned.
+            // This means that the query string does not match the parameter map, which is merged for most dispatcher.
+            // The specification is not clear on how the query should be handled.  It is in ongoing discussion in
+            // https://github.com/jakartaee/servlet/issues/309
+            // Currently the older jetty behaviour (merging the query string) has been replaced by the behaviour used
+            // by other containers in order to pass the TCK.
+            if (_uri != null)
+            {
+                String targetQuery = _uri.getQuery();
+                if (!StringUtil.isEmpty(targetQuery))
+                    return targetQuery;
+            }
+            return super.getQueryString();
+        }
+
         @Override
         public String getParameter(String name)
         {
-            String[] strings = getParameterMap().get(name);
-            if (strings == null || strings.length == 0)
-                return null;
-            return strings[0];
+            return getParameters().getValue(name);
         }
 
         @Override
         public Map<String, String[]> getParameterMap()
         {
-            if (params != null)
-                return params;
-
-            Map<String, String[]> oldParams = super.getParameterMap();
-            if (_uri == null || _uri.getQuery() == null)
-            {
-                params = oldParams;
-                return oldParams;
-            }
-
-            MultiMap<String> newParams = new MultiMap<>();
-            UrlEncoded.decodeTo(_uri.getQuery(), newParams, UrlEncoded.ENCODING);
-            for (Map.Entry<String, String[]> entry : oldParams.entrySet())
-            {
-                newParams.addValues(entry.getKey(), entry.getValue());
-            }
-            params = newParams.toStringArrayMap();
-            return params;
+            return Collections.unmodifiableMap(getParameters().toStringArrayMap());
         }
 
         @Override
         public Enumeration<String> getParameterNames()
         {
-            return Collections.enumeration(getParameterMap().entrySet().stream()
-                .flatMap(o -> Arrays.stream(o.getValue()))
-                .collect(Collectors.toList()));
+            return Collections.enumeration(getParameters().getNames());
         }
 
         @Override
         public String[] getParameterValues(String name)
         {
-            return getParameterMap().get(name);
+            List<String> vals = getParameters().getValues(name);
+            if (vals == null)
+                return null;
+            return vals.toArray(new String[0]);
+        }
+
+        @Override
+        public String toString()
+        {
+            return "%s@%x{%s}".formatted(getClass().getSimpleName(), hashCode(), getRequest());
         }
     }
 
     private class ForwardRequest extends ParameterRequestWrapper
     {
         private final HttpServletRequest _httpServletRequest;
-        private final MultiMap<String> _params = new MultiMap<>();
 
         public ForwardRequest(HttpServletRequest httpRequest)
         {
             super(httpRequest);
-
-            String targetQuery = (_uri == null) ? null : _uri.getQuery();
-            if (targetQuery != null)
-            {
-                // Have to assume ENCODING because we can't know otherwise.
-                UrlEncoded.decodeTo(targetQuery, _params, UrlEncoded.ENCODING);
-            }
-
-            Enumeration<String> parameterNames = httpRequest.getParameterNames();
-            while (parameterNames.hasMoreElements())
-            {
-                String name = parameterNames.nextElement();
-                String[] parameterValues = httpRequest.getParameterValues(name);
-                if (parameterValues != null)
-                    _params.addValues(name, parameterValues);
-            }
-
             _httpServletRequest = httpRequest;
         }
 
@@ -246,46 +301,10 @@ public class Dispatcher implements RequestDispatcher
         @Override
         public HttpServletMapping getHttpServletMapping()
         {
+            if (_named != null)
+                return super.getHttpServletMapping();
+
             return _servletPathMapping;
-        }
-
-        @Override
-        public String getQueryString()
-        {
-            if (_uri != null)
-            {
-                String targetQuery = _uri.getQuery();
-                if (!StringUtil.isEmpty(targetQuery))
-                    return targetQuery;
-            }
-            return _httpServletRequest.getQueryString();
-        }
-
-        @Override
-        public String getParameter(String name)
-        {
-            return _params.getValue(name);
-        }
-
-        @Override
-        public Map<String, String[]> getParameterMap()
-        {
-            return Collections.unmodifiableMap(_params.toStringArrayMap());
-        }
-
-        @Override
-        public Enumeration<String> getParameterNames()
-        {
-            return Collections.enumeration(_params.keySet());
-        }
-
-        @Override
-        public String[] getParameterValues(String name)
-        {
-            List<String> vals = _params.getValues(name);
-            if (vals == null)
-                return null;
-            return vals.toArray(new String[0]);
         }
 
         @Override
@@ -295,34 +314,65 @@ public class Dispatcher implements RequestDispatcher
         }
 
         @Override
+        public StringBuffer getRequestURL()
+        {
+            return _uri == null ? super.getRequestURL() :  new StringBuffer(HttpURI.build(_uri).query(null).scheme(super.getScheme()).host(super.getServerName()).port(super.getServerPort()).asString());
+        }
+
+        @Override
         public Object getAttribute(String name)
         {
+            if (name == null)
+                return null;
+            
+            //Servlet Spec 9.4.2 no forward attributes if a named dispatcher
+            if (_named != null && name.startsWith(__FORWARD_PREFIX))
+                return null;
+
+            //Servlet Spec 9.4.2 must return the values from the original request
+            if (name.startsWith(__FORWARD_PREFIX))
+            {
+                HttpServletRequest originalRequest = (HttpServletRequest)super.getAttribute(__ORIGINAL_REQUEST);
+                if (originalRequest == null)
+                    originalRequest = _httpServletRequest;
+
+                return switch (name)
+                {
+                    case RequestDispatcher.FORWARD_REQUEST_URI -> originalRequest.getRequestURI();
+                    case RequestDispatcher.FORWARD_SERVLET_PATH -> originalRequest.getServletPath();
+                    case RequestDispatcher.FORWARD_PATH_INFO -> originalRequest.getPathInfo();
+                    case RequestDispatcher.FORWARD_CONTEXT_PATH -> originalRequest.getContextPath();
+                    case RequestDispatcher.FORWARD_MAPPING -> originalRequest.getHttpServletMapping();
+                    case RequestDispatcher.FORWARD_QUERY_STRING -> originalRequest.getQueryString();
+                    default -> super.getAttribute(name);
+                };
+            }
+
             switch (name)
             {
-                case RequestDispatcher.FORWARD_REQUEST_URI:
-                    return _httpServletRequest.getRequestURI();
-                case RequestDispatcher.FORWARD_SERVLET_PATH:
-                    return _httpServletRequest.getServletPath();
-                case RequestDispatcher.FORWARD_PATH_INFO:
-                    return _httpServletRequest.getPathInfo();
-                case RequestDispatcher.FORWARD_CONTEXT_PATH:
-                    return _httpServletRequest.getContextPath();
-                case RequestDispatcher.FORWARD_MAPPING:
-                    return _httpServletRequest.getHttpServletMapping();
-                case RequestDispatcher.FORWARD_QUERY_STRING:
-                    return _httpServletRequest.getQueryString();
-
+                case __ORIGINAL_REQUEST ->
+                {
+                    HttpServletRequest originalRequest = (HttpServletRequest)super.getAttribute(name);
+                    return originalRequest == null ? _httpServletRequest : originalRequest;
+                }
                 // Forward should hide include.
-                case RequestDispatcher.INCLUDE_MAPPING:
-                case RequestDispatcher.INCLUDE_SERVLET_PATH:
-                case RequestDispatcher.INCLUDE_PATH_INFO:
-                case RequestDispatcher.INCLUDE_REQUEST_URI:
-                case RequestDispatcher.INCLUDE_CONTEXT_PATH:
-                case RequestDispatcher.INCLUDE_QUERY_STRING:
+                case RequestDispatcher.INCLUDE_MAPPING, RequestDispatcher.INCLUDE_SERVLET_PATH, RequestDispatcher.INCLUDE_PATH_INFO, RequestDispatcher.INCLUDE_REQUEST_URI, RequestDispatcher.INCLUDE_CONTEXT_PATH, RequestDispatcher.INCLUDE_QUERY_STRING ->
+                {
                     return null;
+                }
+                case ServletContextRequest.MULTIPART_CONFIG_ELEMENT ->
+                {
+                    // If we already have future parts, return the configuration of the wrapped request.
+                    if (super.getAttribute(ServletMultiPartFormData.class.getName()) != null)
+                        return super.getAttribute(name);
+                    // otherwise, return the configuration of this mapping
+                    return _mappedServlet.getServletHolder().getMultipartConfigElement();
+                }
 
-                default:
+                default ->
+                {
                     return super.getAttribute(name);
+                }
             }
         }
 
@@ -330,6 +380,15 @@ public class Dispatcher implements RequestDispatcher
         public Enumeration<String> getAttributeNames()
         {
             ArrayList<String> names = new ArrayList<>(Collections.list(super.getAttributeNames()));
+
+            //only return the multipart attribute name if this servlet mapping has multipart config
+            if (names.contains(ServletContextRequest.MULTIPART_CONFIG_ELEMENT) && _mappedServlet.getServletHolder().getMultipartConfigElement() == null)
+                names.remove(ServletContextRequest.MULTIPART_CONFIG_ELEMENT);
+            
+            //Servlet Spec 9.4.2 no forward attributes if a named dispatcher
+            if (_named != null)
+                return Collections.enumeration(names);
+            
             names.add(RequestDispatcher.FORWARD_REQUEST_URI);
             names.add(RequestDispatcher.FORWARD_SERVLET_PATH);
             names.add(RequestDispatcher.FORWARD_PATH_INFO);
@@ -359,29 +418,33 @@ public class Dispatcher implements RequestDispatcher
         @Override
         public Object getAttribute(String name)
         {
-            switch (name)
+            if (name == null)
+                return null;
+            
+            //Servlet Spec 9.3.1 no include attributes if a named dispatcher
+            if (_named != null && name.startsWith(__INCLUDE_PREFIX))
+                return null;
+
+            return switch (name)
             {
-                case RequestDispatcher.INCLUDE_MAPPING:
-                    return _mappedServlet.getServletPathMapping(_pathInContext);
-                case RequestDispatcher.INCLUDE_SERVLET_PATH:
-                    return _mappedServlet.getServletPathMapping(_pathInContext).getServletPath();
-                case RequestDispatcher.INCLUDE_PATH_INFO:
-                    return _mappedServlet.getServletPathMapping(_pathInContext).getPathInfo();
-                case RequestDispatcher.INCLUDE_REQUEST_URI:
-                    return (_uri == null) ? null : _uri.getPath();
-                case RequestDispatcher.INCLUDE_CONTEXT_PATH:
-                    return _httpServletRequest.getContextPath();
-                case RequestDispatcher.INCLUDE_QUERY_STRING:
-                    return (_uri == null) ? null : _uri.getQuery();
-                default:
-                    return super.getAttribute(name);
-            }
+                case RequestDispatcher.INCLUDE_MAPPING -> _servletPathMapping;
+                case RequestDispatcher.INCLUDE_SERVLET_PATH -> _servletPathMapping.getServletPath();
+                case RequestDispatcher.INCLUDE_PATH_INFO -> _servletPathMapping.getPathInfo();
+                case RequestDispatcher.INCLUDE_REQUEST_URI -> (_uri == null) ? null : _uri.getPath();
+                case RequestDispatcher.INCLUDE_CONTEXT_PATH -> _httpServletRequest.getContextPath();
+                case RequestDispatcher.INCLUDE_QUERY_STRING -> (_uri == null) ? null : _uri.getQuery();
+                default -> super.getAttribute(name);
+            };
         }
 
         @Override
         public Enumeration<String> getAttributeNames()
         {
+            //Servlet Spec 9.3.1 no include attributes if a named dispatcher
             ArrayList<String> names = new ArrayList<>(Collections.list(super.getAttributeNames()));
+            if (_named != null)
+                return Collections.enumeration(names);
+            
             names.add(RequestDispatcher.INCLUDE_MAPPING);
             names.add(RequestDispatcher.INCLUDE_SERVLET_PATH);
             names.add(RequestDispatcher.INCLUDE_PATH_INFO);
@@ -390,30 +453,128 @@ public class Dispatcher implements RequestDispatcher
             names.add(RequestDispatcher.INCLUDE_QUERY_STRING);
             return Collections.enumeration(names);
         }
+
+        @Override
+        public String getQueryString()
+        {
+            return _httpServletRequest.getQueryString();
+        }
     }
 
     private static class IncludeResponse extends HttpServletResponseWrapper
     {
+        ServletOutputStream _servletOutputStream;
+        PrintWriter _printWriter;
+        PrintWriter _mustFlush;
+        
         public IncludeResponse(HttpServletResponse response)
         {
             super(response);
         }
 
+        public void onIncluded()
+        {
+            if (_mustFlush != null)
+                _mustFlush.flush();
+        }
+
         @Override
         public ServletOutputStream getOutputStream() throws IOException
         {
-            return new ServletOutputStreamWrapper(getResponse().getOutputStream())
+            if (_printWriter != null)
+                throw new IllegalStateException("getWriter() called");
+            if (_servletOutputStream == null)
             {
-                @Override
-                public void close() throws IOException
+                try
                 {
-                    // NOOP for include.
+                    _servletOutputStream = new ServletOutputStreamWrapper(getResponse().getOutputStream())
+                    {
+                        @Override
+                        public void close()
+                        {
+                            // NOOP for include.
+                        }
+                    };
                 }
-            };
+                catch (IllegalStateException ise)
+                {
+                    OutputStream os = new WriterOutputStream(getResponse().getWriter(), getResponse().getCharacterEncoding());
+                    _servletOutputStream = new ServletOutputStream()
+                    {
+                        @Override
+                        public boolean isReady()
+                        {
+                            return true;
+                        }
+
+                        @Override
+                        public void setWriteListener(WriteListener writeListener)
+                        {
+                            throw new UnsupportedOperationException();
+                        }
+
+                        @Override
+                        public void write(int b) throws IOException
+                        {
+                            os.write(b);
+                        }
+
+                        @Override
+                        public void write(byte[] b) throws IOException
+                        {
+                            os.write(b);
+                        }
+
+                        @Override
+                        public void write(byte[] b, int off, int len) throws IOException
+                        {
+                            os.write(b, off, len);
+                        }
+
+                        @Override
+                        public void flush() throws IOException
+                        {
+                            os.flush();
+                        }
+
+                        @Override
+                        public void close()
+                        {
+                            // NOOP for include.
+                        }
+                    };
+                }
+            }
+            return _servletOutputStream;
+        }
+
+        @Override
+        public PrintWriter getWriter() throws IOException
+        {
+            if (_servletOutputStream != null)
+                throw new IllegalStateException("getOutputStream called");
+            if (_printWriter == null)
+            {
+                try
+                {
+                    _printWriter = super.getWriter();
+                }
+                catch (IllegalStateException ise)
+                {
+                    _printWriter = _mustFlush = new PrintWriter(new OutputStreamWriter(super.getOutputStream(), super.getCharacterEncoding()));
+                }
+            }
+            return _printWriter;
         }
 
         @Override
         public void setCharacterEncoding(String charset)
+        {
+            // NOOP for include.
+        }
+
+        @Override
+        public void setLocale(Locale loc)
         {
             // NOOP for include.
         }
@@ -439,15 +600,13 @@ public class Dispatcher implements RequestDispatcher
         @Override
         public void reset()
         {
-            // TODO can include do this?
-            super.reset();
+            // NOOP for include.
         }
 
         @Override
         public void resetBuffer()
         {
-            // TODO can include do this?
-            super.resetBuffer();
+            // NOOP for include.
         }
 
         @Override
@@ -465,13 +624,19 @@ public class Dispatcher implements RequestDispatcher
         @Override
         public void setHeader(String name, String value)
         {
-            // NOOP for include.
+            //implement jetty-specific extension to include to allow headers
+            //to be set
+            if (!StringUtil.isBlank(name) && name.startsWith(JETTY_INCLUDE_HEADER_PREFIX))
+                super.setHeader(name.substring(JETTY_INCLUDE_HEADER_PREFIX.length()), value);
         }
 
         @Override
         public void addHeader(String name, String value)
         {
-            // NOOP for include.
+            //implement jetty-specific extension to include to allow headers
+            //to be set
+            if (!StringUtil.isBlank(name) && name.startsWith(JETTY_INCLUDE_HEADER_PREFIX))
+                super.addHeader(name.substring(JETTY_INCLUDE_HEADER_PREFIX.length()), value);
         }
 
         @Override
@@ -491,6 +656,24 @@ public class Dispatcher implements RequestDispatcher
         {
             // NOOP for include.
         }
+
+        @Override
+        public void sendError(int sc, String msg) throws IOException
+        {
+            // NOOP for include.
+        }
+
+        @Override
+        public void sendError(int sc) throws IOException
+        {
+            // NOOP for include.
+        }
+
+        @Override
+        public void sendRedirect(String location) throws IOException
+        {
+            // NOOP for include.
+        }
     }
 
     private class AsyncRequest extends ParameterRequestWrapper
@@ -501,6 +684,7 @@ public class Dispatcher implements RequestDispatcher
         {
             super(httpRequest);
             _httpServletRequest = httpRequest;
+            Objects.requireNonNull(_servletPathMapping);
         }
 
         @Override
@@ -512,25 +696,22 @@ public class Dispatcher implements RequestDispatcher
         @Override
         public String getPathInfo()
         {
-            return _mappedServlet.getServletPathMapping(_pathInContext).getPathInfo();
+            // TODO what about a 404 dispatch?
+            return Objects.requireNonNull(_servletPathMapping).getPathInfo();
         }
 
         @Override
         public String getServletPath()
         {
-            return _mappedServlet.getServletPathMapping(_pathInContext).getServletPath();
+            // TODO what about a 404 dispatch?
+            return Objects.requireNonNull(_servletPathMapping).getServletPath();
         }
 
         @Override
-        public String getQueryString()
+        public HttpServletMapping getHttpServletMapping()
         {
-            if (_uri != null)
-            {
-                String targetQuery = _uri.getQuery();
-                if (!StringUtil.isEmpty(targetQuery))
-                    return targetQuery;
-            }
-            return _httpServletRequest.getQueryString();
+            // TODO what about a 404 dispatch?
+            return Objects.requireNonNull(_servletPathMapping);
         }
 
         @Override
@@ -548,40 +729,32 @@ public class Dispatcher implements RequestDispatcher
         @Override
         public Object getAttribute(String name)
         {
-            switch (name)
+            return switch (name)
             {
-                case AsyncContextState.ASYNC_REQUEST_URI:
-                    return _httpServletRequest.getRequestURI();
-                case AsyncContextState.ASYNC_CONTEXT_PATH:
-                    return _httpServletRequest.getContextPath();
-                case AsyncContextState.ASYNC_MAPPING:
-                    return _httpServletRequest.getHttpServletMapping();
-                case AsyncContextState.ASYNC_PATH_INFO:
-                    return _httpServletRequest.getPathInfo();
-                case AsyncContextState.ASYNC_SERVLET_PATH:
-                    return _httpServletRequest.getServletPath();
-                case AsyncContextState.ASYNC_QUERY_STRING:
-                    return _httpServletRequest.getQueryString();
-                default:
-                    return super.getAttribute(name);
-            }
+                case AsyncContextState.ASYNC_REQUEST_URI -> _httpServletRequest.getRequestURI();
+                case AsyncContextState.ASYNC_CONTEXT_PATH -> _httpServletRequest.getContextPath();
+                case AsyncContextState.ASYNC_MAPPING -> _httpServletRequest.getHttpServletMapping();
+                case AsyncContextState.ASYNC_PATH_INFO -> _httpServletRequest.getPathInfo();
+                case AsyncContextState.ASYNC_SERVLET_PATH -> _httpServletRequest.getServletPath();
+                case AsyncContextState.ASYNC_QUERY_STRING -> _httpServletRequest.getQueryString();
+                default -> super.getAttribute(name);
+            };
         }
 
         @Override
         public Enumeration<String> getAttributeNames()
         {
             ArrayList<String> names = new ArrayList<>(Collections.list(super.getAttributeNames()));
-            names.add(RequestDispatcher.FORWARD_REQUEST_URI);
-            names.add(RequestDispatcher.FORWARD_SERVLET_PATH);
-            names.add(RequestDispatcher.FORWARD_PATH_INFO);
-            names.add(RequestDispatcher.FORWARD_CONTEXT_PATH);
-            names.add(RequestDispatcher.FORWARD_MAPPING);
-            names.add(RequestDispatcher.FORWARD_QUERY_STRING);
+            names.add(AsyncContextState.ASYNC_REQUEST_URI);
+            names.add(AsyncContextState.ASYNC_SERVLET_PATH);
+            names.add(AsyncContextState.ASYNC_PATH_INFO);
+            names.add(AsyncContextState.ASYNC_CONTEXT_PATH);
+            names.add(AsyncContextState.ASYNC_MAPPING);
+            names.add(AsyncContextState.ASYNC_QUERY_STRING);
             return Collections.enumeration(names);
         }
     }
 
-    // TODO
     private class ErrorRequest extends ParameterRequestWrapper
     {
         private final HttpServletRequest _httpServletRequest;
@@ -601,51 +774,35 @@ public class Dispatcher implements RequestDispatcher
         @Override
         public String getPathInfo()
         {
-            return _mappedServlet.getServletPathMapping(_pathInContext).getPathInfo();
+            return _servletPathMapping.getPathInfo();
         }
 
         @Override
         public String getServletPath()
         {
-            return _mappedServlet.getServletPathMapping(_pathInContext).getServletPath();
+            return _servletPathMapping.getServletPath();
         }
 
         @Override
-        public String getQueryString()
+        public HttpServletMapping getHttpServletMapping()
         {
-            // TODO
-            if (_uri != null)
-            {
-                String targetQuery = _uri.getQuery();
-                if (!StringUtil.isEmpty(targetQuery))
-                    return targetQuery;
-            }
-            return _httpServletRequest.getQueryString();
+            return _servletPathMapping;
         }
 
         @Override
         public String getRequestURI()
         {
-            return _uri == null ? null : _uri.getPath();
+            return _uri.getPath();
         }
 
         @Override
-        public Object getAttribute(String name)
+        public StringBuffer getRequestURL()
         {
-            switch (name)
-            {
-                // TODO
-                default:
-                    return super.getAttribute(name);
-            }
-        }
-
-        @Override
-        public Enumeration<String> getAttributeNames()
-        {
-            ArrayList<String> names = new ArrayList<>(Collections.list(super.getAttributeNames()));
-            // TODO
-            return Collections.enumeration(names);
+            return new StringBuffer(HttpURI.build(_uri)
+                .scheme(getScheme())
+                .host(getServerName())
+                .port(getServerPort())
+                .asString());
         }
     }
 

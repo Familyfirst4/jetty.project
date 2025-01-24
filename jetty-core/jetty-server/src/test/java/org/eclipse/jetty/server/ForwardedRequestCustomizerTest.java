@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,13 +14,19 @@
 package org.eclipse.jetty.server;
 
 import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Stream;
 
+import org.eclipse.jetty.http.HttpCompliance;
 import org.eclipse.jetty.http.HttpTester;
+import org.eclipse.jetty.io.Connection;
+import org.eclipse.jetty.io.EndPoint;
+import org.eclipse.jetty.server.internal.HttpConnection;
 import org.eclipse.jetty.util.Callback;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -64,15 +70,37 @@ public class ForwardedRequestCustomizerTest
 
         // Default behavior Connector
         HttpConnectionFactory http = new HttpConnectionFactory();
+        HttpCompliance mismatchedAuthorityHttpCompliance = HttpCompliance.RFC7230.with("Mismatched_Authority", HttpCompliance.Violation.MISMATCHED_AUTHORITY);
+        http.getHttpConfiguration().setHttpCompliance(mismatchedAuthorityHttpCompliance);
         http.getHttpConfiguration().setSecurePort(443);
+
         customizer = new ForwardedRequestCustomizer();
         http.getHttpConfiguration().addCustomizer(customizer);
         connector = new LocalConnector(server, http);
         server.addConnector(connector);
 
         // Alternate behavior Connector
-        HttpConnectionFactory httpAlt = new HttpConnectionFactory();
+        HttpConnectionFactory httpAlt = new HttpConnectionFactory()
+        {
+            @Override
+            public Connection newConnection(Connector connector, EndPoint endPoint)
+            {
+                HttpConnection connection = new HttpConnection(getHttpConfiguration(), connector, endPoint)
+                {
+                    @Override
+                    public SocketAddress getLocalSocketAddress()
+                    {
+                        return InetSocketAddress.createUnresolved("test", 42);
+                    }
+                };
+                connection.setUseInputDirectByteBuffers(isUseInputDirectByteBuffers());
+                connection.setUseOutputDirectByteBuffers(isUseOutputDirectByteBuffers());
+                return configure(connection, connector, endPoint);
+            }
+        };
+
         httpAlt.getHttpConfiguration().setSecurePort(8443);
+        httpAlt.getHttpConfiguration().setHttpCompliance(mismatchedAuthorityHttpCompliance);
         customizerAlt = new ForwardedRequestCustomizer();
         httpAlt.getHttpConfiguration().addCustomizer(customizerAlt);
         connectorAlt = new LocalConnector(server, httpAlt);
@@ -93,6 +121,7 @@ public class ForwardedRequestCustomizerTest
 
         http.getHttpConfiguration().addCustomizer(customizerConfigured);
         connectorConfigured = new LocalConnector(server, http);
+        connectorConfigured.getConnectionFactory(HttpConnectionFactory.class).getHttpConfiguration().setHttpCompliance(mismatchedAuthorityHttpCompliance);
         server.addConnector(connectorConfigured);
 
         RequestHandler handler = new RequestHandler();
@@ -102,8 +131,11 @@ public class ForwardedRequestCustomizerTest
         {
             actual = new Actual();
             actual.wasSecure.set(request.isSecure());
-            actual.sslSession.set(String.valueOf(request.getAttribute("jakarta.servlet.request.ssl_session_id")));
-            actual.sslCertificate.set(String.valueOf(request.getAttribute("jakarta.servlet.request.cipher_suite")));
+            if (request.getAttribute(EndPoint.SslSessionData.ATTRIBUTE) instanceof EndPoint.SslSessionData sslSessionData)
+            {
+                actual.sslSession.set(sslSessionData.sslSessionId());
+                actual.sslCertificate.set(sslSessionData.cipherSuite());
+            }
             actual.scheme.set(request.getHttpURI().getScheme());
             actual.serverName.set(Request.getServerName(request));
             actual.serverPort.set(Request.getServerPort(request));
@@ -120,27 +152,6 @@ public class ForwardedRequestCustomizerTest
     public void destroy() throws Exception
     {
         server.stop();
-    }
-
-    public static Stream<Arguments> cases2()
-    {
-        return Stream.of(
-            Arguments.of(new TestRequest("https initial authority, X-Forwarded-Proto on http, Proxy-Ssl-Id exists (setSslIsSecure==false)")
-                    .configureCustomizer((customizer) -> customizer.setSslIsSecure(false))
-                    .headers(
-                        "GET https://alt.example.net/foo HTTP/1.1",
-                        "Host: alt.example.net",
-                        "X-Forwarded-Proto: http",
-                        "Proxy-Ssl-Id: Wibble"
-                    ),
-                new Expectations()
-                    .scheme("http").serverName("alt.example.net").serverPort(80)
-                    .secure(false)
-                    .requestURL("http://alt.example.net/foo")
-                    .remoteAddr("0.0.0.0").remotePort(0)
-                    .sslSession("Wibble")
-            )
-        );
     }
 
     public static Stream<Arguments> cases()
@@ -1026,7 +1037,6 @@ public class ForwardedRequestCustomizerTest
         request.configure(customizer);
 
         String rawRequest = request.getRawRequest((header) -> header);
-//        System.out.println(rawRequest);
 
         HttpTester.Response response = HttpTester.parseResponse(connector.getResponse(rawRequest));
         assertThat("status", response.getStatus(), is(200));
@@ -1046,7 +1056,6 @@ public class ForwardedRequestCustomizerTest
             .replaceFirst("X-Proxied-Https:", "Jetty-Proxied-Https:")
             .replaceFirst("Proxy-Ssl-Id:", "Jetty-Proxy-Ssl-Id:")
             .replaceFirst("Proxy-auth-cert:", "Jetty-Proxy-Auth-Cert:"));
-        // System.out.println(rawRequest);
 
         HttpTester.Response response = HttpTester.parseResponse(connectorConfigured.getResponse(rawRequest));
         assertThat("status", response.getStatus(), is(200));
@@ -1057,6 +1066,40 @@ public class ForwardedRequestCustomizerTest
     public static Stream<Arguments> nonStandardPortCases()
     {
         return Stream.of(
+            // HTTP 1.0
+            Arguments.of(
+                new TestRequest("HTTP/1.0 - no Host header")
+                    .headers(
+                        "GET /example HTTP/1.0"
+                    ),
+                new Expectations()
+                    .scheme("http").serverName("test").serverPort(42)
+                    .secure(false)
+                    .requestURL("http://test:42/example")
+            ),
+            Arguments.of(
+                new TestRequest("HTTP/1.0 - Empty Host header")
+                    .headers(
+                        "GET scheme:///example HTTP/1.0",
+                        "Host:"
+                    ),
+                new Expectations()
+                    .scheme("scheme").serverName(null).serverPort(42)
+                    .secure(false)
+                    .requestURL("scheme:///example")
+            ),
+            Arguments.of(
+                new TestRequest("HTTP/1.0 - Host header")
+                    .headers(
+                        "GET /example HTTP/1.0",
+                        "Host: server:9999"
+                    ),
+                new Expectations()
+                    .scheme("http").serverName("server").serverPort(9999)
+                    .secure(false)
+                    .requestURL("http://server:9999/example")
+            ),
+
             // RFC7239 Tests with https.
             Arguments.of(new TestRequest("RFC7239 with https and h2")
                     .headers(
@@ -1100,7 +1143,7 @@ public class ForwardedRequestCustomizerTest
 
     /**
      * Tests against a Connector with a HttpConfiguration on non-standard ports.
-     * HttpConfiguration is set to securePort of 8443
+     * HttpConfiguration is set to securePort of 8443 and the local port is 42.
      */
     @ParameterizedTest(name = "{0}")
     @MethodSource("nonStandardPortCases")
@@ -1345,12 +1388,12 @@ public class ForwardedRequestCustomizerTest
         boolean check(Request request, Response response) throws IOException;
     }
 
-    private static class RequestHandler extends Handler.Processor
+    private static class RequestHandler extends Handler.Abstract
     {
         private RequestTester requestTester;
 
         @Override
-        public void process(Request request, Response response, Callback callback) throws Exception
+        public boolean handle(Request request, Response response, Callback callback) throws Exception
         {
             if (requestTester != null && requestTester.check(request, response))
             {
@@ -1361,6 +1404,7 @@ public class ForwardedRequestCustomizerTest
             {
                 Response.writeError(request, response, callback, 500, "failed");
             }
+            return true;
         }
     }
 }

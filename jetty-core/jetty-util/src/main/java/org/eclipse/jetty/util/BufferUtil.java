@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -17,15 +17,18 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.io.RandomAccessFile;
 import java.nio.Buffer;
 import java.nio.BufferOverflowException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileChannel.MapMode;
+import java.nio.channels.ReadableByteChannel;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.Arrays;
@@ -103,7 +106,8 @@ public class BufferUtil
             (byte)'E', (byte)'F'
         };
 
-    public static final ByteBuffer EMPTY_BUFFER = ByteBuffer.wrap(new byte[0]);
+    public static final byte[] EMPTY_BYTES = new byte[0];
+    public static final ByteBuffer EMPTY_BUFFER = ByteBuffer.wrap(EMPTY_BYTES);
 
     /**
      * Allocate ByteBuffer in flush mode.
@@ -577,16 +581,58 @@ public class BufferUtil
 
     public static void readFrom(File file, ByteBuffer buffer) throws IOException
     {
-        try (RandomAccessFile raf = new RandomAccessFile(file, "r"))
+        readFrom(file.toPath(), buffer);
+    }
+
+    public static void readFrom(Path path, ByteBuffer buffer) throws IOException
+    {
+        try (SeekableByteChannel channel = Files.newByteChannel(path))
         {
-            FileChannel channel = raf.getChannel();
-            long needed = raf.length();
+            long needed = Files.size(path);
 
             while (needed > 0 && buffer.hasRemaining())
             {
                 needed = needed - channel.read(buffer);
             }
         }
+    }
+
+    /**
+     * Read content from a {@link ReadableByteChannel} into a buffer.
+     * This may spin if {@link ReadableByteChannel#read(ByteBuffer)} returns 0 in which case this
+     * will call {@link Thread#onSpinWait()}.
+     *
+     * @param readableByteChannel the channel to read from.
+     * @param byteBuffer the buffer to read into.
+     * @return the number of bytes read into the buffer.
+     * @throws IOException if an I/O error occurs.
+     */
+    public static int readFrom(ReadableByteChannel readableByteChannel, ByteBuffer byteBuffer) throws IOException
+    {
+        int totalRead = 0;
+        int pos = BufferUtil.flipToFill(byteBuffer);
+        try
+        {
+            while (true)
+            {
+                if (BufferUtil.space(byteBuffer) == 0)
+                    break;
+
+                int read = readableByteChannel.read(byteBuffer);
+                if (read < 0)
+                    break;
+                else if (read == 0)
+                    Thread.onSpinWait();
+                else
+                    totalRead += read;
+            }
+        }
+        finally
+        {
+            BufferUtil.flipToFlush(byteBuffer, pos);
+        }
+
+        return totalRead;
     }
 
     public static void readFrom(InputStream is, int needed, ByteBuffer buffer) throws IOException
@@ -601,6 +647,43 @@ public class BufferUtil
             tmp.position(0);
             tmp.limit(l);
             buffer.put(tmp);
+        }
+    }
+
+    public static int readFrom(InputStream is, ByteBuffer buffer) throws IOException
+    {
+        if (buffer.hasArray())
+        {
+            int read = is.read(buffer.array(), buffer.arrayOffset() + buffer.limit(), buffer.capacity() - buffer.limit());
+            buffer.limit(buffer.limit() + read);
+            return read;
+        }
+        else
+        {
+            int totalRead = 0;
+            ByteBuffer tmp = allocate(8192);
+            while (BufferUtil.space(tmp) > 0 && BufferUtil.space(buffer) > 0)
+            {
+                int read = is.read(tmp.array(), 0, Math.min(BufferUtil.space(tmp), BufferUtil.space(buffer)));
+                if (read == 0)
+                {
+                    break;
+                }
+                else if (read < 0)
+                {
+                    if (totalRead == 0)
+                        return -1;
+                    break;
+                }
+                totalRead += read;
+                tmp.position(0);
+                tmp.limit(read);
+
+                int pos = BufferUtil.flipToFill(buffer);
+                BufferUtil.put(tmp, buffer);
+                BufferUtil.flipToFlush(buffer, pos);
+            }
+            return totalRead;
         }
     }
 
@@ -636,7 +719,7 @@ public class BufferUtil
     }
 
     /**
-     * Convert the buffer to an ISO-8859-1 String
+     * Convert buffer to a String with specified Charset
      *
      * @param buffer The buffer to convert in flush mode. The buffer is unchanged
      * @param charset The {@link Charset} to use to convert the bytes
@@ -1012,20 +1095,21 @@ public class BufferUtil
 
     public static ByteBuffer toBuffer(Resource resource, boolean direct) throws IOException
     {
+        if (!resource.exists() || resource.isDirectory())
+            throw new IllegalArgumentException("invalid resource: " + resource);
         int len = (int)resource.length();
         if (len < 0)
-            throw new IllegalArgumentException("invalid resource: " + String.valueOf(resource) + " len=" + len);
+            throw new IllegalArgumentException("invalid resource: " + resource + " len=" + len);
 
         ByteBuffer buffer = direct ? BufferUtil.allocateDirect(len) : BufferUtil.allocate(len);
 
         int pos = BufferUtil.flipToFill(buffer);
-        if (resource.getFile() != null)
-            BufferUtil.readFrom(resource.getFile(), buffer);
-        else
+        try (ReadableByteChannel channel = Channels.newChannel(resource.newInputStream()))
         {
-            try (InputStream is = resource.getInputStream();)
+            long needed = len;
+            while (needed > 0 && buffer.hasRemaining())
             {
-                BufferUtil.readFrom(is, len, buffer);
+                needed = needed - channel.read(buffer);
             }
         }
         BufferUtil.flipToFlush(buffer, pos);
@@ -1049,9 +1133,9 @@ public class BufferUtil
         return buf;
     }
 
-    public static ByteBuffer toMappedBuffer(File file) throws IOException
+    public static ByteBuffer toMappedBuffer(Path path) throws IOException
     {
-        return toMappedBuffer(file.toPath(), 0, file.length());
+        return toMappedBuffer(path, 0, Files.size(path));
     }
 
     public static ByteBuffer toMappedBuffer(Path filePath, long pos, long len) throws IOException
@@ -1060,6 +1144,22 @@ public class BufferUtil
         {
             return channel.map(MapMode.READ_ONLY, pos, len);
         }
+    }
+
+    public static ByteBuffer toMappedBuffer(Resource resource) throws IOException
+    {
+        Path path = resource.getPath();
+        if (path == null || !"file".equalsIgnoreCase(path.toUri().getScheme()))
+            return null;
+        return toMappedBuffer(path);
+    }
+
+    public static ByteBuffer toMappedBuffer(Resource resource, long pos, long len) throws IOException
+    {
+        Path path = resource.getPath();
+        if (path == null || !"file".equalsIgnoreCase(path.toUri().getScheme()))
+            return null;
+        return toMappedBuffer(path, pos, len);
     }
 
     public static String toSummaryString(ByteBuffer buffer)
@@ -1215,7 +1315,7 @@ public class BufferUtil
         else if (b == '\t')
             buf.append("\\t");
         else
-            buf.append("\\x").append(TypeUtil.toHexString(b));
+            buf.append("\\x").append(StringUtil.toHexString(b));
     }
 
     /**
@@ -1253,7 +1353,8 @@ public class BufferUtil
     {
         if (buffer == null)
             return "null";
-        return TypeUtil.toHexString(toArray(buffer));
+        byte[] b = toArray(buffer);
+        return StringUtil.toHexString(b);
     }
 
     private static final int[] decDivisors =

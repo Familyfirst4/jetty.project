@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -27,11 +27,11 @@ import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executor;
 
 import org.eclipse.jetty.ee9.websocket.api.BatchMode;
 import org.eclipse.jetty.ee9.websocket.api.Frame;
 import org.eclipse.jetty.ee9.websocket.api.Session;
+import org.eclipse.jetty.ee9.websocket.api.WebSocketAdapter;
 import org.eclipse.jetty.ee9.websocket.api.WebSocketConnectionListener;
 import org.eclipse.jetty.ee9.websocket.api.WebSocketContainer;
 import org.eclipse.jetty.ee9.websocket.api.WebSocketFrameListener;
@@ -49,16 +49,16 @@ import org.eclipse.jetty.websocket.core.CoreSession;
 import org.eclipse.jetty.websocket.core.WebSocketComponents;
 import org.eclipse.jetty.websocket.core.exception.InvalidSignatureException;
 import org.eclipse.jetty.websocket.core.exception.InvalidWebSocketException;
-import org.eclipse.jetty.websocket.core.internal.messages.ByteArrayMessageSink;
-import org.eclipse.jetty.websocket.core.internal.messages.ByteBufferMessageSink;
-import org.eclipse.jetty.websocket.core.internal.messages.InputStreamMessageSink;
-import org.eclipse.jetty.websocket.core.internal.messages.MessageSink;
-import org.eclipse.jetty.websocket.core.internal.messages.PartialByteBufferMessageSink;
-import org.eclipse.jetty.websocket.core.internal.messages.PartialStringMessageSink;
-import org.eclipse.jetty.websocket.core.internal.messages.ReaderMessageSink;
-import org.eclipse.jetty.websocket.core.internal.messages.StringMessageSink;
-import org.eclipse.jetty.websocket.core.internal.util.InvokerUtils;
-import org.eclipse.jetty.websocket.core.internal.util.ReflectUtils;
+import org.eclipse.jetty.websocket.core.messages.ByteArrayMessageSink;
+import org.eclipse.jetty.websocket.core.messages.ByteBufferMessageSink;
+import org.eclipse.jetty.websocket.core.messages.InputStreamMessageSink;
+import org.eclipse.jetty.websocket.core.messages.MessageSink;
+import org.eclipse.jetty.websocket.core.messages.PartialByteBufferMessageSink;
+import org.eclipse.jetty.websocket.core.messages.PartialStringMessageSink;
+import org.eclipse.jetty.websocket.core.messages.ReaderMessageSink;
+import org.eclipse.jetty.websocket.core.messages.StringMessageSink;
+import org.eclipse.jetty.websocket.core.util.InvokerUtils;
+import org.eclipse.jetty.websocket.core.util.ReflectUtils;
 
 /**
  * Factory to create {@link JettyWebSocketFrameHandler} instances suitable for
@@ -67,13 +67,13 @@ import org.eclipse.jetty.websocket.core.internal.util.ReflectUtils;
  * Will create a {@link org.eclipse.jetty.websocket.core.FrameHandler} suitable for use with classes/objects that:
  * </p>
  * <ul>
- * <li>Is &#64;{@link org.eclipse.jetty.ee9.websocket.api.annotations.WebSocket} annotated</li>
- * <li>Extends {@link org.eclipse.jetty.ee9.websocket.api.WebSocketAdapter}</li>
- * <li>Implements {@link org.eclipse.jetty.ee9.websocket.api.WebSocketListener}</li>
- * <li>Implements {@link org.eclipse.jetty.ee9.websocket.api.WebSocketConnectionListener}</li>
- * <li>Implements {@link org.eclipse.jetty.ee9.websocket.api.WebSocketPartialListener}</li>
- * <li>Implements {@link org.eclipse.jetty.ee9.websocket.api.WebSocketPingPongListener}</li>
- * <li>Implements {@link org.eclipse.jetty.ee9.websocket.api.WebSocketFrameListener}</li>
+ * <li>Is &#64;{@link WebSocket} annotated</li>
+ * <li>Extends {@link WebSocketAdapter}</li>
+ * <li>Implements {@link WebSocketListener}</li>
+ * <li>Implements {@link WebSocketConnectionListener}</li>
+ * <li>Implements {@link WebSocketPartialListener}</li>
+ * <li>Implements {@link WebSocketPingPongListener}</li>
+ * <li>Implements {@link WebSocketFrameListener}</li>
  * </ul>
  */
 public class JettyWebSocketFrameHandlerFactory extends ContainerLifeCycle
@@ -114,12 +114,6 @@ public class JettyWebSocketFrameHandlerFactory extends ContainerLifeCycle
     private static final InvokerUtils.Arg[] binaryPartialBufferCallingArgs = new InvokerUtils.Arg[]{
         new InvokerUtils.Arg(Session.class),
         new InvokerUtils.Arg(ByteBuffer.class).required(),
-        new InvokerUtils.Arg(boolean.class).required()
-    };
-
-    private static final InvokerUtils.Arg[] binaryPartialArrayCallingArgs = new InvokerUtils.Arg[]{
-        new InvokerUtils.Arg(Session.class),
-        new InvokerUtils.Arg(byte[].class).required(),
         new InvokerUtils.Arg(boolean.class).required()
     };
 
@@ -197,7 +191,7 @@ public class JettyWebSocketFrameHandlerFactory extends ContainerLifeCycle
             metadata);
     }
 
-    public static MessageSink createMessageSink(MethodHandle msgHandle, Class<? extends MessageSink> sinkClass, Executor executor, WebSocketSession session)
+    public static MessageSink createMessageSink(MethodHandle msgHandle, Class<? extends MessageSink> sinkClass, WebSocketSession session)
     {
         if (msgHandle == null)
             return null;
@@ -208,8 +202,8 @@ public class JettyWebSocketFrameHandlerFactory extends ContainerLifeCycle
         {
             MethodHandles.Lookup lookup = JettyWebSocketFrameHandlerFactory.getServerMethodHandleLookup();
             MethodHandle ctorHandle = lookup.findConstructor(sinkClass,
-                MethodType.methodType(void.class, CoreSession.class, MethodHandle.class));
-            return (MessageSink)ctorHandle.invoke(session.getCoreSession(), msgHandle);
+                MethodType.methodType(void.class, CoreSession.class, MethodHandle.class, boolean.class));
+            return (MessageSink)ctorHandle.invoke(session.getCoreSession(), msgHandle, true);
         }
         catch (NoSuchMethodException e)
         {

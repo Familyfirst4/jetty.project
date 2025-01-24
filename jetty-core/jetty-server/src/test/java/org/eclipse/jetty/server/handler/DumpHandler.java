@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -17,6 +17,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
+import java.util.Locale;
 
 import org.eclipse.jetty.http.HttpField;
 import org.eclipse.jetty.http.HttpHeader;
@@ -26,7 +27,7 @@ import org.eclipse.jetty.io.Content;
 import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.Response;
-import org.eclipse.jetty.util.Blocking;
+import org.eclipse.jetty.util.Blocker;
 import org.eclipse.jetty.util.BufferUtil;
 import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.Fields;
@@ -39,11 +40,11 @@ import org.slf4j.LoggerFactory;
  * Dumps GET and POST requests.
  * Useful for testing and debugging.
  */
-public class DumpHandler extends Handler.Processor
+public class DumpHandler extends Handler.Abstract
 {
     private static final Logger LOG = LoggerFactory.getLogger(DumpHandler.class);
 
-    private final Blocking.Shared _blocker = new Blocking.Shared(); 
+    private final Blocker.Shared _blocker = new Blocker.Shared();
     private final String _label;
 
     public DumpHandler()
@@ -53,12 +54,11 @@ public class DumpHandler extends Handler.Processor
 
     public DumpHandler(String label)
     {
-        super(InvocationType.BLOCKING);
         _label = label;
     }
 
     @Override
-    public void process(Request request, Response response, Callback callback) throws Exception
+    public boolean handle(Request request, Response response, Callback callback) throws Exception
     {
         if (LOG.isDebugEnabled())
             LOG.debug("dump {}", request);
@@ -68,7 +68,7 @@ public class DumpHandler extends Handler.Processor
 
         if (Boolean.parseBoolean(params.getValue("flush")))
         {
-            try (Blocking.Callback blocker = _blocker.callback())
+            try (Blocker.Callback blocker = _blocker.callback())
             {
                 response.write(false, null, blocker);
                 blocker.block();
@@ -79,7 +79,7 @@ public class DumpHandler extends Handler.Processor
         {
             response.setStatus(200);
             callback.succeeded();
-            return;
+            return true;
         }
 
         Utf8StringBuilder read = null;
@@ -97,7 +97,7 @@ public class DumpHandler extends Handler.Processor
                     chunk = request.read();
                     if (chunk == null)
                     {
-                        try (Blocking.Runnable blocker = _blocker.runnable())
+                        try (Blocker.Runnable blocker = _blocker.runnable())
                         {
                             request.demand(blocker);
                             blocker.block();
@@ -106,10 +106,10 @@ public class DumpHandler extends Handler.Processor
                     }
                 }
 
-                if (chunk instanceof Content.Chunk.Error error)
+                if (Content.Chunk.isFailure(chunk))
                 {
-                    callback.failed(error.getCause());
-                    return;
+                    callback.failed(chunk.getFailure());
+                    return true;
                 }
 
                 int l = Math.min(buffer.length, Math.min(len, chunk.remaining()));
@@ -119,10 +119,11 @@ public class DumpHandler extends Handler.Processor
 
                 if (!chunk.hasRemaining())
                 {
+                    boolean last = chunk.isLast();
                     chunk.release();
-                    if (chunk.isLast())
-                        break;
                     chunk = null;
+                    if (last)
+                        break;
                 }
             }
             if (chunk != null)
@@ -139,7 +140,7 @@ public class DumpHandler extends Handler.Processor
         {
             response.setStatus(Integer.parseInt(params.getValue("error")));
             callback.succeeded();
-            return;
+            return true;
         }
 
         response.getHeaders().put(HttpHeader.CONTENT_TYPE, MimeTypes.Type.TEXT_HTML.asString());
@@ -151,7 +152,8 @@ public class DumpHandler extends Handler.Processor
         writer.write("<pre>httpURI.path=" + httpURI.getPath() + "</pre><br/>\n");
         writer.write("<pre>httpURI.query=" + httpURI.getQuery() + "</pre><br/>\n");
         writer.write("<pre>httpURI.pathQuery=" + httpURI.getPathQuery() + "</pre><br/>\n");
-        writer.write("<pre>pathInContext=" + request.getPathInContext() + "</pre><br/>\n");
+        writer.write("<pre>locales=" + Request.getLocales(request).stream().map(Locale::toLanguageTag).toList() + "</pre><br/>\n");
+        writer.write("<pre>pathInContext=" + Request.getPathInContext(request) + "</pre><br/>\n");
         writer.write("<pre>contentType=" + request.getHeaders().get(HttpHeader.CONTENT_TYPE) + "</pre><br/>\n");
         writer.write("<pre>servername=" + Request.getServerName(request) + "</pre><br/>\n");
         writer.write("<pre>local=" + Request.getLocalAddr(request) + ":" + Request.getLocalPort(request) + "</pre><br/>\n");
@@ -179,7 +181,7 @@ public class DumpHandler extends Handler.Processor
 
         writer.write("</pre>\n<h3>Content:</h3>\n<pre>");
         if (read != null)
-            writer.write(read.toString());
+            writer.write(read.toCompleteString());
         else
             writer.write(Content.Source.asString(request));
 
@@ -189,11 +191,11 @@ public class DumpHandler extends Handler.Processor
 
         // commit now
         if (!Boolean.parseBoolean(params.getValue("no-content-length")))
-            response.getHeaders().putLongField(HttpHeader.CONTENT_LENGTH, buf.size() + 1000);
+            response.getHeaders().put(HttpHeader.CONTENT_LENGTH, buf.size() + 1000);
 
         response.getHeaders().add("Before-Flush", response.isCommitted() ? "Committed???" : "Not Committed");
 
-        try (Blocking.Callback blocker = _blocker.callback())
+        try (Blocker.Callback blocker = _blocker.callback())
         {
             response.write(false, BufferUtil.toBuffer(buf.toByteArray()), blocker);
             blocker.block();
@@ -205,12 +207,13 @@ public class DumpHandler extends Handler.Processor
         // write remaining content after commit
         String padding = "ABCDEFGHIJ".repeat(99) + "ABCDEFGH\r\n";
 
-        try (Blocking.Callback blocker = _blocker.callback())
+        try (Blocker.Callback blocker = _blocker.callback())
         {
             response.write(true, BufferUtil.toBuffer(padding.getBytes(StandardCharsets.ISO_8859_1)), blocker);
             blocker.block();
         }
 
         callback.succeeded();
+        return true;
     }
 }

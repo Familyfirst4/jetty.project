@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -40,12 +40,11 @@ import static org.hamcrest.Matchers.notNullValue;
 @ExtendWith(WorkDirExtension.class)
 public class AltFilterTest
 {
-    public WorkDir testdir;
 
     @Test
-    public void testEcho() throws Exception
+    public void testEcho(WorkDir workDir) throws Exception
     {
-        WSServer wsb = new WSServer(testdir.getPath());
+        WSServer wsb = new WSServer(workDir.getEmptyPathDir());
         WSServer.WebApp app = wsb.createWebApp("app");
         app.copyWebInf("alt-filter-web.xml");
         // the endpoint (extends jakarta.websocket.Endpoint)

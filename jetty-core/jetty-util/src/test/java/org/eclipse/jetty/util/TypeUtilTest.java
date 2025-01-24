@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -15,15 +15,23 @@ package org.eclipse.jetty.util;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.stream.Stream;
 
 import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
+import org.eclipse.jetty.util.test10.ExampleClass;
 import org.hamcrest.Matchers;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.is;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -95,6 +103,47 @@ public class TypeUtilTest
         assertEquals("123456789ABCDEF0", b.toString());
     }
 
+    public static Stream<Arguments> isHexTrueSource()
+    {
+        return Stream.of(
+            Arguments.of("2A", 0, 2),
+            Arguments.of("2a", 0, 2),
+            Arguments.of("0x2F", 2, 2),
+            Arguments.of("0x2f", 2, 2),
+            Arguments.of("%25", 1, 2),
+            Arguments.of("%0d", 1, 2),
+            Arguments.of("%uC0AC", 2, 4),
+            Arguments.of("%uc0ac", 2, 4)
+        );
+    }
+
+    @ParameterizedTest
+    @MethodSource("isHexTrueSource")
+    public void testIsHexTrue(String input, int offset, int length)
+    {
+        assertTrue(TypeUtil.isHex(input, offset, length));
+    }
+
+    public static Stream<Arguments> isHexFalseSource()
+    {
+        return Stream.of(
+            Arguments.of("gg", 0, 2),
+            Arguments.of("GG", 0, 2),
+            Arguments.of("0xZZ", 2, 2),
+            Arguments.of("0xyz", 2, 2),
+            Arguments.of("%xy", 1, 2),
+            Arguments.of("%0z", 1, 2),
+            Arguments.of("%users", 2, 4)
+        );
+    }
+
+    @ParameterizedTest
+    @MethodSource("isHexFalseSource")
+    public void testIsHexFalse(String input, int offset, int length)
+    {
+        assertFalse(TypeUtil.isHex(input, offset, length));
+    }
+
     @Test
     public void testIsTrue()
     {
@@ -161,8 +210,11 @@ public class TypeUtilTest
         Path mavenRepoPath = Paths.get(mavenRepoPathProperty);
 
         // Classes from maven dependencies
-        Resource resource = Resource.newResource(TypeUtil.getLocationOfClass(org.junit.jupiter.api.Assertions.class).toASCIIString());
-        assertThat(resource.getFile().getCanonicalPath(), Matchers.startsWith(mavenRepoPath.toFile().getCanonicalPath()));
+        try (ResourceFactory.Closeable resourceFactory = ResourceFactory.closeable())
+        {
+            Resource resource = resourceFactory.newResource(TypeUtil.getLocationOfClass(org.junit.jupiter.api.Assertions.class).toASCIIString());
+            assertThat(resource.getPath().toString(), Matchers.startsWith(mavenRepoPath.toString()));
+        }
     }
 
     @Test
@@ -186,5 +238,63 @@ public class TypeUtilTest
         // Class from JVM core
         String expectedJavaBase = "/java.base";
         assertThat(TypeUtil.getLocationOfClass(java.lang.ThreadDeath.class).toASCIIString(), containsString(expectedJavaBase));
+    }
+
+    public static Stream<Arguments> shortNames()
+    {
+        return Stream.of(
+            Arguments.of(TypeUtilTest.class, "oeju.TypeUtilTest"),
+            Arguments.of(ExampleClass.class, "oejut10.ExampleClass")
+        );
+    }
+
+    @ParameterizedTest
+    @MethodSource("shortNames")
+    public void testToShortName(Class<?> clazz, String shortName)
+    {
+        assertThat(TypeUtil.toShortName(clazz), is(shortName));
+    }
+
+    @Test
+    public void testCeilNextPowerOfTwo()
+    {
+        assertThrows(IllegalArgumentException.class, () -> TypeUtil.ceilToNextPowerOfTwo(-1));
+        assertThat(TypeUtil.ceilToNextPowerOfTwo(0), is(1));
+        assertThat(TypeUtil.ceilToNextPowerOfTwo(1), is(1));
+        assertThat(TypeUtil.ceilToNextPowerOfTwo(2), is(2));
+        assertThat(TypeUtil.ceilToNextPowerOfTwo(3), is(4));
+        assertThat(TypeUtil.ceilToNextPowerOfTwo(4), is(4));
+        assertThat(TypeUtil.ceilToNextPowerOfTwo(5), is(8));
+        assertThat(TypeUtil.ceilToNextPowerOfTwo(Integer.MAX_VALUE - 1), is(Integer.MAX_VALUE));
+    }
+
+    public static class Base
+    {
+        protected String methodA(String arg)
+        {
+            return "a" + arg.length();
+        }
+
+        protected String methodB(String arg)
+        {
+            return "b" + arg.length();
+        }
+    }
+
+    public static class Example extends Base
+    {
+        @Override
+        protected String methodB(String arg)
+        {
+            return "B" + arg;
+        }
+    }
+
+    @Test
+    public void testIsMethodDeclaredOn()
+    {
+        Example example = new Example();
+        assertFalse(TypeUtil.isDeclaredMethodOn(example, "methodA", String.class));
+        assertTrue(TypeUtil.isDeclaredMethodOn(example, "methodB", String.class));
     }
 }

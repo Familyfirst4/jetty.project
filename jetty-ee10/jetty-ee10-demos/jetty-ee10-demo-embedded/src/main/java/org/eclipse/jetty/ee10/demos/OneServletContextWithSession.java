@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -22,8 +22,8 @@ import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.session.DefaultSessionCache;
 import org.eclipse.jetty.session.NullSessionDataStore;
 import org.eclipse.jetty.session.SessionCache;
-import org.eclipse.jetty.util.resource.PathResource;
 import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
 
 public class OneServletContextWithSession
 {
@@ -35,7 +35,7 @@ public class OneServletContextWithSession
         ServletContextHandler context = new ServletContextHandler(
             ServletContextHandler.SESSIONS);
         context.setContextPath("/");
-        context.setBaseResource(baseResource.getPath());
+        context.setBaseResource(baseResource);
         server.setHandler(context);
 
         // Access the SessionHandler from the context.
@@ -62,7 +62,7 @@ public class OneServletContextWithSession
     {
         int port = ExampleUtil.getPort(args, "jetty.http.port", 8080);
         Path dir = Paths.get(System.getProperty("user.dir"));
-        PathResource baseResource = new PathResource(dir);
+        Resource baseResource = ResourceFactory.root().newResource(dir);
         Server server = createServer(port, baseResource);
 
         server.start();

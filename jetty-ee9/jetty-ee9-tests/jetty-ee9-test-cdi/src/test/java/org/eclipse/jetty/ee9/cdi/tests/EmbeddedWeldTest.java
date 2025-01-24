@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -27,6 +27,7 @@ import org.eclipse.jetty.ee9.servlet.ServletContextHandler;
 import org.eclipse.jetty.ee9.webapp.WebAppContext;
 import org.eclipse.jetty.server.LocalConnector;
 import org.eclipse.jetty.server.Server;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -67,7 +68,7 @@ public class EmbeddedWeldTest
         server.addConnector(new LocalConnector(server));
         ServletContextHandler context = new ServletContextHandler();
         context.setContextPath("/");
-        context.setResourceBase("src/test/weldtest");
+        context.setBaseResourceAsString("src/test/weldtest");
         server.setHandler(context);
 
         // Setup context
@@ -146,6 +147,13 @@ public class EmbeddedWeldTest
         })
     public void testServletContext(String mode) throws Exception
     {
+        //Mode "none" is incompatible with jetty-12. This mode delegates to Weld to work out how to
+        //instantiate injection capabilities into jetty, but as of Weld 5.1.1 this relied on pre jetty-12 classes.
+        //Mode "DecoratingListener+Listener is incompatible with jetty-12. The name of the attribute that communicates
+        //the injector decorator between Weld and jetty-12 relies on the classname of the DecoratingListener class, which
+        //in pre jetty-12 was org.eclipse.jetty.webapp.DecoratingListener, but is now org.eclipse.jetty.ee10.webapp.DecoratingListener.
+        Assumptions.assumeFalse(mode.equals("none") || mode.equals("DecoratingListener+Listener"));
+
         Server server = createServerWithServletContext(mode);
         server.start();
         LocalConnector connector = server.getBean(LocalConnector.class);
@@ -166,7 +174,7 @@ public class EmbeddedWeldTest
     @Test
     public void testServletContextSimone() throws Exception
     {
-        Server server = createServerWithServletContext("none");
+        Server server = createServerWithServletContext("CdiDecoratingListener+Listener");
         server.start();
         LocalConnector connector = server.getBean(LocalConnector.class);
         String response = connector.getResponse("GET / HTTP/1.0\r\n\r\n");
@@ -186,7 +194,7 @@ public class EmbeddedWeldTest
         server.addConnector(new LocalConnector(server));
         WebAppContext webapp = new WebAppContext();
         webapp.setContextPath("/");
-        webapp.setResourceBase("src/test/weldtest");
+        webapp.setBaseResourceAsString("src/test/weldtest");
         server.setHandler(webapp);
 
         webapp.setInitParameter(org.eclipse.jetty.ee9.cdi.CdiServletContainerInitializer.CDI_INTEGRATION_ATTRIBUTE, org.eclipse.jetty.ee9.cdi.CdiDecoratingListener.MODE);
@@ -197,14 +205,14 @@ public class EmbeddedWeldTest
         webapp.getServerClassMatcher().add("-" + pkg + ".");
         webapp.getSystemClassMatcher().add(pkg + ".");
 
-        webapp.addServlet(GreetingsServlet.class, "/");
+        webapp.addServlet(GreetingsServlet.class, "/greet");
         webapp.addFilter(MyFilter.class, "/*", EnumSet.of(DispatcherType.REQUEST));
         webapp.getServletHandler().addListener(new ListenerHolder(MyContextListener.class));
 
         server.start();
 
         LocalConnector connector = server.getBean(LocalConnector.class);
-        String response = connector.getResponse("GET / HTTP/1.0\r\n\r\n");
+        String response = connector.getResponse("GET /greet HTTP/1.0\r\n\r\n");
         assertThat(response, containsString("HTTP/1.1 200 OK"));
         assertThat(response, containsString("Hello GreetingsServlet filtered by Weld BeanManager "));
         assertThat(response, containsString("Beans from Weld BeanManager "));
@@ -219,14 +227,14 @@ public class EmbeddedWeldTest
         server.addConnector(new LocalConnector(server));
         WebAppContext webapp = new WebAppContext();
         webapp.setContextPath("/");
-        webapp.setResourceBase("src/test/weldtest");
+        webapp.setBaseResourceAsString("src/test/weldtest");
         server.setHandler(webapp);
 
-        // Need the AnnotationConfiguration to detect SCIs
-        webapp.addConfiguration(new AnnotationConfiguration());
-
-        // Need to expose our SCI.  This is ugly could be made better in jetty-10 with a CdiConfiguration
+        // Need to expose our SCI.
         webapp.addConfiguration(new CdiConfiguration());
+
+        //ensure our CDI SCI is run first so the decorator is set up before Weld runs
+        webapp.setAttribute(AnnotationConfiguration.SERVLET_CONTAINER_INITIALIZER_ORDER, "org.eclipse.jetty.ee9.cdi.CdiServletContainerInitializer, *");
 
         // This is ugly but needed for maven for testing in a overlaid war pom
         String pkg = EmbeddedWeldTest.class.getPackage().getName();
@@ -235,13 +243,12 @@ public class EmbeddedWeldTest
 
         webapp.getServletHandler().addListener(new ListenerHolder(MyContextListener.class));
         webapp.addFilter(MyFilter.class, "/*", EnumSet.of(DispatcherType.REQUEST));
-        webapp.addServlet(GreetingsServlet.class, "/");
+        webapp.addServlet(GreetingsServlet.class, "/greet");
 
         server.start();
 
         LocalConnector connector = server.getBean(LocalConnector.class);
-        String response = connector.getResponse("GET / HTTP/1.0\r\n\r\n");
-        System.err.println(response);
+        String response = connector.getResponse("GET /greet HTTP/1.0\r\n\r\n");
         assertThat(response, containsString("HTTP/1.1 200 OK"));
         assertThat(response, containsString("Hello GreetingsServlet filtered by Weld BeanManager "));
         assertThat(response, containsString("Beans from Weld BeanManager "));

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -121,14 +121,12 @@ public class DebugListener extends AbstractLifeCycle implements ServletContextLi
             if (_out == null)
             {
                 handler.dumpStdErr();
-                System.err.println(Dumpable.KEY);
             }
             else
             {
                 try
                 {
-                    handler.dump(_out);
-                    _out.println(Dumpable.KEY);
+                    Dumpable.dump(handler, _out);
                 }
                 catch (Exception e)
                 {
@@ -191,7 +189,7 @@ public class DebugListener extends AbstractLifeCycle implements ServletContextLi
         long now = System.currentTimeMillis();
         long ms = now % 1000;
         if (_out != null)
-            _out.printf("%s.%03d:%s%n", __date.formatNow(now), ms, s);
+            _out.printf("%s.%03d:%s%n", __date.format(now), ms, s);
         if (LOG.isDebugEnabled())
             LOG.debug(s);
     }
@@ -251,7 +249,7 @@ public class DebugListener extends AbstractLifeCycle implements ServletContextLi
             {
                 Request br = Request.getBaseRequest(r);
 
-                String headers = _showHeaders ? ("\n" + br.getMetaData().getFields().toString()) : "";
+                String headers = _showHeaders ? ("\n" + br.getMetaData().getHttpFields().toString()) : "";
 
                 StringBuffer url = r.getRequestURL();
                 if (r.getQueryString() != null)

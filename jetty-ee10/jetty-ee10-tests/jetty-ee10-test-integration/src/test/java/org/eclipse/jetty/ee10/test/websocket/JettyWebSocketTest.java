@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -17,10 +17,10 @@ import java.net.URI;
 import java.util.concurrent.TimeUnit;
 
 import org.eclipse.jetty.ee10.test.support.XmlBasedJettyServer;
-import org.eclipse.jetty.ee10.websocket.api.util.WSURI;
-import org.eclipse.jetty.ee10.websocket.client.ClientUpgradeRequest;
-import org.eclipse.jetty.ee10.websocket.client.WebSocketClient;
 import org.eclipse.jetty.http.HttpScheme;
+import org.eclipse.jetty.websocket.api.util.WSURI;
+import org.eclipse.jetty.websocket.client.ClientUpgradeRequest;
+import org.eclipse.jetty.websocket.client.WebSocketClient;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -55,7 +55,7 @@ public class JettyWebSocketTest
     @Test
     public void testChatEndpoint() throws Exception
     {
-        URI uri = WSURI.toWebsocket(server.getServerURI().resolve("/demo-jetty-webapp/ws/foo"));
+        URI uri = WSURI.toWebsocket(server.getServerURI().resolve("/ee10-demo-jetty/jetty.websocket/foo"));
 
         WebSocketClient client = new WebSocketClient();
 

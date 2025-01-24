@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -28,9 +28,11 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 import jakarta.servlet.RequestDispatcher;
+import jakarta.servlet.ServletContext;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.eclipse.jetty.http.HttpField;
 import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpStatus;
@@ -39,7 +41,6 @@ import org.eclipse.jetty.http.QuotedQualityCSV;
 import org.eclipse.jetty.io.ByteBufferOutputStream;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.util.BufferUtil;
-import org.eclipse.jetty.util.QuotedStringTokenizer;
 import org.eclipse.jetty.util.StringUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -88,7 +89,7 @@ public class ErrorHandler extends AbstractHandler
         // This logic really should be in ErrorPageErrorHandler, but some implementations extend ErrorHandler
         // and implement ErrorPageMapper directly, so we do this here in the base class.
         String errorPage = (this instanceof ErrorPageMapper) ? ((ErrorPageMapper)this).getErrorPage(request) : null;
-        ContextHandler.APIContext context = baseRequest.getErrorContext();
+        ServletContext context = baseRequest.getLastContext();
         Dispatcher errorDispatcher = (errorPage != null && context != null)
             ? (Dispatcher)context.getRequestDispatcher(errorPage) : null;
 
@@ -282,7 +283,7 @@ public class ErrorHandler extends AbstractHandler
         // write into the response aggregate buffer and flush it asynchronously.
         while (true)
         {
-            ByteBuffer buffer = baseRequest.getResponse().getHttpOutput().getBuffer();
+            ByteBuffer buffer = baseRequest.getResponse().getHttpOutput().getByteBuffer();
             try
             {
                 ByteBufferOutputStream out = new ByteBufferOutputStream(buffer);
@@ -431,7 +432,7 @@ public class ErrorHandler extends AbstractHandler
         writer.write("</td></tr>\n");
     }
 
-    private void writeErrorPlain(HttpServletRequest request, PrintWriter writer, int code, String message)
+    protected void writeErrorPlain(HttpServletRequest request, PrintWriter writer, int code, String message)
     {
         writer.write("HTTP ERROR ");
         writer.write(Integer.toString(code));
@@ -457,7 +458,7 @@ public class ErrorHandler extends AbstractHandler
         }
     }
 
-    private void writeErrorJson(HttpServletRequest request, PrintWriter writer, int code, String message)
+    protected void writeErrorJson(HttpServletRequest request, PrintWriter writer, int code, String message)
     {
         Throwable cause = (Throwable)request.getAttribute(Dispatcher.ERROR_EXCEPTION);
         Object servlet = request.getAttribute(Dispatcher.ERROR_SERVLET_NAME);
@@ -478,9 +479,7 @@ public class ErrorHandler extends AbstractHandler
         }
 
         writer.append(json.entrySet().stream()
-                .map(e -> QuotedStringTokenizer.quote(e.getKey()) +
-                        ":" +
-                    QuotedStringTokenizer.quote(StringUtil.sanitizeXmlString((e.getValue()))))
+                .map(e -> HttpField.NAME_VALUE_TOKENIZER.quote(e.getKey()) + ":" + HttpField.NAME_VALUE_TOKENIZER.quote(StringUtil.sanitizeXmlString((e.getValue()))))
                 .collect(Collectors.joining(",\n", "{\n", "\n}")));
     }
 
@@ -579,6 +578,7 @@ public class ErrorHandler extends AbstractHandler
     }
 
     /**
+     * Set if true, the error message appears in page title.
      * @param showMessageInTitle if true, the error message appears in page title
      */
     public void setShowMessageInTitle(boolean showMessageInTitle)

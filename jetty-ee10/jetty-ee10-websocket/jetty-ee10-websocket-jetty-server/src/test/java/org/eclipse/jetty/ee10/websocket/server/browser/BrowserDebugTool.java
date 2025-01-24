@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -25,7 +25,6 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.eclipse.jetty.ee10.servlet.DefaultServlet;
 import org.eclipse.jetty.ee10.servlet.ServletContextHandler;
 import org.eclipse.jetty.ee10.servlet.ServletHolder;
-import org.eclipse.jetty.ee10.websocket.api.ExtensionConfig;
 import org.eclipse.jetty.ee10.websocket.server.JettyServerUpgradeRequest;
 import org.eclipse.jetty.ee10.websocket.server.JettyServerUpgradeResponse;
 import org.eclipse.jetty.ee10.websocket.server.JettyWebSocketCreator;
@@ -34,11 +33,10 @@ import org.eclipse.jetty.ee10.websocket.server.JettyWebSocketServletFactory;
 import org.eclipse.jetty.ee10.websocket.server.config.JettyWebSocketServletContainerInitializer;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
-import org.eclipse.jetty.server.handler.DefaultHandler;
-import org.eclipse.jetty.server.handler.HandlerList;
 import org.eclipse.jetty.toolchain.test.MavenTestingUtils;
-import org.eclipse.jetty.util.resource.PathResource;
 import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
+import org.eclipse.jetty.websocket.api.ExtensionConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -104,12 +102,12 @@ public class BrowserDebugTool
 
         context.setContextPath("/");
         Resource staticResourceBase = findStaticResources();
-        context.setBaseResource(staticResourceBase.getPath());
+        context.setBaseResourceAsPath(staticResourceBase.getPath());
         context.addServlet(BrowserSocketServlet.class, "/*");
         ServletHolder defHolder = new ServletHolder("default", DefaultServlet.class);
         context.addServlet(defHolder, "/");
 
-        server.setHandler(new HandlerList(context, new DefaultHandler()));
+        server.setHandler(context);
 
         LOG.info("{} setup on port {}", this.getClass().getName(), port);
     }
@@ -118,7 +116,7 @@ public class BrowserDebugTool
     {
         Path path = MavenTestingUtils.getTestResourcePathDir("browser-debug-tool");
         LOG.info("Static Resources: {}", path);
-        return new PathResource(path);
+        return ResourceFactory.root().newResource(path);
     }
 
     public void start() throws Exception

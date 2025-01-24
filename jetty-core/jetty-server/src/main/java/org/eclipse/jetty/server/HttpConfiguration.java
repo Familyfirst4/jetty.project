@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -15,19 +15,24 @@ package org.eclipse.jetty.server;
 
 import java.io.IOException;
 import java.net.SocketAddress;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+import org.eclipse.jetty.http.ComplianceViolation;
 import org.eclipse.jetty.http.CookieCompliance;
 import org.eclipse.jetty.http.HttpCompliance;
 import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpMethod;
 import org.eclipse.jetty.http.HttpScheme;
+import org.eclipse.jetty.http.MultiPartCompliance;
 import org.eclipse.jetty.http.UriCompliance;
 import org.eclipse.jetty.util.HostPort;
 import org.eclipse.jetty.util.Index;
 import org.eclipse.jetty.util.Jetty;
+import org.eclipse.jetty.util.URIUtil;
 import org.eclipse.jetty.util.annotation.ManagedAttribute;
 import org.eclipse.jetty.util.annotation.ManagedObject;
 import org.eclipse.jetty.util.component.Dumpable;
@@ -52,6 +57,7 @@ public class HttpConfiguration implements Dumpable
         .caseSensitive(false)
         .mutable()
         .build();
+    private final List<ComplianceViolation.Listener> _complianceViolationListeners = new ArrayList<>();
     private int _outputBufferSize = 32 * 1024;
     private int _outputAggregationSize = _outputBufferSize / 4;
     private int _requestHeaderSize = 8 * 1024;
@@ -73,12 +79,15 @@ public class HttpConfiguration implements Dumpable
     private long _minResponseDataRate;
     private HttpCompliance _httpCompliance = HttpCompliance.RFC7230;
     private UriCompliance _uriCompliance = UriCompliance.DEFAULT;
+    private UriCompliance _redirectUriCompliance = null; // TODO default to UriCompliance.DEFAULT in 12.1 ?;
     private CookieCompliance _requestCookieCompliance = CookieCompliance.RFC6265;
     private CookieCompliance _responseCookieCompliance = CookieCompliance.RFC6265;
+    private MultiPartCompliance _multiPartCompliance = MultiPartCompliance.RFC7578;
     private boolean _notifyRemoteAsyncErrors = true;
-    private boolean _relativeRedirectAllowed;
+    private boolean _relativeRedirectAllowed = true;
     private HostPort _serverAuthority;
     private SocketAddress _localAddress;
+    private int _maxUnconsumedRequestContentReads = 16;
 
     /**
      * <p>An interface that allows a request object to be customized
@@ -146,11 +155,15 @@ public class HttpConfiguration implements Dumpable
         _httpCompliance = config._httpCompliance;
         _requestCookieCompliance = config._requestCookieCompliance;
         _responseCookieCompliance = config._responseCookieCompliance;
+        _multiPartCompliance = config._multiPartCompliance;
+        _complianceViolationListeners.addAll(config._complianceViolationListeners);
         _notifyRemoteAsyncErrors = config._notifyRemoteAsyncErrors;
         _relativeRedirectAllowed = config._relativeRedirectAllowed;
         _uriCompliance = config._uriCompliance;
+        _redirectUriCompliance = config._redirectUriCompliance;
         _serverAuthority = config._serverAuthority;
         _localAddress = config._localAddress;
+        _maxUnconsumedRequestContentReads = config._maxUnconsumedRequestContentReads;
     }
 
     /**
@@ -179,6 +192,11 @@ public class HttpConfiguration implements Dumpable
                 return (T)c;
         }
         return null;
+    }
+
+    public boolean removeCustomizer(Customizer customizer)
+    {
+        return _customizers.remove(customizer);
     }
 
     @ManagedAttribute("The size in bytes of the output buffer used to aggregate HTTP output")
@@ -323,6 +341,7 @@ public class HttpConfiguration implements Dumpable
     }
 
     /**
+     * Set if true, delays the application dispatch until content is available (defaults to true).
      * @param delay if true, delays the application dispatch until content is available (defaults to true)
      */
     public void setDelayDispatchUntilContent(boolean delay)
@@ -337,6 +356,7 @@ public class HttpConfiguration implements Dumpable
     }
 
     /**
+     * Set whether to use direct ByteBuffers for reading.
      * @param useInputDirectByteBuffers whether to use direct ByteBuffers for reading
      */
     public void setUseInputDirectByteBuffers(boolean useInputDirectByteBuffers)
@@ -351,6 +371,7 @@ public class HttpConfiguration implements Dumpable
     }
 
     /**
+     * Set whether to use direct ByteBuffers for writing.
      * @param useOutputDirectByteBuffers whether to use direct ByteBuffers for writing
      */
     public void setUseOutputDirectByteBuffers(boolean useOutputDirectByteBuffers)
@@ -459,7 +480,7 @@ public class HttpConfiguration implements Dumpable
      */
     public void setSecureScheme(String secureScheme)
     {
-        _secureScheme = secureScheme;
+        _secureScheme = URIUtil.normalizeScheme(secureScheme);
     }
 
     /**
@@ -479,8 +500,9 @@ public class HttpConfiguration implements Dumpable
 
     /**
      * @return the set of HTTP methods of requests that can be decoded as
-     * {@code x-www-form-urlencoded} content.
+     * {@code application/x-www-form-urlencoded} content.
      */
+    @ManagedAttribute("The methods that support application/x-www-form-urlencoded content")
     public Set<String> getFormEncodedMethods()
     {
         return _formEncodedMethods.keySet();
@@ -565,6 +587,7 @@ public class HttpConfiguration implements Dumpable
         _minResponseDataRate = bytesPerSecond;
     }
 
+    @ManagedAttribute("The HTTP compliance mode")
     public HttpCompliance getHttpCompliance()
     {
         return _httpCompliance;
@@ -575,9 +598,15 @@ public class HttpConfiguration implements Dumpable
         _httpCompliance = httpCompliance;
     }
 
+    @ManagedAttribute("The URI compliance mode")
     public UriCompliance getUriCompliance()
     {
         return _uriCompliance;
+    }
+
+    public UriCompliance getRedirectUriCompliance()
+    {
+        return _redirectUriCompliance;
     }
 
     public void setUriCompliance(UriCompliance uriCompliance)
@@ -586,9 +615,18 @@ public class HttpConfiguration implements Dumpable
     }
 
     /**
+     * @param uriCompliance The {@link UriCompliance} to apply in {@link Response#toRedirectURI(Request, String)} or {@code null}.
+     */
+    public void setRedirectUriCompliance(UriCompliance uriCompliance)
+    {
+        _redirectUriCompliance = uriCompliance;
+    }
+
+    /**
      * @return The CookieCompliance used for parsing request {@code Cookie} headers.
      * @see #getResponseCookieCompliance()
      */
+    @ManagedAttribute("The HTTP request cookie compliance mode")
     public CookieCompliance getRequestCookieCompliance()
     {
         return _requestCookieCompliance;
@@ -606,6 +644,7 @@ public class HttpConfiguration implements Dumpable
      * @return The CookieCompliance used for generating response {@code Set-Cookie} headers
      * @see #getRequestCookieCompliance()
      */
+    @ManagedAttribute("The HTTP response cookie compliance mode")
     public CookieCompliance getResponseCookieCompliance()
     {
         return _responseCookieCompliance;
@@ -620,6 +659,52 @@ public class HttpConfiguration implements Dumpable
     }
 
     /**
+     * @return the {@link MultiPartCompliance} used for validating multipart form syntax.
+     */
+    @ManagedAttribute("The multipart/form-data compliance mode")
+    public MultiPartCompliance getMultiPartCompliance()
+    {
+        return _multiPartCompliance;
+    }
+
+    /**
+     * @param multiPartCompliance the {@link MultiPartCompliance} used for validating multipart form syntax.
+     */
+    public void setMultiPartCompliance(MultiPartCompliance multiPartCompliance)
+    {
+        this._multiPartCompliance = multiPartCompliance;
+    }
+
+    /**
+     * Add a {@link ComplianceViolation.Listener} to the configuration
+     * @param listener the listener to add
+     */
+    public void addComplianceViolationListener(ComplianceViolation.Listener listener)
+    {
+        this._complianceViolationListeners.add(Objects.requireNonNull(listener));
+    }
+
+    /**
+     * Remove a {@link ComplianceViolation.Listener} from the configuration
+     * @param listener the listener to remove
+     * @return {@code true} if this list contained the specified element
+     */
+    public boolean removeComplianceViolationListener(ComplianceViolation.Listener listener)
+    {
+        return this._complianceViolationListeners.remove(Objects.requireNonNull(listener));
+    }
+
+    /**
+     * Get the list of configured {@link ComplianceViolation.Listener} to use.
+     * @return the list of configured listeners
+     */
+    public List<ComplianceViolation.Listener> getComplianceViolationListeners()
+    {
+        return this._complianceViolationListeners;
+    }
+
+    /**
+     * Set whether remote errors, when detected, are notified to async applications.
      * @param notifyRemoteAsyncErrors whether remote errors, when detected, are notified to async applications
      */
     public void setNotifyRemoteAsyncErrors(boolean notifyRemoteAsyncErrors)
@@ -687,7 +772,7 @@ public class HttpConfiguration implements Dumpable
      *
      * @return Returns the connection server authority (name/port) or null
      */
-    @ManagedAttribute("The server authority if none provided by requests")
+    @ManagedAttribute("The server authority override")
     public HostPort getServerAuthority()
     {
         return _serverAuthority;
@@ -716,6 +801,28 @@ public class HttpConfiguration implements Dumpable
             _serverAuthority = authority;
     }
 
+    /**
+     * Sets the maximum amount of {@link HttpStream#read()}s that can be done by the {@link HttpStream} if the content is not
+     * fully consumed by the application. If this is unable to consume to EOF then the connection will be made non-persistent.
+     *
+     * @param maxUnconsumedRequestContentReads the maximum amount of reads for unconsumed content or -1 for unlimited.
+     */
+    public void setMaxUnconsumedRequestContentReads(int maxUnconsumedRequestContentReads)
+    {
+        _maxUnconsumedRequestContentReads = maxUnconsumedRequestContentReads;
+    }
+
+    /**
+     * Gets the maximum amount of {@link HttpStream#read()}s that can be done by the {@link HttpStream} if the content is not
+     * fully consumed by the application. If this is unable to consume to EOF then the connection will be made non-persistent.
+     *
+     * @return the maximum amount of reads for unconsumed content or -1 for unlimited.
+     */
+    public int getMaxUnconsumedRequestContentReads()
+    {
+        return _maxUnconsumedRequestContentReads;
+    }
+
     @Override
     public String dump()
     {
@@ -733,6 +840,7 @@ public class HttpConfiguration implements Dumpable
             "requestHeaderSize=" + _requestHeaderSize,
             "responseHeaderSize=" + _responseHeaderSize,
             "headerCacheSize=" + _headerCacheSize,
+            "headerCacheCaseSensitive=" + _headerCacheCaseSensitive,
             "secureScheme=" + _secureScheme,
             "securePort=" + _securePort,
             "idleTimeout=" + _idleTimeout,
@@ -742,12 +850,21 @@ public class HttpConfiguration implements Dumpable
             "delayDispatchUntilContent=" + _delayDispatchUntilContent,
             "persistentConnectionsEnabled=" + _persistentConnectionsEnabled,
             "maxErrorDispatches=" + _maxErrorDispatches,
+            "useInputDirectByteBuffers=" + _useInputDirectByteBuffers,
+            "useOutputDirectByteBuffers=" + _useOutputDirectByteBuffers,
             "minRequestDataRate=" + _minRequestDataRate,
             "minResponseDataRate=" + _minResponseDataRate,
+            "httpCompliance=" + _httpCompliance,
+            "uriCompliance=" + _uriCompliance,
+            "redirectUriCompliance=" + _redirectUriCompliance,
             "requestCookieCompliance=" + _requestCookieCompliance,
             "responseCookieCompliance=" + _responseCookieCompliance,
+            "multiPartCompliance=" + _multiPartCompliance,
             "notifyRemoteAsyncErrors=" + _notifyRemoteAsyncErrors,
-            "relativeRedirectAllowed=" + _relativeRedirectAllowed
+            "relativeRedirectAllowed=" + _relativeRedirectAllowed,
+            "serverAuthority=" + _serverAuthority,
+            "localAddress=" + _localAddress,
+            "maxUnconsumedRequestContentReads=" + _maxUnconsumedRequestContentReads
         );
     }
 

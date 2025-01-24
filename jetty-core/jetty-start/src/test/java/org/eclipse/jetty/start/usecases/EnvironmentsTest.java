@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -20,7 +20,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-import org.eclipse.jetty.start.Environment;
+import org.eclipse.jetty.start.StartEnvironment;
 import org.eclipse.jetty.toolchain.test.FS;
 import org.junit.jupiter.api.Test;
 
@@ -82,7 +82,7 @@ public class EnvironmentsTest extends AbstractUseCase
 
         // === Execute Main
         List<String> runArgs = List.of(
-            "--module=feature-envA,feature-envB"
+            "--modules=feature-envA,feature-envB"
         );
         ExecResults results = exec(runArgs, false);
 
@@ -113,10 +113,10 @@ public class EnvironmentsTest extends AbstractUseCase
         assertThat(results.getEnvironments(), hasSize(2));
         for (String e : List.of("envA", "envB"))
         {
-            Environment environment = results.getEnvironment(e);
+            StartEnvironment environment = results.getEnvironment(e);
             assertThat(environment, notNullValue());
             assertThat(environment.getName(), is(e));
-            assertThat(environment.getClasspath().getElements(), contains(baseDir.resolve("lib/%s.jar".formatted(e)).toFile()));
+            assertThat(environment.getClasspath().getElements(), contains(baseDir.resolve("lib/%s.jar".formatted(e))));
             assertThat(environment.getXmlFiles(), contains(baseDir.resolve("etc/%s.xml".formatted(e))));
             assertThat(environment.getProperties().getProp("feature.option").value, is(e));
         }

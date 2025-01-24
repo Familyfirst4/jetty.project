@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,35 +13,24 @@
 
 package org.eclipse.jetty.ee9.demos;
 
-import java.io.IOException;
-
-import jakarta.servlet.ServletException;
-import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.eclipse.jetty.http.HttpHeader;
+import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.Request;
+import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.server.Server;
-import org.eclipse.jetty.server.handler.AbstractHandler;
+import org.eclipse.jetty.util.BufferUtil;
+import org.eclipse.jetty.util.Callback;
 
-public class HelloWorld extends AbstractHandler
+public class HelloWorld extends Handler.Abstract
 {
     @Override
-    public void handle(String target,
-                       Request baseRequest,
-                       HttpServletRequest request,
-                       HttpServletResponse response) throws IOException,
-        ServletException
+    public boolean handle(Request request, Response response, Callback callback) throws Exception
     {
-        // Declare response encoding and types
-        response.setContentType("text/html; charset=utf-8");
-
-        // Declare response status code
+        response.getHeaders().add(HttpHeader.CONTENT_TYPE, "text/html; charset=utf-8");
         response.setStatus(HttpServletResponse.SC_OK);
-
-        // Write back response
-        response.getWriter().println("<h1>Hello World</h1>");
-
-        // Inform jetty that this request has now been handled
-        baseRequest.setHandled(true);
+        response.write(true, BufferUtil.toBuffer("<h1>Hello World</h1>"), callback);
+        return true;
     }
 
     public static void main(String[] args) throws Exception

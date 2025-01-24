@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -80,6 +80,18 @@ public abstract class InetAddressPattern implements Predicate<InetAddress>
     }
 
     @Override
+    public int hashCode()
+    {
+        return _pattern.hashCode();
+    }
+
+    @Override
+    public boolean equals(Object obj)
+    {
+        return obj instanceof InetAddressPattern inetAddressPattern && _pattern.equals(inetAddressPattern._pattern);
+    }
+
+    @Override
     public String toString()
     {
         return _pattern;
@@ -150,6 +162,8 @@ public abstract class InetAddressPattern implements Predicate<InetAddress>
         @Override
         public boolean test(InetAddress address)
         {
+            if (address == null)
+                return false;
             byte[] raw = address.getAddress();
             if (raw.length != _min.length)
                 return false;
@@ -214,6 +228,8 @@ public abstract class InetAddressPattern implements Predicate<InetAddress>
         @Override
         public boolean test(InetAddress address)
         {
+            if (address == null)
+                return false;
             byte[] raw = address.getAddress();
             if (raw.length != _raw.length)
                 return false;

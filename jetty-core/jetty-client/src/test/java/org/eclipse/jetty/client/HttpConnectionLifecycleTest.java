@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -16,16 +16,12 @@ package org.eclipse.jetty.client;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Collection;
-import java.util.Queue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-import org.eclipse.jetty.client.api.Connection;
-import org.eclipse.jetty.client.api.ContentResponse;
-import org.eclipse.jetty.client.api.Request;
-import org.eclipse.jetty.client.api.Response;
-import org.eclipse.jetty.client.api.Result;
-import org.eclipse.jetty.client.util.ByteBufferRequestContent;
+import org.eclipse.jetty.client.transport.HttpConnection;
+import org.eclipse.jetty.client.transport.HttpDestination;
+import org.eclipse.jetty.client.transport.HttpResponse;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpVersion;
 import org.eclipse.jetty.logging.StacklessLogging;
@@ -75,7 +71,7 @@ public class HttpConnectionLifecycleTest extends AbstractHttpClientServerTest
                 assertEquals(1, ((DuplexConnectionPool)destination.getConnectionPool()).getActiveConnections().size());
                 headersLatch.countDown();
             })
-            .send(new Response.Listener.Adapter()
+            .send(new Response.Listener()
             {
                 @Override
                 public void onSuccess(Response response)
@@ -115,7 +111,7 @@ public class HttpConnectionLifecycleTest extends AbstractHttpClientServerTest
         assertEquals(0, connectionPool.getIdleConnections().size());
         assertEquals(0, connectionPool.getActiveConnections().size());
 
-        request.listener(new Request.Listener.Adapter()
+        request.listener(new Request.Listener()
         {
             @Override
             public void onBegin(Request request)
@@ -129,7 +125,7 @@ public class HttpConnectionLifecycleTest extends AbstractHttpClientServerTest
             {
                 failureLatch.countDown();
             }
-        }).send(new Response.Listener.Adapter()
+        }).send(new Response.Listener()
         {
             @Override
             public void onComplete(Result result)
@@ -161,13 +157,13 @@ public class HttpConnectionLifecycleTest extends AbstractHttpClientServerTest
         HttpDestination destination = (HttpDestination)client.resolveDestination(request);
         DuplexConnectionPool connectionPool = (DuplexConnectionPool)destination.getConnectionPool();
 
-        Queue<Connection> idleConnections = connectionPool.getIdleConnections();
+        Collection<Connection> idleConnections = connectionPool.getIdleConnections();
         assertEquals(0, idleConnections.size());
 
         Collection<Connection> activeConnections = connectionPool.getActiveConnections();
         assertEquals(0, activeConnections.size());
 
-        request.listener(new Request.Listener.Adapter()
+        request.listener(new Request.Listener()
         {
             @Override
             public void onBegin(Request request)
@@ -182,7 +178,7 @@ public class HttpConnectionLifecycleTest extends AbstractHttpClientServerTest
                 successLatch.countDown();
             }
         })
-            .send(new Response.Listener.Adapter()
+            .send(new Response.Listener()
             {
                 @Override
                 public void onSuccess(Response response)
@@ -227,7 +223,7 @@ public class HttpConnectionLifecycleTest extends AbstractHttpClientServerTest
         assertEquals(0, activeConnections.size());
 
         long delay = 1000;
-        request.listener(new Request.Listener.Adapter()
+        request.listener(new Request.Listener()
         {
             @Override
             public void onBegin(Request request)
@@ -255,7 +251,7 @@ public class HttpConnectionLifecycleTest extends AbstractHttpClientServerTest
                 successLatch.countDown();
             }
         })
-            .send(new Response.Listener.Adapter()
+            .send(new Response.Listener()
             {
                 @Override
                 public void onSuccess(Response response)
@@ -340,7 +336,7 @@ public class HttpConnectionLifecycleTest extends AbstractHttpClientServerTest
         assertEquals(0, activeConnections.size());
 
         CountDownLatch latch = new CountDownLatch(1);
-        request.send(new Response.Listener.Adapter()
+        request.send(new Response.Listener()
         {
             @Override
             public void onComplete(Result result)
@@ -392,7 +388,7 @@ public class HttpConnectionLifecycleTest extends AbstractHttpClientServerTest
             ByteBuffer buffer = ByteBuffer.allocate(16 * 1024 * 1024);
             Arrays.fill(buffer.array(), (byte)'x');
             request.body(new ByteBufferRequestContent(buffer))
-                .send(new Response.Listener.Adapter()
+                .send(new Response.Listener()
                 {
                     @Override
                     public void onComplete(Result result)

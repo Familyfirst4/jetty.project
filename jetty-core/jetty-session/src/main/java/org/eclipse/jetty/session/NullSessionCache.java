@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -15,12 +15,11 @@ package org.eclipse.jetty.session;
 
 import java.util.function.Function;
 
+import org.eclipse.jetty.server.Session;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * NullSessionCache
- *
  * Does not actually cache any Session objects. Useful for testing.
  * Also useful if you do not want to share Session objects with the same id between
  * simultaneous requests: note that this means that context forwarding can't share
@@ -30,9 +29,6 @@ public class NullSessionCache extends AbstractSessionCache
 {
     private static final Logger LOG = LoggerFactory.getLogger(NullSessionCache.class);
 
-    /**
-     * @param handler The SessionHandler related to this SessionCache
-     */
     public NullSessionCache(SessionManager manager)
     {
         super(manager);
@@ -45,35 +41,34 @@ public class NullSessionCache extends AbstractSessionCache
     }
 
     @Override
-    public Session newSession(SessionData data)
+    public ManagedSession newSession(SessionData data)
     {
-        Session session = new Session(getSessionManager(), data);
-        return session;
+        return new ManagedSession(getSessionManager(), data);
     }
 
     @Override
-    public Session doGet(String id)
+    public ManagedSession doGet(String id)
     {
         //do not cache anything
         return null;
     }
 
     @Override
-    public Session doPutIfAbsent(String id, Session session)
+    public Session doPutIfAbsent(String id, ManagedSession session)
     {
         //nothing was stored previously
         return null;
     }
 
     @Override
-    public boolean doReplace(String id, Session oldValue, Session newValue)
+    public boolean doReplace(String id, ManagedSession oldValue, ManagedSession newValue)
     {
         //always accept new value
         return true;
     }
 
     @Override
-    public Session doDelete(String id)
+    public ManagedSession doDelete(String id)
     {
         return null;
     }
@@ -86,7 +81,7 @@ public class NullSessionCache extends AbstractSessionCache
     }
 
     @Override
-    protected Session doComputeIfAbsent(String id, Function<String, Session> mappingFunction)
+    protected ManagedSession doComputeIfAbsent(String id, Function<String, ManagedSession> mappingFunction)
     {
         return mappingFunction.apply(id);
     }

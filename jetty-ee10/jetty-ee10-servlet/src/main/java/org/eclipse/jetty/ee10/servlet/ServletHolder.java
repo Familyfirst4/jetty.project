@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -28,10 +28,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.Stack;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
-import jakarta.servlet.AsyncContext;
 import jakarta.servlet.GenericServlet;
 import jakarta.servlet.MultipartConfigElement;
 import jakarta.servlet.Servlet;
@@ -40,17 +38,16 @@ import jakarta.servlet.ServletContext;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.ServletRegistration;
 import jakarta.servlet.ServletRequest;
-import jakarta.servlet.ServletRequestWrapper;
 import jakarta.servlet.ServletResponse;
 import jakarta.servlet.ServletSecurityElement;
 import jakarta.servlet.UnavailableException;
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletRequestWrapper;
 import jakarta.servlet.http.HttpServletResponse;
-import org.eclipse.jetty.ee10.servlet.security.IdentityService;
-import org.eclipse.jetty.ee10.servlet.security.RunAsToken;
+import org.eclipse.jetty.security.AuthenticationState;
+import org.eclipse.jetty.security.IdentityService;
+import org.eclipse.jetty.security.UserIdentity;
 import org.eclipse.jetty.server.handler.ContextHandler;
 import org.eclipse.jetty.util.Loader;
+import org.eclipse.jetty.util.NanoTime;
 import org.eclipse.jetty.util.StringUtil;
 import org.eclipse.jetty.util.annotation.ManagedAttribute;
 import org.eclipse.jetty.util.annotation.ManagedObject;
@@ -77,7 +74,7 @@ public class ServletHolder extends Holder<Servlet> implements Comparable<Servlet
     private Map<String, String> _roleMap;
     private String _forcedPath;
     private String _runAsRole;
-    private ServletRegistration.Dynamic _registration;
+    private ServletHolder.Registration _registration;
     private JspContainer _jspContainer;
 
     private volatile Servlet _servlet;
@@ -156,6 +153,11 @@ public class ServletHolder extends Holder<Servlet> implements Comparable<Servlet
     {
         this(Source.EMBEDDED);
         setHeldClass(servlet);
+    }
+
+    public MultipartConfigElement getMultipartConfigElement()
+    {
+        return _registration == null ? null : _registration.getMultipartConfigElement();
     }
 
     /**
@@ -609,7 +611,7 @@ public class ServletHolder extends Holder<Servlet> implements Comparable<Servlet
                 IdentityService identityService = getServletHandler().getIdentityService();
                 if (identityService != null)
                 {
-                    RunAsToken runAsToken = identityService.newRunAsToken(_runAsRole);
+                    IdentityService.RunAsToken runAsToken = identityService.newRunAsToken(_runAsRole);
                     servlet = new RunAs(servlet, identityService, runAsToken);
                 }
             }
@@ -713,14 +715,6 @@ public class ServletHolder extends Holder<Servlet> implements Comparable<Servlet
     {
         // Ensure the servlet is initialized prior to any filters being invoked
         getServlet();
-
-        // Check for multipart config
-        if (_registration != null)
-        {
-            MultipartConfigElement mpce = ((Registration)_registration).getMultipartConfig();
-            if (mpce != null)
-                request.setAttribute(ServletContextRequest.__MULTIPART_CONFIG_ELEMENT, mpce);
-        }
     }
 
     /**
@@ -861,6 +855,7 @@ public class ServletHolder extends Holder<Servlet> implements Comparable<Servlet
     }
 
     /**
+     * Get the package for all jsps.
      * @return the package for all jsps
      */
     public String getJspPackagePrefix()
@@ -922,7 +917,7 @@ public class ServletHolder extends Holder<Servlet> implements Comparable<Servlet
 
     public class Registration extends HolderRegistration implements ServletRegistration.Dynamic
     {
-        protected MultipartConfigElement _multipartConfig;
+        protected MultipartConfigElement _multipartConfigElement;
 
         @Override
         public Set<String> addMapping(String... urlPatterns)
@@ -949,7 +944,7 @@ public class ServletHolder extends Holder<Servlet> implements Comparable<Servlet
                 return clash;
 
             //otherwise apply all of them
-            ServletMapping mapping = new ServletMapping(Source.JAVAX_API);
+            ServletMapping mapping = new ServletMapping(Source.JAKARTA_API);
             mapping.setServletName(ServletHolder.this.getName());
             mapping.setPathSpecs(urlPatterns);
             getServletHandler().addServletMapping(mapping);
@@ -997,12 +992,12 @@ public class ServletHolder extends Holder<Servlet> implements Comparable<Servlet
         @Override
         public void setMultipartConfig(MultipartConfigElement element)
         {
-            _multipartConfig = element;
+            _multipartConfigElement = element;
         }
 
-        public MultipartConfigElement getMultipartConfig()
+        public MultipartConfigElement getMultipartConfigElement()
         {
-            return _multipartConfig;
+            return _multipartConfigElement;
         }
 
         @Override
@@ -1018,7 +1013,7 @@ public class ServletHolder extends Holder<Servlet> implements Comparable<Servlet
         }
     }
 
-    public ServletRegistration.Dynamic getRegistration()
+    public ServletHolder.Registration getRegistration()
     {
         if (_registration == null)
             _registration = new Registration();
@@ -1196,9 +1191,9 @@ public class ServletHolder extends Holder<Servlet> implements Comparable<Servlet
                 _unavailableStart = null;
             else
             {
-                long start = System.nanoTime();
+                long start = NanoTime.now();
                 while (start == 0)
-                    start = System.nanoTime();
+                    start = NanoTime.now();
                 _unavailableStart = new AtomicLong(start);
             }
         }
@@ -1216,7 +1211,7 @@ public class ServletHolder extends Holder<Servlet> implements Comparable<Servlet
             {
                 long start = _unavailableStart.get();
 
-                if (start == 0 || System.nanoTime() - start < TimeUnit.SECONDS.toNanos(_unavailableException.getUnavailableSeconds()))
+                if (start == 0 || NanoTime.secondsSince(start) < _unavailableException.getUnavailableSeconds())
                 {
                     ((HttpServletResponse)res).sendError(HttpServletResponse.SC_SERVICE_UNAVAILABLE);
                 }
@@ -1316,9 +1311,9 @@ public class ServletHolder extends Holder<Servlet> implements Comparable<Servlet
     private static class RunAs extends Wrapper
     {
         final IdentityService _identityService;
-        final RunAsToken _runAsToken;
+        final IdentityService.RunAsToken _runAsToken;
 
-        public RunAs(Servlet servlet, IdentityService identityService, RunAsToken runAsToken)
+        public RunAs(Servlet servlet, IdentityService identityService, IdentityService.RunAsToken runAsToken)
         {
             super(servlet);
             _identityService = identityService;
@@ -1328,42 +1323,30 @@ public class ServletHolder extends Holder<Servlet> implements Comparable<Servlet
         @Override
         public void init(ServletConfig config) throws ServletException
         {
-            Object oldRunAs = _identityService.setRunAs(_identityService.getSystemUserIdentity(), _runAsToken);
-            try
+            try (IdentityService.Association ignored = _identityService.associate(_identityService.getSystemUserIdentity(), _runAsToken))
             {
                 getWrapped().init(config);
-            }
-            finally
-            {
-                _identityService.unsetRunAs(oldRunAs);
             }
         }
 
         @Override
-        public void service(ServletRequest req, ServletResponse res) throws ServletException, IOException
+        public void service(ServletRequest request, ServletResponse res) throws ServletException, IOException
         {
-            Object oldRunAs = _identityService.setRunAs(_identityService.getSystemUserIdentity(), _runAsToken);
-            try
+            ServletContextRequest servletContextRequest = ServletContextRequest.getServletContextRequest(request);
+            AuthenticationState authenticationState = AuthenticationState.getAuthenticationState(servletContextRequest);
+            UserIdentity userIdentity = (authenticationState instanceof AuthenticationState.Succeeded user) ? user.getUserIdentity() : _identityService.getSystemUserIdentity();
+            try (IdentityService.Association ignored = _identityService.associate(userIdentity, _runAsToken))
             {
-                getWrapped().service(req, res);
-            }
-            finally
-            {
-                _identityService.unsetRunAs(oldRunAs);
+                getWrapped().service(request, res);
             }
         }
 
         @Override
         public void destroy()
         {
-            Object oldRunAs = _identityService.setRunAs(_identityService.getSystemUserIdentity(), _runAsToken);
-            try
+            try (IdentityService.Association ignored = _identityService.associate(_identityService.getSystemUserIdentity(), _runAsToken))
             {
                 getWrapped().destroy();
-            }
-            finally
-            {
-                _identityService.unsetRunAs(oldRunAs);
             }
         }
     }
@@ -1376,49 +1359,24 @@ public class ServletHolder extends Holder<Servlet> implements Comparable<Servlet
         }
 
         @Override
-        public void service(ServletRequest req, ServletResponse res) throws ServletException, IOException
+        public void service(ServletRequest request, ServletResponse response) throws ServletException, IOException
         {
-            if (req.isAsyncSupported())
+            if (request.isAsyncSupported())
             {
-                if (req instanceof HttpServletRequest httpServletRequest)
+                ServletContextRequest servletContextRequest = ServletContextRequest.getServletContextRequest(request);
+                servletContextRequest.getServletApiRequest().setAsyncSupported(false);
+                try
                 {
-                    getWrapped().service(new HttpServletRequestWrapper(httpServletRequest)
-                    {
-                        @Override
-                        public boolean isAsyncSupported()
-                        {
-                            return false;
-                        }
-
-                        @Override
-                        public AsyncContext startAsync() throws IllegalStateException
-                        {
-                            throw new IllegalStateException("Async Not Supported");
-                        }
-                    }, res);
+                    getWrapped().service(request, response);
                 }
-                else
+                finally
                 {
-                    //TODO is this necessary to support?
-                    getWrapped().service(new ServletRequestWrapper(req)
-                    {
-                        @Override
-                        public boolean isAsyncSupported()
-                        {
-                            return false;
-                        }
-
-                        @Override
-                        public AsyncContext startAsync() throws IllegalStateException
-                        {
-                            throw new IllegalStateException("Async Not Supported");
-                        }
-                    }, res);
+                    servletContextRequest.getServletApiRequest().setAsyncSupported(true);
                 }
             }
             else
             {
-                getWrapped().service(req, res);
+                getWrapped().service(request, response);
             }
         }
     }

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -17,6 +17,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.ServiceLoader;
 
+import org.eclipse.jetty.util.ClassMatcher;
 import org.eclipse.jetty.util.TopologicalSort;
 
 /**
@@ -36,20 +37,19 @@ import org.eclipse.jetty.util.TopologicalSort;
  * {@link WebAppContext#setConfigurations(Configuration[])}, {@link WebAppContext#addConfiguration(Configuration...)}
  * or {@link WebAppContext#getConfigurations()}.
  * </p>
+ * <p>Since EE10 in Jetty-12, Configuration implementations must be stateless/immutable.</p>
  * <p>Since Jetty-9.4, Configurations are self ordering using the {@link #getDependencies()} and
  * {@link #getDependents()} methods for a {@link TopologicalSort} initiated by {@link Configurations#sort()}
  * when a {@link WebAppContext} is started.  This means that feature configurations
  * (eg {@link JndiConfiguration}, {@link JaasConfiguration}} etc.) can be added or removed without concern
  * for ordering.
  * </p>
- * <p>Also since Jetty-9.4, Configurations are responsible for providing {@link #getServerClasses()} and
- * {@link #getSystemClasses()} to configure the {@link WebAppClassLoader} for each context.
+ * <p>Also since Jetty-9.4, Configurations are responsible for providing {@link #getHiddenClasses()} and
+ * {@link #getProtectedClasses()} to configure the {@link WebAppClassLoader} for each context.
  * </p>
  */
 public interface Configuration
 {
-    String ATTR = "org.eclipse.jetty.webapp.configuration";
-
     /**
      * @return True if the feature this configuration represents is available and has all its dependencies.
      */
@@ -94,23 +94,41 @@ public interface Configuration
     }
 
     /**
-     * Get the system classes associated with this Configuration.
+     * Get the system (protected) classes associated with this Configuration.
      *
      * @return ClassMatcher of system classes.
      */
-    default ClassMatcher getSystemClasses()
+    default ClassMatcher getProtectedClasses()
     {
         return new ClassMatcher();
     }
 
     /**
-     * Get the system classes associated with this Configuration.
+     * Get the server (hidden) classes associated with this Configuration.
      *
      * @return ClassMatcher of server classes.
      */
-    default ClassMatcher getServerClasses()
+    default ClassMatcher getHiddenClasses()
     {
         return new ClassMatcher();
+    }
+
+    /**
+     * @deprecated use {@link #getProtectedClasses()} instead
+     */
+    @Deprecated(since = "12.0.8", forRemoval = true)
+    default org.eclipse.jetty.ee10.webapp.ClassMatcher getSystemClasses()
+    {
+        return org.eclipse.jetty.ee10.webapp.ClassMatcher.wrap(getProtectedClasses());
+    }
+
+    /**
+     * @deprecated use {@link #getHiddenClasses()} instead
+     */
+    @Deprecated(since = "12.0.8", forRemoval = true)
+    default org.eclipse.jetty.ee10.webapp.ClassMatcher getServerClasses()
+    {
+        return org.eclipse.jetty.ee10.webapp.ClassMatcher.wrap(getHiddenClasses());
     }
 
     /**
@@ -174,74 +192,4 @@ public interface Configuration
      * @return true if configuration should be aborted
      */
     boolean abort(WebAppContext context);
-
-    /**
-     * Experimental Wrapper mechanism for WebApp Configuration components.
-     * <p>
-     * Beans in WebAppContext that implement this interface
-     * will be called to optionally wrap any newly created {@link Configuration}
-     * objects before they are used for the first time.
-     * </p>
-     */
-    interface WrapperFunction
-    {
-        Configuration wrapConfiguration(Configuration configuration);
-    }
-
-    class Wrapper implements Configuration
-    {
-        private Configuration delegate;
-
-        public Wrapper(Configuration delegate)
-        {
-            this.delegate = delegate;
-        }
-
-        public Configuration getWrapped()
-        {
-            return delegate;
-        }
-
-        @Override
-        public void preConfigure(WebAppContext context) throws Exception
-        {
-            delegate.preConfigure(context);
-        }
-
-        @Override
-        public void configure(WebAppContext context) throws Exception
-        {
-            delegate.configure(context);
-        }
-
-        @Override
-        public void postConfigure(WebAppContext context) throws Exception
-        {
-            delegate.postConfigure(context);
-        }
-
-        @Override
-        public void deconfigure(WebAppContext context) throws Exception
-        {
-            delegate.deconfigure(context);
-        }
-
-        @Override
-        public void destroy(WebAppContext context) throws Exception
-        {
-            delegate.destroy(context);
-        }
-
-        @Override
-        public boolean isEnabledByDefault()
-        {
-            return delegate.isEnabledByDefault();
-        }
-
-        @Override
-        public boolean abort(WebAppContext context)
-        {
-            return delegate.abort(context);
-        }
-    }
 }

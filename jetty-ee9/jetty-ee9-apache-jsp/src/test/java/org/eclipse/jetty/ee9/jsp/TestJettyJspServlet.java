@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -64,14 +64,14 @@ public class TestJettyJspServlet
     public void setUp() throws Exception
     {
         JspFactory.setDefaultFactory(new JspFactoryImpl());
-        File baseDir = MavenTestingUtils.getTestResourceDir("base");
+        File baseDir = MavenTestingUtils.getTargetPath("test-classes/base").toFile();
         _server = new Server();
         _connector = new LocalConnector(_server);
         _server.addConnector(_connector);
         ServletContextHandler context = new ServletContextHandler(_server, "/context", true, false);
         context.setClassLoader(new URLClassLoader(new URL[0], Thread.currentThread().getContextClassLoader()));
         ServletHolder jspHolder = context.addServlet(JettyJspServlet.class, "/*");
-        jspHolder.setInitParameter("scratchdir", workdir.getPath().toString());
+        jspHolder.setInitParameter("scratchdir", workdir.getEmptyPathDir().toString());
         context.setResourceBase(baseDir.getAbsolutePath());
         context.setAttribute(InstanceManager.class.getName(), new SimpleInstanceManager());
         ServletHolder dfltHolder = new ServletHolder();

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -46,11 +46,11 @@ import org.eclipse.jetty.websocket.core.FrameHandler;
 import org.eclipse.jetty.websocket.core.OpCode;
 import org.eclipse.jetty.websocket.core.exception.ProtocolException;
 import org.eclipse.jetty.websocket.core.exception.WebSocketException;
-import org.eclipse.jetty.websocket.core.internal.messages.MessageSink;
-import org.eclipse.jetty.websocket.core.internal.messages.PartialByteArrayMessageSink;
-import org.eclipse.jetty.websocket.core.internal.messages.PartialByteBufferMessageSink;
-import org.eclipse.jetty.websocket.core.internal.messages.PartialStringMessageSink;
-import org.eclipse.jetty.websocket.core.internal.util.InvokerUtils;
+import org.eclipse.jetty.websocket.core.messages.MessageSink;
+import org.eclipse.jetty.websocket.core.messages.PartialByteArrayMessageSink;
+import org.eclipse.jetty.websocket.core.messages.PartialByteBufferMessageSink;
+import org.eclipse.jetty.websocket.core.messages.PartialStringMessageSink;
+import org.eclipse.jetty.websocket.core.util.InvokerUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -178,7 +178,7 @@ public class JakartaWebSocketFrameHandler implements FrameHandler
                 container.notifySessionListeners((listener) -> listener.onJakartaWebSocketSessionOpened(session));
 
             callback.succeeded();
-            coreSession.demand(1);
+            coreSession.demand();
         }
         catch (Throwable cause)
         {
@@ -320,12 +320,6 @@ public class JakartaWebSocketFrameHandler implements FrameHandler
             wsError.addSuppressed(cause);
             callback.failed(wsError);
         }
-    }
-
-    @Override
-    public boolean isDemanding()
-    {
-        return true;
     }
 
     public Set<MessageHandler> getMessageHandlers()
@@ -584,22 +578,29 @@ public class JakartaWebSocketFrameHandler implements FrameHandler
         if (activeMessageSink == null)
         {
             callback.succeeded();
-            coreSession.demand(1);
+            coreSession.demand();
             return;
         }
 
         // Accept the payload into the message sink
-        activeMessageSink.accept(frame, callback);
+        MessageSink messageSink = activeMessageSink;
         if (frame.isFin())
             activeMessageSink = null;
+        messageSink.accept(frame, callback);
     }
 
     public void onPing(Frame frame, Callback callback)
     {
-        ByteBuffer payload = BufferUtil.copy(frame.getPayload());
-        coreSession.sendFrame(new Frame(OpCode.PONG).setPayload(payload), Callback.NOOP, false);
-        callback.succeeded();
-        coreSession.demand(1);
+        coreSession.sendFrame(new Frame(OpCode.PONG).setPayload(frame.getPayload()), Callback.from(() ->
+        {
+            callback.succeeded();
+            coreSession.demand();
+        }, x ->
+        {
+            // Ignore failures, as we might be OSHUT but receive a PING.
+            callback.succeeded();
+            coreSession.demand();
+        }), false);
     }
 
     public void onPong(Frame frame, Callback callback)
@@ -615,14 +616,19 @@ public class JakartaWebSocketFrameHandler implements FrameHandler
                 // Use JSR356 PongMessage interface
                 JakartaWebSocketPongMessage pongMessage = new JakartaWebSocketPongMessage(payload);
                 pongHandle.invoke(pongMessage);
+                callback.succeeded();
+                coreSession.demand();
             }
             catch (Throwable cause)
             {
-                throw new WebSocketException(endpointInstance.getClass().getSimpleName() + " PONG method error: " + cause.getMessage(), cause);
+                callback.failed(new WebSocketException(endpointInstance.getClass().getSimpleName() + " PONG method error: " + cause.getMessage(), cause));
             }
         }
-        callback.succeeded();
-        coreSession.demand(1);
+        else
+        {
+            callback.succeeded();
+            coreSession.demand();
+        }
     }
 
     public void onText(Frame frame, Callback callback)
@@ -645,14 +651,9 @@ public class JakartaWebSocketFrameHandler implements FrameHandler
     {
         switch (dataType)
         {
-            case OpCode.TEXT:
-                onText(frame, callback);
-                break;
-            case OpCode.BINARY:
-                onBinary(frame, callback);
-                break;
-            default:
-                throw new ProtocolException("Unable to process continuation during dataType " + dataType);
+            case OpCode.TEXT -> onText(frame, callback);
+            case OpCode.BINARY -> onBinary(frame, callback);
+            default -> callback.failed(new ProtocolException("Unable to process continuation during dataType " + dataType));
         }
     }
 

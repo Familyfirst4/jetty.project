@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,11 +14,9 @@
 package org.eclipse.jetty.ee10.websocket.server.internal;
 
 import jakarta.servlet.ServletContext;
-import org.eclipse.jetty.ee10.servlet.ServletContextRequest;
-import org.eclipse.jetty.ee10.websocket.common.JettyWebSocketFrameHandler;
-import org.eclipse.jetty.ee10.websocket.common.JettyWebSocketFrameHandlerFactory;
 import org.eclipse.jetty.ee10.websocket.server.JettyWebSocketServerContainer;
-import org.eclipse.jetty.server.Request;
+import org.eclipse.jetty.websocket.common.JettyWebSocketFrameHandler;
+import org.eclipse.jetty.websocket.common.JettyWebSocketFrameHandlerFactory;
 import org.eclipse.jetty.websocket.core.FrameHandler;
 import org.eclipse.jetty.websocket.core.WebSocketComponents;
 import org.eclipse.jetty.websocket.core.server.FrameHandlerFactory;
@@ -41,13 +39,8 @@ public class JettyServerFrameHandlerFactory extends JettyWebSocketFrameHandlerFa
     @Override
     public FrameHandler newFrameHandler(Object websocketPojo, ServerUpgradeRequest upgradeRequest, ServerUpgradeResponse upgradeResponse)
     {
-        // Copy servlet params and attributes with UpgradeHttpServletRequest which may be inaccessible after upgrade.
-        ServletContextRequest servletContextRequest = Request.as(upgradeRequest, ServletContextRequest.class);
-        UpgradeHttpServletRequest httpServletRequest = new UpgradeHttpServletRequest(servletContextRequest.getHttpServletRequest());
-        httpServletRequest.upgrade();
-
         JettyWebSocketFrameHandler frameHandler = super.newJettyFrameHandler(websocketPojo);
-        frameHandler.setUpgradeRequest(new DelegatedServerUpgradeRequest(upgradeRequest, httpServletRequest));
+        frameHandler.setUpgradeRequest(new DelegatedServerUpgradeRequest(upgradeRequest));
         frameHandler.setUpgradeResponse(new DelegatedServerUpgradeResponse(upgradeResponse));
         return frameHandler;
     }

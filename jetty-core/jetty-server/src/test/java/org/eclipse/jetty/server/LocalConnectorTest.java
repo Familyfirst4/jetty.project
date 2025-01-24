@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -279,7 +279,7 @@ public class LocalConnectorTest
     }
 
     @Test
-    public void testExpectContinuesAvailable() throws Exception
+    public void testExpect100ContinueContentAvailable() throws Exception
     {
         LocalConnector.LocalEndPoint endp = _connector.connect();
         endp.addInput(
@@ -299,7 +299,7 @@ public class LocalConnectorTest
     }
 
     @Test
-    public void testExpectContinues() throws Exception
+    public void testExpect100Continue() throws Exception
     {
         LocalConnector.LocalEndPoint endp = _connector.executeRequest(
             """

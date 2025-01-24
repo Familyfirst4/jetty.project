@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -17,9 +17,6 @@ import java.net.ConnectException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-import org.eclipse.jetty.client.api.Request;
-import org.eclipse.jetty.client.api.Response;
-import org.eclipse.jetty.client.api.Result;
 import org.hamcrest.Matchers;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ArgumentsSource;
@@ -52,7 +49,7 @@ public class HttpClientSynchronizationTest extends AbstractHttpClientServerTest
             Object lock = this;
             synchronized (lock)
             {
-                request.send(new Response.Listener.Adapter()
+                request.send(new Response.Listener()
                 {
                     @Override
                     public void onFailure(Response response, Throwable failure)
@@ -87,7 +84,7 @@ public class HttpClientSynchronizationTest extends AbstractHttpClientServerTest
             Object lock = this;
             synchronized (lock)
             {
-                request.send(new Response.Listener.Adapter()
+                request.send(new Response.Listener()
                 {
                     @Override
                     public void onComplete(Result result)

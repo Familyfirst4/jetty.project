@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -32,20 +32,19 @@ import org.eclipse.jetty.util.Callback;
  */
 public class JaspiMessageInfo implements MessageInfo
 {
-    public static final String MANDATORY_KEY = "jakarta.security.auth.message.MessagePolicy.isMandatory";
-    public static final String AUTH_METHOD_KEY = "jakarta.servlet.http.authType";
+    public static final String AUTHENTICATION_TYPE_KEY = "jakarta.servlet.http.authType";
+    private final Callback _callback;
     private Request _request;
     private Response _response;
-    private Callback _callback;
     private final MIMap _map;
 
-    public JaspiMessageInfo(Request request, Response response, Callback callback, boolean isAuthMandatory)
+    public JaspiMessageInfo(Request request, Response response, Callback callback)
     {
         _request = request;
         _response = response;
         _callback = callback;
         //JASPI 3.8.1
-        _map = new MIMap(isAuthMandatory);
+        _map = new MIMap();
     }
     
     public Callback getCallback()
@@ -90,7 +89,7 @@ public class JaspiMessageInfo implements MessageInfo
     {
         if (!(request instanceof ServletRequest))
             throw new IllegalStateException("Not a ServletRequest");
-        _request = ServletContextRequest.getBaseRequest((ServletRequest)request);
+        _request = ServletContextRequest.getServletContextRequest((ServletRequest)request);
     }
 
     @Override
@@ -98,61 +97,43 @@ public class JaspiMessageInfo implements MessageInfo
     {
         if (!(response instanceof ServletResponse))
             throw new IllegalStateException("Not a ServletResponse");
-        _response = ServletContextResponse.getBaseResponse((ServletResponse)response);
-    }
-
-    public String getAuthMethod()
-    {
-        return _map.getAuthMethod();
-    }
-
-    public boolean isAuthMandatory()
-    {
-        return _map.isAuthMandatory();
+        _response = ServletContextResponse.getServletContextResponse((ServletResponse)response);
     }
 
     //TODO this has bugs in the view implementations.  Changing them will not affect the hardcoded values.
     private static class MIMap implements Map
     {
-        private final boolean isMandatory;
-        private String authMethod;
+        private String authenticationType;
         private Map delegate;
 
-        private MIMap(boolean mandatory)
+        private MIMap()
         {
-            isMandatory = mandatory;
         }
 
         @Override
         public int size()
         {
-            return (isMandatory ? 1 : 0) +
-                (authMethod == null ? 0 : 1) +
-                (delegate == null ? 0 : delegate.size());
+            return delegate.size();
         }
 
         @Override
         public boolean isEmpty()
         {
-            return !isMandatory && authMethod == null && (delegate == null || delegate.isEmpty());
+            return delegate == null || delegate.isEmpty();
         }
 
         @Override
         public boolean containsKey(Object key)
         {
-            if (MANDATORY_KEY.equals(key))
-                return isMandatory;
-            if (AUTH_METHOD_KEY.equals(key))
-                return authMethod != null;
+            if (AUTHENTICATION_TYPE_KEY.equals(key))
+                return authenticationType != null;
             return delegate != null && delegate.containsKey(key);
         }
 
         @Override
         public boolean containsValue(Object value)
         {
-            if (isMandatory && "true".equals(value))
-                return true;
-            if (authMethod == value || (authMethod != null && authMethod.equals(value)))
+            if (authenticationType == value || (authenticationType != null && authenticationType.equals(value)))
                 return true;
             return delegate != null && delegate.containsValue(value);
         }
@@ -160,10 +141,8 @@ public class JaspiMessageInfo implements MessageInfo
         @Override
         public Object get(Object key)
         {
-            if (MANDATORY_KEY.equals(key))
-                return isMandatory ? "true" : null;
-            if (AUTH_METHOD_KEY.equals(key))
-                return authMethod;
+            if (AUTHENTICATION_TYPE_KEY.equals(key))
+                return authenticationType;
             if (delegate == null)
                 return null;
             return delegate.get(key);
@@ -172,17 +151,13 @@ public class JaspiMessageInfo implements MessageInfo
         @Override
         public Object put(Object key, Object value)
         {
-            if (MANDATORY_KEY.equals(key))
+            if (AUTHENTICATION_TYPE_KEY.equals(key))
             {
-                throw new IllegalArgumentException("Mandatory not mutable");
-            }
-            if (AUTH_METHOD_KEY.equals(key))
-            {
-                String authMethod = this.authMethod;
-                this.authMethod = (String)value;
+                String authenticationType = this.authenticationType;
+                this.authenticationType = (String)value;
                 if (delegate != null)
-                    delegate.put(AUTH_METHOD_KEY, value);
-                return authMethod;
+                    delegate.put(AUTHENTICATION_TYPE_KEY, value);
+                return authenticationType;
             }
 
             return getDelegate(true).put(key, value);
@@ -191,17 +166,13 @@ public class JaspiMessageInfo implements MessageInfo
         @Override
         public Object remove(Object key)
         {
-            if (MANDATORY_KEY.equals(key))
+            if (AUTHENTICATION_TYPE_KEY.equals(key))
             {
-                throw new IllegalArgumentException("Mandatory not mutable");
-            }
-            if (AUTH_METHOD_KEY.equals(key))
-            {
-                String authMethod = this.authMethod;
-                this.authMethod = null;
+                String authenticationType = this.authenticationType;
+                this.authenticationType = null;
                 if (delegate != null)
-                    delegate.remove(AUTH_METHOD_KEY);
-                return authMethod;
+                    delegate.remove(AUTHENTICATION_TYPE_KEY);
+                return authenticationType;
             }
             if (delegate == null)
                 return null;
@@ -224,7 +195,7 @@ public class JaspiMessageInfo implements MessageInfo
         @Override
         public void clear()
         {
-            authMethod = null;
+            authenticationType = null;
             delegate = null;
         }
 
@@ -253,22 +224,15 @@ public class JaspiMessageInfo implements MessageInfo
             if (create)
             {
                 delegate = new HashMap();
-                if (isMandatory)
-                    delegate.put(MANDATORY_KEY, "true");
-                if (authMethod != null)
-                    delegate.put(AUTH_METHOD_KEY, authMethod);
+                if (authenticationType != null)
+                    delegate.put(AUTHENTICATION_TYPE_KEY, authenticationType);
             }
             return delegate;
         }
 
-        boolean isAuthMandatory()
+        String getAuthenticationType()
         {
-            return isMandatory;
-        }
-
-        String getAuthMethod()
-        {
-            return authMethod;
+            return authenticationType;
         }
     }
 }

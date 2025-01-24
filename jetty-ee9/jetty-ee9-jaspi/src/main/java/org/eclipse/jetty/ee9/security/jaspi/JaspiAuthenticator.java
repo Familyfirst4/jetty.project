@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -35,16 +35,18 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
 import org.eclipse.jetty.ee9.nested.Authentication;
-import org.eclipse.jetty.ee9.nested.UserIdentity;
-import org.eclipse.jetty.ee9.security.EmptyLoginService;
-import org.eclipse.jetty.ee9.security.IdentityService;
-import org.eclipse.jetty.ee9.security.LoginService;
+import org.eclipse.jetty.ee9.nested.Request;
+import org.eclipse.jetty.ee9.nested.SessionHandler;
 import org.eclipse.jetty.ee9.security.ServerAuthException;
 import org.eclipse.jetty.ee9.security.UserAuthentication;
 import org.eclipse.jetty.ee9.security.WrappedAuthConfiguration;
 import org.eclipse.jetty.ee9.security.authentication.DeferredAuthentication;
 import org.eclipse.jetty.ee9.security.authentication.LoginAuthenticator;
 import org.eclipse.jetty.ee9.security.authentication.SessionAuthentication;
+import org.eclipse.jetty.security.EmptyLoginService;
+import org.eclipse.jetty.security.IdentityService;
+import org.eclipse.jetty.security.LoginService;
+import org.eclipse.jetty.security.UserIdentity;
 
 import static org.eclipse.jetty.ee9.security.jaspi.JaspiAuthenticatorFactory.MESSAGE_LAYER;
 
@@ -138,7 +140,10 @@ public class JaspiAuthenticator extends LoginAuthenticator
     @Override
     public UserIdentity login(String username, Object password, ServletRequest request)
     {
-        UserIdentity user = _loginService.login(username, password, request);
+        Request baseRequest = Request.getBaseRequest(request);
+        if (baseRequest == null)
+            return null;
+        UserIdentity user = _loginService.login(username, password, baseRequest.getCoreRequest(), SessionHandler.ServletSessionApi.getOrCreateSession(request));
         if (user != null)
         {
             renewSession((HttpServletRequest)request, null);

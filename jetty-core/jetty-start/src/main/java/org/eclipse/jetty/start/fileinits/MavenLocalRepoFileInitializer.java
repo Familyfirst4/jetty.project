@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -22,7 +22,6 @@ import javax.xml.parsers.ParserConfigurationException;
 
 import org.eclipse.jetty.start.BaseHome;
 import org.eclipse.jetty.start.FS;
-import org.eclipse.jetty.start.FileInitializer;
 import org.eclipse.jetty.start.StartLog;
 import org.eclipse.jetty.start.Utils;
 import org.xml.sax.SAXException;
@@ -38,11 +37,11 @@ import org.xml.sax.SAXException;
  * <dd>minimum requirement (type defaults to <code>jar</code>, with no classifier)</dd>
  * <dt>{@code maven://<groupId>/<artifactId>/<version>/<type>}</dt>
  * <dd>optional type requirement</dd>
- * <dt><code>{@code maven://<groupId>/<artifactId>/<version>/<type>/<classifier>}</code></dt>
+ * <dt>{@code maven://<groupId>/<artifactId>/<version>/<type>/<classifier>}</dt>
  * <dd>optional type and classifier requirement</dd>
  * </dl>
  */
-public class MavenLocalRepoFileInitializer extends FileInitializer
+public class MavenLocalRepoFileInitializer extends DownloadFileInitializer
 {
     public static class Coordinates
     {
@@ -126,6 +125,19 @@ public class MavenLocalRepoFileInitializer extends FileInitializer
         this.mavenRepoUri = mavenRepoUri;
     }
 
+    @Override
+    protected boolean allowInsecureHttpDownloads()
+    {
+        // Always allow insecure http downloads in this file initializer.
+
+        // The user is either using the DEFAULT_REMOTE_REPO, or has redeclared it to a new URI.
+        // If the `maven.repo.uri` property has been changed from default, this indicates a change
+        // to a different maven uri, overwhelmingly pointing to a maven repository manager
+        // like artifactory or nexus.   This is viewed as an intentional decision by the
+        // user and as such we should not put additional hurdles in their way.
+        return true;
+    }
+
     private static Path newTempRepo()
     {
         Path javaTempDir = Paths.get(System.getProperty("java.io.tmpdir"));
@@ -153,7 +165,7 @@ public class MavenLocalRepoFileInitializer extends FileInitializer
             if (!FS.canReadFile(localFile))
             {
                 if (FS.ensureDirectoryExists(localFile.getParent()))
-                    StartLog.info("mkdir " + _basehome.toShortForm(localFile.getParent()));
+                    StartLog.info("mkdir %s", _basehome.toShortForm(localFile.getParent()));
                 download(coords, localFile);
                 if (!FS.canReadFile(localFile))
                 {
@@ -197,7 +209,7 @@ public class MavenLocalRepoFileInitializer extends FileInitializer
             if (localRepoFile != null)
             {
                 if (FS.ensureDirectoryExists(destination.getParent()))
-                    StartLog.info("mkdir " + _basehome.toShortForm(destination.getParent()));
+                    StartLog.info("mkdir %s", _basehome.toShortForm(destination.getParent()));
                 StartLog.info("copy %s to %s", localRepoFile, _basehome.toShortForm(destination));
                 Files.copy(localRepoFile, destination);
                 return true;

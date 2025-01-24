@@ -30,14 +30,6 @@
   </description>
 
   <!-- ==================================================================== -->
-  <!-- Removes static references to beans from javax.el.BeanELResolver to   -->
-  <!-- ensure webapp classloader can be released on undeploy                -->
-  <!-- ==================================================================== -->
-  <listener>
-   <listener-class>org.eclipse.jetty.ee9.servlet.listener.ELContextCleaner</listener-class>
-  </listener>
-  
-  <!-- ==================================================================== -->
   <!-- Removes static cache of Methods from java.beans.Introspector to      -->
   <!-- ensure webapp classloader can be released on undeploy                -->
   <!-- ==================================================================== -->  
@@ -52,15 +44,15 @@
   <!--
     UNCOMMENT TO ACTIVATE 
     <context-param> 
-      <param-name>org.eclipse.jetty.ee9.servlet.SessionDomain</param-name>
+      <param-name>org.eclipse.jetty.session.SessionDomain</param-name>
       <param-value>127.0.0.1</param-value> 
     </context-param> 
     <context-param>
-      <param-name>org.eclipse.jetty.ee9.servlet.SessionPath</param-name>
+      <param-name>org.eclipse.jetty.session.SessionPath</param-name>
       <param-value>/</param-value>
     </context-param>
     <context-param>
-      <param-name>org.eclipse.jetty.ee9.servlet.MaxAge</param-name>
+      <param-name>org.eclipse.jetty.session.MaxAge</param-name>
       <param-value>-1</param-value>
     </context-param>
   -->
@@ -102,17 +94,17 @@
  *                    If set to a boolean True, then a default set of compressed formats
  *                    will be used, otherwise no precompressed formats.
  *
- *  resourceBase      Set to replace the context resource base
+ *  baseResource      Set to replace the context resource base
  *
  *  resourceCache     If set, this is a context attribute name, which the servlet
  *                    will use to look for a shared ResourceCache instance.
  *
- *  relativeResourceBase
+ *  relativeBaseResource
  *                    Set with a pathname relative to the base of the
  *                    servlet context root. Useful for only serving static content out
  *                    of only specific subdirectories.
  *
- *  pathInfoOnly      If true, only the path info will be applied to the resourceBase
+ *  pathInfoOnly      If true, only the path info will be applied to the baseResource
  *
  *  stylesheet        Set with the location of an optional stylesheet that will be used
  *                    to decorate the directory listing html.
@@ -195,7 +187,7 @@
   <!-- The JSP page compiler and execution servlet, which is the mechanism  -->
   <!-- used by the jsp container to support JSP pages.  Traditionally,      -->
   <!-- this servlet is mapped to URL pattern "*.jsp".                       -->
-  <!-- See http://https://www.eclipse.org/jetty/documentation/              -->
+  <!-- See https://jetty.org/docs/              -->
   <!-- for applicable configuration params.                                 -->
   <!-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -  -->
   <servlet id="jsp">

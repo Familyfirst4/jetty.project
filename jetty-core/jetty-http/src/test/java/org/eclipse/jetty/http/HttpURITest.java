@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -15,6 +15,7 @@ package org.eclipse.jetty.http;
 
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.net.URLDecoder;
 import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.stream.Stream;
@@ -24,12 +25,16 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
+import static org.hamcrest.Matchers.sameInstance;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -50,18 +55,22 @@ public class HttpURITest
             .path("/ignored/../p%61th;ignored/info")
             .param("param")
             .query("query=value")
+            .fragment("fragment")
             .asImmutable();
 
         assertThat(uri.getScheme(), is("http"));
         assertThat(uri.getUser(), is("user:password"));
+        assertTrue(uri.hasViolation(Violation.USER_INFO));
         assertThat(uri.getHost(), is("host"));
         assertThat(uri.getPort(), is(8888));
         assertThat(uri.getPath(), is("/ignored/../p%61th;ignored/info;param"));
         assertThat(uri.getCanonicalPath(), is("/path/info"));
         assertThat(uri.getParam(), is("param"));
         assertThat(uri.getQuery(), is("query=value"));
+        assertThat(uri.getFragment(), is("fragment"));
         assertThat(uri.getAuthority(), is("host:8888"));
-        assertThat(uri.toString(), is("http://user:password@host:8888/ignored/../p%61th;ignored/info;param?query=value"));
+        assertThat(uri.toString(), is("http://user:password@host:8888/ignored/../p%61th;ignored/info;param?query=value#fragment"));
+        assertThat(uri.toURI().toString(), is("http://user:password@host:8888/ignored/../p%61th;ignored/info;param?query=value#fragment"));
 
         uri = HttpURI.build(uri)
             .scheme("https")
@@ -74,10 +83,11 @@ public class HttpURITest
 
         assertThat(uri.getScheme(), is("https"));
         assertThat(uri.getUser(), nullValue());
+        assertFalse(uri.hasViolation(Violation.USER_INFO));
         assertThat(uri.getHost(), is("[::1]"));
         assertThat(uri.getPort(), is(8080));
         assertThat(uri.getPath(), is("/some%20encoded/evening;id=12345"));
-        assertThat(uri.getCanonicalPath(), is("/some encoded/evening"));
+        assertThat(uri.getCanonicalPath(), is("/some%20encoded/evening"));
         assertThat(uri.getParam(), is("id=12345"));
         assertThat(uri.getQuery(), nullValue());
         assertThat(uri.getAuthority(), is("[::1]:8080"));
@@ -91,6 +101,7 @@ public class HttpURITest
 
         assertThat(uri.getScheme(), is("http"));
         assertThat(uri.getUser(), is("user:password"));
+        assertTrue(uri.hasViolation(Violation.USER_INFO));
         assertThat(uri.getHost(), is("host"));
         assertThat(uri.getPort(), is(8888));
         assertThat(uri.getPath(), is("/ignored/../p%61th;ignored/info;param"));
@@ -148,11 +159,8 @@ public class HttpURITest
         assertThat(uri.getHost(), is("foo"));
         assertThat(uri.getPath(), is("/bar"));
 
-        // We do allow nulls if not encoded.  This can be used for testing 2nd line of defence.
-        builder.uri("http://fo\000/bar");
-        uri = builder.asImmutable();
-        assertThat(uri.getHost(), is("fo\000"));
-        assertThat(uri.getPath(), is("/bar"));
+        // We do not allow nulls if not encoded.
+        assertThrows(IllegalArgumentException.class, () -> builder.uri("http://fo\000/bar").asImmutable());
     }
 
     @Test
@@ -320,6 +328,7 @@ public class HttpURITest
         assertEquals("http://user:password@example.com:8888/blah", uri.toString());
         assertEquals(uri.getAuthority(), "example.com:8888");
         assertEquals(uri.getUser(), "user:password");
+        assertTrue(uri.hasViolation(Violation.USER_INFO));
     }
 
     @Test
@@ -384,9 +393,16 @@ public class HttpURITest
 
                 // encoded paths
                 {"/f%6f%6F/bar", "/foo/bar", "/foo/bar", EnumSet.noneOf(Violation.class)},
+                {"/context/dir%3B/", "/context/dir%3B/", "/context/dir;/", EnumSet.noneOf(Violation.class)},
                 {"/f%u006f%u006F/bar", "/foo/bar", "/foo/bar", EnumSet.of(Violation.UTF16_ENCODINGS)},
                 {"/f%u0001%u0001/bar", "/f%01%01/bar", "/f\001\001/bar", EnumSet.of(Violation.UTF16_ENCODINGS)},
                 {"/foo/%u20AC/bar", "/foo/\u20AC/bar", "/foo/\u20AC/bar", EnumSet.of(Violation.UTF16_ENCODINGS)},
+
+                // nfc encoded unicode path
+                {"/dir/swedish-%C3%A5.txt", "/dir/swedish-å.txt", "/dir/swedish-å.txt", EnumSet.noneOf(Violation.class)},
+
+                // nfd encoded unicode path
+                {"/dir/swedish-a%CC%8A.txt", URLDecoder.decode("/dir/swedish-a%CC%8A.txt", UTF_8), URLDecoder.decode("/dir/swedish-a%CC%8A.txt", UTF_8), EnumSet.noneOf(Violation.class)},
 
                 // illegal paths
                 {"//host/../path/info", null, null, EnumSet.noneOf(Violation.class)},
@@ -462,10 +478,14 @@ public class HttpURITest
 
                 // ambiguous encoding
                 {"/path/%25/info", "/path/%25/info", "/path/%/info", EnumSet.of(Violation.AMBIGUOUS_PATH_ENCODING)},
+                {"/path/%2520/info", "/path/%2520/info", "/path/%20/info", EnumSet.of(Violation.AMBIGUOUS_PATH_ENCODING)},
                 {"/path/%u0025/info", "/path/%25/info", "/path/%/info", EnumSet.of(Violation.AMBIGUOUS_PATH_ENCODING, Violation.UTF16_ENCODINGS)},
                 {"%25/info", "%25/info", "%/info", EnumSet.of(Violation.AMBIGUOUS_PATH_ENCODING)},
                 {"/path/%25../info", "/path/%25../info", "/path/%../info", EnumSet.of(Violation.AMBIGUOUS_PATH_ENCODING)},
                 {"/path/%u0025../info", "/path/%25../info", "/path/%../info", EnumSet.of(Violation.AMBIGUOUS_PATH_ENCODING, Violation.UTF16_ENCODINGS)},
+
+                // bad utf8
+                {"/path/%C0%AF/info", "/path/��/info", "/path/��/info", EnumSet.of(Violation.BAD_UTF8_ENCODING)},
 
                 // combinations
                 {"/path/%2f/..;/info", "/path/info", "/path/info", EnumSet.of(Violation.AMBIGUOUS_PATH_SEPARATOR, Violation.AMBIGUOUS_PATH_PARAMETER)},
@@ -477,20 +497,24 @@ public class HttpURITest
                 {"http://localhost:9000/x\uD83C\uDF32\uD83C\uDF32\uD83C\uDF32\uD83C\uDF32\uD83C\uDF32", "/x\uD83C\uDF32\uD83C\uDF32\uD83C\uDF32\uD83C\uDF32\uD83C\uDF32", "/x\uD83C\uDF32\uD83C\uDF32\uD83C\uDF32\uD83C\uDF32\uD83C\uDF32", EnumSet.noneOf(Violation.class)},
                 {"http://localhost:9000/\uD83C\uDF32\uD83C\uDF32\uD83C\uDF32\uD83C\uDF32\uD83C\uDF32", "/\uD83C\uDF32\uD83C\uDF32\uD83C\uDF32\uD83C\uDF32\uD83C\uDF32", "/\uD83C\uDF32\uD83C\uDF32\uD83C\uDF32\uD83C\uDF32\uD83C\uDF32", EnumSet.noneOf(Violation.class)},
                 // @checkstyle-enable-check : AvoidEscapedUnicodeCharactersCheck
+
+                // An empty (null) authority
+                {"http://", null, null, null}
             }).map(Arguments::of);
     }
 
     @ParameterizedTest
     @MethodSource("decodePathTests")
-    public void testDecodedPath(String input, String canonicalPath, String decodedPath, EnumSet<Violation> expected)
+    public void testDecodedPath(String input, String expectedCanonicalPath, String expectedDecodedPath, EnumSet<Violation> expected)
     {
         try
         {
             HttpURI uri = HttpURI.from(input);
-            assertThat(uri.getCanonicalPath(), is(canonicalPath));
-            assertThat(uri.getDecodedPath(), is(decodedPath));
+            assertThat("Canonical Path", uri.getCanonicalPath(), is(expectedCanonicalPath));
+            assertThat("Decoded Path", uri.getDecodedPath(), is(expectedDecodedPath));
+
             EnumSet<Violation> ambiguous = EnumSet.copyOf(expected);
-            ambiguous.retainAll(EnumSet.complementOf(EnumSet.of(Violation.UTF16_ENCODINGS)));
+            ambiguous.retainAll(EnumSet.complementOf(EnumSet.of(Violation.UTF16_ENCODINGS, Violation.BAD_UTF8_ENCODING)));
 
             assertThat(uri.isAmbiguous(), is(!ambiguous.isEmpty()));
             assertThat(uri.hasAmbiguousSegment(), is(ambiguous.contains(Violation.AMBIGUOUS_PATH_SEGMENT)));
@@ -502,9 +526,9 @@ public class HttpURITest
         }
         catch (Exception e)
         {
-            if (decodedPath != null)
+            if (expectedDecodedPath != null)
                 e.printStackTrace();
-            assertThat(decodedPath, nullValue());
+            assertThat(expectedDecodedPath, nullValue());
         }
     }
 
@@ -623,6 +647,101 @@ public class HttpURITest
         assertThat(uri.hasAmbiguousEncoding(), is(expected.contains(Violation.AMBIGUOUS_PATH_ENCODING)));
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {
+        "/a%2Fb",
+        "/a%2F",
+        "/%2f",
+        "/%2f/"
+    })
+    public void testAmbiguousViaBuilderPath(String input)
+    {
+        HttpURI uri = HttpURI.build().path(input);
+        assertThat("has any violation", uri.hasViolations(), is(true));
+        assertThat("is ambiguous", uri.isAmbiguous(), is(true));
+    }
+
+    public static Stream<Arguments> suspiciousPathCharacterData()
+    {
+        return Stream.of(
+            // backslash
+            Arguments.of("/a%5Cb"),
+            Arguments.of("/a\\b"),
+            Arguments.of("/foo/bar/zed/%5c"),
+            Arguments.of("/foo/bar/..\\zed"),
+            Arguments.of("/foo/bar/zed/%5C"),
+            // TAB
+            Arguments.of("/%09b"),
+            Arguments.of("/a\tb"),
+            Arguments.of("/%09"),
+            // CR / LF
+            Arguments.of("/%0A"),
+            Arguments.of("/%0a"),
+            Arguments.of("/%0D"),
+            Arguments.of("/%0d"),
+            Arguments.of("/a/\r/\n/b"),
+            Arguments.of("/foo\r\nbar/"),
+            Arguments.of("/%0d%0a")
+        );
+    }
+
+    @ParameterizedTest
+    @MethodSource("suspiciousPathCharacterData")
+    public void testSuspiciousPathCharacterBuilderPath(String input)
+    {
+        HttpURI uri = HttpURI.build().path(input);
+        assertThat("has any violations", uri.hasViolations(), is(true));
+        assertThat("has SUSPICIOUS_PATH_CHARACTERS violation", uri.hasViolation(Violation.SUSPICIOUS_PATH_CHARACTERS), is(true));
+    }
+
+    @ParameterizedTest
+    @MethodSource("suspiciousPathCharacterData")
+    public void testSuspiciousPathCharacterFromString(String input)
+    {
+        HttpURI uri = HttpURI.from(input);
+        assertThat("has any violations", uri.hasViolations(), is(true));
+        assertThat("has SUSPICIOUS_PATH_CHARACTERS violation", uri.hasViolation(Violation.SUSPICIOUS_PATH_CHARACTERS), is(true));
+    }
+
+    public static Stream<Arguments> illegalPathCharacterData()
+    {
+        return Stream.of(
+            // backslash
+            Arguments.of("/a\\b"),
+            Arguments.of("/a/..\\b"),
+            // control character
+            Arguments.of("/a\tb"),
+            Arguments.of("/a\rb"),
+            Arguments.of("/a\nb"),
+            // Pipe / piping symbols
+            Arguments.of("/a|b"),
+            Arguments.of("/a<b"),
+            Arguments.of("/a>b"),
+            // space character
+            Arguments.of("/a b"),
+            // double-quotes
+            Arguments.of("/a\"b")
+        );
+    }
+
+    @ParameterizedTest
+    @MethodSource("illegalPathCharacterData")
+    public void testIllegalPathCharacterBuilderPath(String input)
+    {
+        HttpURI uri = HttpURI.build().path(input);
+        assertThat("has any violations", uri.hasViolations(), is(true));
+        assertThat("has ILLEGAL_PATH_CHARACTERS violation", uri.hasViolation(Violation.ILLEGAL_PATH_CHARACTERS), is(true));
+    }
+
+    @ParameterizedTest
+    @MethodSource("illegalPathCharacterData")
+    public void testIllegalPathCharacterFromString(String input)
+    {
+        HttpURI uri = HttpURI.from(input);
+        assertThat("has any violations", uri.hasViolations(), is(true));
+        assertThat("has ILLEGAL_PATH_CHARACTERS violation", uri.hasViolation(Violation.ILLEGAL_PATH_CHARACTERS), is(true));
+    }
+
     public static Stream<Arguments> parseData()
     {
         return Stream.of(
@@ -703,6 +822,15 @@ public class HttpURITest
             Arguments.of("http://localhost/", "http", "localhost", null, "/", null, null, null),
             Arguments.of("http://localhost:8080/", "http", "localhost", "8080", "/", null, null, null),
             Arguments.of("http://localhost/?x=y", "http", "localhost", null, "/", null, "x=y", null),
+
+            // Empty Paths
+            Arguments.of("//localhost", null, "localhost", null, "", null, null, null),
+            Arguments.of("http://localhost", "http", "localhost", null, "", null, null, null),
+            Arguments.of("http://localhost?x=y", "http", "localhost", null, "", null, "x=y", null),
+            Arguments.of("http://localhost#frag", "http", "localhost", null, "", null, null, "frag"),
+            Arguments.of("http://localhost:8080", "http", "localhost", "8080", "", null, null, null),
+            Arguments.of("http://localhost:8080?x=y", "http", "localhost", "8080", "", null, "x=y", null),
+            Arguments.of("http://localhost:8080#frag", "http", "localhost", "8080", "", null, null, "frag"),
 
             // Simple path with parameter
             Arguments.of("/;param", null, null, null, "/;param", "param", null, null),
@@ -905,5 +1033,227 @@ public class HttpURITest
             .authority("host")
             .path("");
         assertEquals("//host", uri.asString());
+    }
+
+    @Test
+    public void testKeepParam()
+    {
+        HttpURI orig = HttpURI.from("http://localhost/context/info;param=value");
+        HttpURI built = HttpURI.build(orig).path("/context/info").asImmutable();
+        assertThat(built.getParam(), is(orig.getParam()));
+        assertThat(built.toString(), is(orig.toString()));
+
+        built = HttpURI.build(orig).path("/context/info").param("param=value").asImmutable();
+        assertThat(built.getParam(), is(orig.getParam()));
+        assertThat(built.toString(), is(orig.toString()));
+    }
+
+    @Test
+    public void testUriCompliance()
+    {
+        assertThat(UriCompliance.from(UriCompliance.DEFAULT.getName()), sameInstance(UriCompliance.DEFAULT));
+    }
+
+    public static Stream<Arguments> concatNormalizedURIShortCases()
+    {
+        return Stream.of(
+            // Default behaviors of stripping a port number based on scheme
+            Arguments.of("http", "example.org", 80, "http://example.org"),
+            Arguments.of("https", "example.org", 443, "https://example.org"),
+            Arguments.of("ws", "example.org", 80, "ws://example.org"),
+            Arguments.of("wss", "example.org", 443, "wss://example.org"),
+            // Mismatches between scheme and port
+            Arguments.of("http", "example.org", 443, "http://example.org:443"),
+            Arguments.of("https", "example.org", 80, "https://example.org:80"),
+            Arguments.of("ws", "example.org", 443, "ws://example.org:443"),
+            Arguments.of("wss", "example.org", 80, "wss://example.org:80"),
+            // Odd ports
+            Arguments.of("http", "example.org", 12345, "http://example.org:12345"),
+            Arguments.of("https", "example.org", 54321, "https://example.org:54321"),
+            Arguments.of("ws", "example.org", 6666, "ws://example.org:6666"),
+            Arguments.of("wss", "example.org", 7777, "wss://example.org:7777"),
+            // Non-lowercase Schemes
+            Arguments.of("HTTP", "example.org", 8181, "http://example.org:8181"),
+            Arguments.of("hTTps", "example.org", 443, "https://example.org"),
+            Arguments.of("WS", "example.org", 8282, "ws://example.org:8282"),
+            Arguments.of("wsS", "example.org", 8383, "wss://example.org:8383"),
+            // Undefined Ports
+            Arguments.of("http", "example.org", 0, "http://example.org"),
+            Arguments.of("https", "example.org", -1, "https://example.org"),
+            Arguments.of("ws", "example.org", -80, "ws://example.org"),
+            Arguments.of("wss", "example.org", -2, "wss://example.org"),
+            // Unrecognized (non-http) schemes
+            Arguments.of("foo", "example.org", 0, "foo://example.org"),
+            Arguments.of("ssh", "example.org", 22, "ssh://example.org"),
+            Arguments.of("ftp", "example.org", 21, "ftp://example.org"),
+            Arguments.of("ssh", "example.org", 2222, "ssh://example.org:2222"),
+            Arguments.of("ftp", "example.org", 2121, "ftp://example.org:2121"),
+            Arguments.of("file", "etc", -1, "file://etc")
+        );
+    }
+
+    @ParameterizedTest
+    @MethodSource("concatNormalizedURIShortCases")
+    public void testFromShortAsStringNormalized(String scheme, String server, int port, String expectedStr)
+    {
+        HttpURI httpURI = HttpURI.from(scheme, server, port, null);
+        assertThat(httpURI.asString(), is(expectedStr));
+    }
+
+    public static Stream<Arguments> concatNormalizedURICases()
+    {
+        return Stream.of(
+            // Default behaviors of stripping a port number based on scheme
+            Arguments.of("http", "example.org", 80, "/", null, null, "http://example.org/"),
+            Arguments.of("https", "example.org", 443, "/", null, null, "https://example.org/"),
+            Arguments.of("ws", "example.org", 80, "/", null, null, "ws://example.org/"),
+            Arguments.of("wss", "example.org", 443, "/", null, null, "wss://example.org/"),
+            // Mismatches between scheme and port
+            Arguments.of("http", "example.org", 443, "/", null, null, "http://example.org:443/"),
+            Arguments.of("https", "example.org", 80, "/", null, null, "https://example.org:80/"),
+            Arguments.of("ws", "example.org", 443, "/", null, null, "ws://example.org:443/"),
+            Arguments.of("wss", "example.org", 80, "/", null, null, "wss://example.org:80/"),
+            // Odd ports
+            Arguments.of("http", "example.org", 12345, "/", null, null, "http://example.org:12345/"),
+            Arguments.of("https", "example.org", 54321, "/", null, null, "https://example.org:54321/"),
+            Arguments.of("ws", "example.org", 6666, "/", null, null, "ws://example.org:6666/"),
+            Arguments.of("wss", "example.org", 7777, "/", null, null, "wss://example.org:7777/"),
+            // Non-lowercase Schemes
+            Arguments.of("HTTP", "example.org", 8181, "/", null, null, "http://example.org:8181/"),
+            Arguments.of("hTTps", "example.org", 443, "/", null, null, "https://example.org/"),
+            Arguments.of("WS", "example.org", 8282, "/", null, null, "ws://example.org:8282/"),
+            Arguments.of("wsS", "example.org", 8383, "/", null, null, "wss://example.org:8383/"),
+            // Undefined scheme
+            Arguments.of(null, "example.org", 8181, "/", null, null, "//example.org:8181/"),
+            // Undefined Ports
+            Arguments.of("http", "example.org", 0, "/", null, null, "http://example.org/"),
+            Arguments.of("https", "example.org", -1, "/", null, null, "https://example.org/"),
+            Arguments.of("ws", "example.org", -80, "/", null, null, "ws://example.org/"),
+            Arguments.of("wss", "example.org", -2, "/", null, null, "wss://example.org/"),
+            // Unrecognized (non-http) schemes
+            Arguments.of("foo", "example.org", 0, "/", null, null, "foo://example.org/"),
+            Arguments.of("ssh", "example.org", 22, "/", null, null, "ssh://example.org/"),
+            Arguments.of("ftp", "example.org", 21, "/", null, null, "ftp://example.org/"),
+            Arguments.of("ssh", "example.org", 2222, "/", null, null, "ssh://example.org:2222/"),
+            Arguments.of("ftp", "example.org", 2121, "/", null, null, "ftp://example.org:2121/"),
+            // Path choices
+            Arguments.of("http", "example.org", 0, "/a/b/c/d", null, null, "http://example.org/a/b/c/d"),
+            Arguments.of("http", "example.org", 0, "/a%20b/c%20d", null, null, "http://example.org/a%20b/c%20d"),
+            Arguments.of("http", "example.org", 0, "/foo%2Fbaz", null, null, "http://example.org/foo%2Fbaz"),
+            Arguments.of("http", "example.org", 0, "/foo%252Fbaz", null, null, "http://example.org/foo%252Fbaz"),
+            // Query specified
+            Arguments.of("http", "example.org", 0, "/", "a=b", null, "http://example.org/?a=b"),
+            Arguments.of("http", "example.org", 0, "/documentation/latest/", "a=b", null, "http://example.org/documentation/latest/?a=b"),
+            Arguments.of("http", "example.org", 0, null, "a=b", null, "http://example.org/?a=b"),
+            Arguments.of("http", "example.org", 0, null, "", null, "http://example.org/?"),
+            // Fragment specified
+            Arguments.of("http", "example.org", 0, "/", null, "", "http://example.org/#"),
+            Arguments.of("http", "example.org", 0, "/", null, "toc", "http://example.org/#toc"),
+            Arguments.of("http", "example.org", 0, null, null, "toc", "http://example.org/#toc"),
+            // Empty query & fragment - behavior matches java URI and URL
+            Arguments.of("http", "example.org", 0, null, "", "", "http://example.org/?#")
+        );
+    }
+
+    @ParameterizedTest
+    @MethodSource("concatNormalizedURICases")
+    public void testFromAsStringNormalized(String scheme, String server, int port, String path, String query, String fragment, String expectedStr)
+    {
+        HttpURI httpURI = HttpURI.from(scheme, server, port, path, query, fragment);
+        assertThat(httpURI.asString(), is(expectedStr));
+    }
+
+    public static Stream<Arguments> fromStringAsStringCases()
+    {
+        return Stream.of(
+            Arguments.of("http://localhost:4444/", "http://localhost:4444/"),
+            Arguments.of("/foo/baz", "/foo/baz"),
+            Arguments.of("/foo%2Fbaz", "/foo%2Fbaz"),
+            Arguments.of("/foo%252Fbaz", "/foo%252Fbaz")
+        );
+    }
+
+    @ParameterizedTest
+    @MethodSource("fromStringAsStringCases")
+    public void testFromStringAsString(String input, String expected)
+    {
+        HttpURI httpURI = HttpURI.from(input);
+        assertThat(httpURI.asString(), is(expected));
+    }
+
+    /**
+     * Tests of parameters that result in undesired behaviors.
+     * {@link HttpURI#from(String, String, int, String)}
+     */
+    public static Stream<Arguments> fromBad()
+    {
+        return Stream.of(
+            // bad schemes
+            Arguments.of(null, "example.org", 0, "//example.org"),
+            Arguments.of("", "example.org", 0, "://example.org"),
+            Arguments.of("\t", "example.org", 0, "\t://example.org"),
+            Arguments.of("    ", "example.org", 0, "    ://example.org"),
+            // bad ports
+            Arguments.of("http", "example.org", 1_000_000, "http://example.org:1000000"),
+            // bad ports
+            Arguments.of("ws", "example.org", -222333, "ws://example.org"), // negative port same as -1, i.e. not set.
+            // bad servers
+            Arguments.of("http", null, 0, "http:"),
+            Arguments.of("http", "", 0, "http://"),
+            Arguments.of("http", "\t", 0, "http://\t"),
+            Arguments.of("http", "    ", 0, "http://    ")
+        );
+    }
+
+    @ParameterizedTest
+    @MethodSource("fromBad")
+    public void testFromBad(String scheme, String server, int port, String expectedStr)
+    {
+        HttpURI httpURI = HttpURI.from(scheme, server, port, null);
+        assertThat(httpURI.asString(), is(expectedStr));
+    }
+
+    public static Stream<String> badAuthorities()
+    {
+        return Stream.of(
+            "https:// host/path",
+            "https://h st/path",
+            "https://h\000st/path",
+            "https://h%GGst/path",
+            "https://host%/path",
+            "https://host%0/path",
+            "https://host%u001f/path",
+            "https://host%:8080/path",
+            "https://host%0:8080/path",
+            "https://user%@host/path",
+            "https://user%0@host/path",
+            "https://host:notport/path",
+            "https://user@host:notport/path",
+            "https://user:password@host:notport/path",
+            "https://user @host.com/",
+            // "https://user#@host.com/", TODO this might cause WhatWG compatibility issues
+            "https://[notIpv6]/",
+            "https://bad[0::1::2::3::4]/",
+
+            "http://[fe80::1%25eth0]/",
+            "http://[fe80::1%251]/",
+
+            "http://[vulndetector.com]",
+            "http://hostone.com@[vulndetector.com]#hosttwo.com/",
+            "http://hostone.com:80@[vulndetector.com]/",
+            "http://[vulndetector.com]#@normal.com",
+            "http://hostone.com\\\\[vulndetector.com]/",
+
+            // Ambiguous empty path
+            "http://localhost;param",
+            "http://localhost:8080;param"
+        );
+    }
+
+    @ParameterizedTest
+    @MethodSource("badAuthorities")
+    public void testBadAuthority(String uri)
+    {
+        assertThrows(IllegalArgumentException.class, () -> HttpURI.from(uri));
     }
 }

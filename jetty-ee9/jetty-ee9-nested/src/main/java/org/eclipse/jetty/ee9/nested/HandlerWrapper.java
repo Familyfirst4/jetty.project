@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -82,6 +82,18 @@ public class HandlerWrapper extends AbstractHandlerContainer
     }
 
     /**
+     * Get the tail of a chain of {@link HandlerWrapper}s.
+     * @return The last {@link HandlerWrapper} in a chain of {@link HandlerWrapper}s
+     */
+    public HandlerWrapper getTail()
+    {
+        HandlerWrapper tail = this;
+        while (tail.getHandler() instanceof HandlerWrapper handlerWrapper)
+            tail = handlerWrapper;
+        return tail;
+    }
+
+    /**
      * Replace the current handler with another HandlerWrapper
      * linked to the current handler.
      * <p>
@@ -98,14 +110,7 @@ public class HandlerWrapper extends AbstractHandlerContainer
         if (wrapper == null)
             throw new IllegalArgumentException();
 
-        HandlerWrapper tail = wrapper;
-        while (tail.getHandler() instanceof HandlerWrapper)
-        {
-            tail = (HandlerWrapper)tail.getHandler();
-        }
-        if (tail.getHandler() != null)
-            throw new IllegalArgumentException("bad tail of inserted wrapper chain");
-
+        HandlerWrapper tail = wrapper.getTail();
         Handler next = getHandler();
         setHandler(wrapper);
         tail.setHandler(next);
@@ -137,5 +142,20 @@ public class HandlerWrapper extends AbstractHandlerContainer
             child.destroy();
         }
         super.destroy();
+    }
+
+    /**
+     * <p>Make a {@link org.eclipse.jetty.server.Handler.Container} the parent of a {@link org.eclipse.jetty.server.Handler}</p>
+     * @param parent The {@link org.eclipse.jetty.server.Handler.Container} that will be the parent
+     * @param handler The {@link org.eclipse.jetty.server.Handler} that will be the child
+     */
+    public static void setAsParent(org.eclipse.jetty.server.Handler.Container parent, org.eclipse.jetty.server.Handler handler)
+    {
+        if (parent instanceof org.eclipse.jetty.server.Handler.Collection collection)
+            collection.addHandler(handler);
+        else if (parent instanceof org.eclipse.jetty.server.Handler.Singleton wrapper)
+            wrapper.setHandler(handler);
+        else if (parent != null)
+            throw new IllegalArgumentException("Unknown parent type: " + parent);
     }
 }

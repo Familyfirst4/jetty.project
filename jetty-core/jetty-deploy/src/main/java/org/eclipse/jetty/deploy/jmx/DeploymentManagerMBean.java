@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -79,7 +79,7 @@ public class DeploymentManagerMBean extends ObjectMBean
 
     private String toRef(App app)
     {
-        return String.format("originId=%s,contextPath=%s,appProvider=%s", app.getContextPath(), app.getFilename(), app.getAppProvider().getClass().getName());
+        return String.format("contextPath=%s,path=%s,appProvider=%s", app.getContextPath(), app.getPath(), app.getAppProvider().getClass().getName());
     }
 
     public Collection<ContextHandler> getContexts() throws Exception

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,101 +13,96 @@
 
 package org.eclipse.jetty.ee10.annotations;
 
-import java.io.File;
 import java.net.URL;
 import java.net.URLClassLoader;
-import java.util.Arrays;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 
 import jakarta.servlet.ServletContainerInitializer;
+import org.eclipse.jetty.ee10.annotations.AnnotationConfiguration.State;
 import org.eclipse.jetty.ee10.webapp.RelativeOrdering;
 import org.eclipse.jetty.ee10.webapp.WebAppContext;
 import org.eclipse.jetty.ee10.webapp.WebDescriptor;
 import org.eclipse.jetty.toolchain.test.FS;
 import org.eclipse.jetty.toolchain.test.JAR;
+import org.eclipse.jetty.toolchain.test.MavenPaths;
 import org.eclipse.jetty.toolchain.test.MavenTestingUtils;
+import org.eclipse.jetty.toolchain.test.jupiter.WorkDir;
+import org.eclipse.jetty.toolchain.test.jupiter.WorkDirExtension;
 import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@ExtendWith(WorkDirExtension.class)
 public class TestAnnotationConfiguration
 {
-    public class TestableAnnotationConfiguration extends AnnotationConfiguration
+    public static class TestableAnnotationConfiguration extends AnnotationConfiguration
     {
-        public void assertAnnotationDiscovery(boolean b)
+        public void assertAnnotationDiscovery(WebAppContext context, boolean b)
         {
+            State state = (State)context.getAttribute(STATE);
             if (!b)
-                assertTrue(_discoverableAnnotationHandlers.isEmpty());
+                assertTrue(state._discoverableAnnotationHandlers.isEmpty());
             else
-                assertFalse(_discoverableAnnotationHandlers.isEmpty());
+                assertFalse(state._discoverableAnnotationHandlers.isEmpty());
         }
-    }    
+    }
 
-    public File web25;
-
-    public File web31false;
-
-    public File web31true;
-
-    public File jarDir;
-
-    public File testSciJar;
-
-    public File testContainerSciJar;
-
-    public File testWebInfClassesJar;
-
-    public File unpacked;
-
+    public Path web25;
+    public Path web31false;
+    public Path web31true;
+    public Path jarDir;
+    public Path testSciJar;
+    public Path testContainerSciJar;
+    public Path testWebInfClassesJar;
+    public WorkDir workDir;
     public URLClassLoader containerLoader;
-
     public URLClassLoader webAppLoader;
-
     public List<Resource> classes;
-
     public Resource targetClasses;
-
     public Resource webInfClasses;
 
     @BeforeEach
     public void setup() throws Exception
     {
-        web25 = MavenTestingUtils.getTestResourceFile("web25.xml");
-        web31false = MavenTestingUtils.getTestResourceFile("web31false.xml");
-        web31true = MavenTestingUtils.getTestResourceFile("web31true.xml");
+        web25 = MavenTestingUtils.getTestResourcePathFile("web25.xml");
+        web31false = MavenTestingUtils.getTestResourcePathFile("web31false.xml");
+        web31true = MavenTestingUtils.getTestResourcePathFile("web31true.xml");
 
         // prepare an sci that will be on the webapp's classpath
-        jarDir = new File(MavenTestingUtils.getTestResourcesDir().getParentFile(), "jar");
-        testSciJar = new File(jarDir, "test-sci.jar");
-        assertTrue(testSciJar.exists());
+        jarDir = MavenTestingUtils.getProjectDirPath("src/test/jar");
+        testSciJar = jarDir.resolve("test-sci.jar");
+        assertTrue(Files.exists(testSciJar));
 
-        testContainerSciJar = new File(jarDir, "test-sci-for-container-path.jar");
-        testWebInfClassesJar = new File(jarDir, "test-sci-for-webinf.jar");
-
+        testContainerSciJar = jarDir.resolve("test-sci-for-container-path.jar");
+        testWebInfClassesJar = jarDir.resolve("test-sci-for-webinf.jar");
+        Path unpacked = workDir.getEmptyPathDir();
         // unpack some classes to pretend that are in WEB-INF/classes
-        unpacked = new File(MavenTestingUtils.getTargetTestingDir(), "test-sci-for-webinf");
-        unpacked.mkdirs();
         FS.cleanDirectory(unpacked);
-        JAR.unpack(testWebInfClassesJar, unpacked);
-        webInfClasses = Resource.newResource(unpacked);
+        JAR.unpack(testWebInfClassesJar.toFile(), unpacked.toFile());
+        webInfClasses = ResourceFactory.root().newResource(unpacked);
 
         containerLoader = new URLClassLoader(new URL[]{
-            testContainerSciJar.toURI().toURL()
+            testContainerSciJar.toUri().toURL()
         }, Thread.currentThread().getContextClassLoader());
 
-        targetClasses = Resource.newResource(MavenTestingUtils.getTargetDir().toURI()).addPath("/test-classes");
+        targetClasses = ResourceFactory.root().newResource(MavenPaths.targetDir().resolve("test-classes"));
 
-        classes = Arrays.asList(new Resource[]{webInfClasses, targetClasses});
+        classes = List.of(webInfClasses, targetClasses);
 
         webAppLoader = new URLClassLoader(new URL[]{
-            testSciJar.toURI().toURL(), targetClasses.getURI().toURL(), webInfClasses.getURI().toURL()
+            testSciJar.toUri().toURL(), targetClasses.getURI().toURL(), webInfClasses.getURI().toURL()
         },
             containerLoader);
     }
@@ -118,51 +113,55 @@ public class TestAnnotationConfiguration
         //check that a 2.5 webapp with configurationDiscovered will discover annotations
         TestableAnnotationConfiguration config25 = new TestableAnnotationConfiguration();
         WebAppContext context25 = new WebAppContext();
+        config25.preConfigure(context25);
         context25.setClassLoader(Thread.currentThread().getContextClassLoader());
         context25.setAttribute(AnnotationConfiguration.MULTI_THREADED, Boolean.FALSE);
         context25.setAttribute(AnnotationConfiguration.MAX_SCAN_WAIT, 0);
         context25.setConfigurationDiscovered(false);
-        context25.getMetaData().setWebDescriptor(new WebDescriptor(Resource.newResource(web25)));
+        context25.getMetaData().setWebDescriptor(new WebDescriptor(context25.getResourceFactory().newResource(web25)));
         context25.getContext().getServletContext().setEffectiveMajorVersion(2);
         context25.getContext().getServletContext().setEffectiveMinorVersion(5);
         config25.configure(context25);
-        config25.assertAnnotationDiscovery(false);
+        config25.assertAnnotationDiscovery(context25, false);
 
         //check that a 2.5 webapp discover annotations
         TestableAnnotationConfiguration config25b = new TestableAnnotationConfiguration();
         WebAppContext context25b = new WebAppContext();
+        config25b.preConfigure(context25b);
         context25b.setClassLoader(Thread.currentThread().getContextClassLoader());
         context25b.setAttribute(AnnotationConfiguration.MULTI_THREADED, Boolean.FALSE);
         context25b.setAttribute(AnnotationConfiguration.MAX_SCAN_WAIT, 0);
-        context25b.getMetaData().setWebDescriptor(new WebDescriptor(Resource.newResource(web25)));
+        context25b.getMetaData().setWebDescriptor(new WebDescriptor(context25b.getResourceFactory().newResource(web25)));
         context25b.getContext().getServletContext().setEffectiveMajorVersion(2);
         context25b.getContext().getServletContext().setEffectiveMinorVersion(5);
         config25b.configure(context25b);
-        config25b.assertAnnotationDiscovery(true);
+        config25b.assertAnnotationDiscovery(context25b, true);
 
         //check that a 3.x webapp with metadata true won't discover annotations
         TestableAnnotationConfiguration config31 = new TestableAnnotationConfiguration();
         WebAppContext context31 = new WebAppContext();
+        config31.preConfigure(context31);
         context31.setClassLoader(Thread.currentThread().getContextClassLoader());
         context31.setAttribute(AnnotationConfiguration.MULTI_THREADED, Boolean.FALSE);
         context31.setAttribute(AnnotationConfiguration.MAX_SCAN_WAIT, 0);
-        context31.getMetaData().setWebDescriptor(new WebDescriptor(Resource.newResource(web31true)));
+        context31.getMetaData().setWebDescriptor(new WebDescriptor(context31.getResourceFactory().newResource(web31true)));
         context31.getContext().getServletContext().setEffectiveMajorVersion(3);
         context31.getContext().getServletContext().setEffectiveMinorVersion(1);
         config31.configure(context31);
-        config31.assertAnnotationDiscovery(false);
+        config31.assertAnnotationDiscovery(context31, false);
 
         //check that a 3.x webapp with metadata false will discover annotations
         TestableAnnotationConfiguration config31b = new TestableAnnotationConfiguration();
         WebAppContext context31b = new WebAppContext();
+        config31b.preConfigure(context31b);
         context31b.setClassLoader(Thread.currentThread().getContextClassLoader());
         context31b.setAttribute(AnnotationConfiguration.MULTI_THREADED, Boolean.FALSE);
         context31b.setAttribute(AnnotationConfiguration.MAX_SCAN_WAIT, 0);
-        context31b.getMetaData().setWebDescriptor(new WebDescriptor(Resource.newResource(web31false)));
+        context31b.getMetaData().setWebDescriptor(new WebDescriptor(context31b.getResourceFactory().newResource(web31false)));
         context31b.getContext().getServletContext().setEffectiveMajorVersion(3);
         context31b.getContext().getServletContext().setEffectiveMinorVersion(1);
         config31b.configure(context31b);
-        config31b.assertAnnotationDiscovery(true);
+        config31b.assertAnnotationDiscovery(context31b, true);
     }
 
     @Test
@@ -175,16 +174,19 @@ public class TestAnnotationConfiguration
         {
             AnnotationConfiguration config = new AnnotationConfiguration();
             WebAppContext context = new WebAppContext();
+            config.preConfigure(context);
             List<ServletContainerInitializer> scis;
 
             //test 3.1 webapp loads both server and app scis
             context.setClassLoader(webAppLoader);
-            context.getMetaData().addWebInfResource(Resource.newResource(testSciJar.toURI().toURL()));
-            context.getMetaData().setWebDescriptor(new WebDescriptor(Resource.newResource(web31true)));
+            context.getMetaData().addWebInfResource(ResourceFactory.root().newResource(testSciJar));
+            context.getMetaData().setWebDescriptor(new WebDescriptor(context.getResourceFactory().newResource(web31true)));
             context.getMetaData().setWebInfClassesResources(classes);
             context.getContext().getServletContext().setEffectiveMajorVersion(3);
             context.getContext().getServletContext().setEffectiveMinorVersion(1);
-            scis = config.getNonExcludedInitializers(context);
+            config.preConfigure(context);
+            State state = (State)context.getAttribute(AnnotationConfiguration.STATE);
+            scis = config.getNonExcludedInitializers(state);
             assertNotNull(scis);
             assertEquals(3, scis.size());
             assertEquals("com.acme.ServerServletContainerInitializer", scis.get(0).getClass().getName()); //container path
@@ -196,7 +198,7 @@ public class TestAnnotationConfiguration
             Thread.currentThread().setContextClassLoader(old);
         }
     }
-    
+
     @Test
     public void testClassScanHandlersForSCIs() throws Exception
     {
@@ -214,33 +216,37 @@ public class TestAnnotationConfiguration
                 @Override
                 public void createServletContainerInitializerAnnotationHandlers(WebAppContext context, List<ServletContainerInitializer> scis) throws Exception
                 {
+                    State state = (State)context.getAttribute(STATE);
                     super.createServletContainerInitializerAnnotationHandlers(context, scis);
                     //check class hierarchy scanner handler is registered
-                    assertNotNull(_classInheritanceHandler);
+                    assertNotNull(state._classInheritanceHandler);
                     //check 
-                    assertEquals(1, _containerInitializerAnnotationHandlers.size());
-                    ContainerInitializerAnnotationHandler handler = _containerInitializerAnnotationHandlers.get(0);
+                    assertEquals(1, state._containerInitializerAnnotationHandlers.size());
+                    ContainerInitializerAnnotationHandler handler = state._containerInitializerAnnotationHandlers.get(0);
                     assertThat(handler._holder.toString(), containsString("com.acme.initializer.FooInitializer"));
                     assertEquals("com.acme.initializer.Foo", handler._annotation.getName());
                 }
             }
-            
+
             MyAnnotationConfiguration config = new MyAnnotationConfiguration();
-            
+
             WebAppContext context = new WebAppContext();
+            config.preConfigure(context);
             List<ServletContainerInitializer> scis;
 
             context.setClassLoader(webAppLoader);
-            context.getMetaData().addWebInfResource(Resource.newResource(testSciJar.toURI().toURL()));
-            context.getMetaData().setWebDescriptor(new WebDescriptor(Resource.newResource(web31true)));
+            context.getMetaData().addWebInfResource(ResourceFactory.root().newResource(testSciJar));
+            context.getMetaData().setWebDescriptor(new WebDescriptor(context.getResourceFactory().newResource(web31true)));
             context.getMetaData().setWebInfClassesResources(classes);
             context.getContext().getServletContext().setEffectiveMajorVersion(3);
             context.getContext().getServletContext().setEffectiveMinorVersion(1);
-            scis = config.getNonExcludedInitializers(context);
+            config.preConfigure(context);
+            State state = (State)context.getAttribute(AnnotationConfiguration.STATE);
+            scis = config.getNonExcludedInitializers(state);
             assertNotNull(scis);
             assertEquals(3, scis.size());
-            
-            config.createServletContainerInitializerAnnotationHandlers(context, scis); 
+
+            config.createServletContainerInitializerAnnotationHandlers(context, scis);
         }
         finally
         {
@@ -258,16 +264,19 @@ public class TestAnnotationConfiguration
         {
             AnnotationConfiguration config = new AnnotationConfiguration();
             WebAppContext context = new WebAppContext();
+            config.preConfigure(context);
             List<ServletContainerInitializer> scis;
             // test a 3.1 webapp with metadata-complete=false loads both server
             // and webapp scis
             context.setClassLoader(webAppLoader);
-            context.getMetaData().setWebDescriptor(new WebDescriptor(Resource.newResource(web31false)));
+            context.getMetaData().setWebDescriptor(new WebDescriptor(context.getResourceFactory().newResource(web31false)));
             context.getMetaData().setWebInfClassesResources(classes);
-            context.getMetaData().addWebInfResource(Resource.newResource(testSciJar.toURI().toURL()));
+            context.getMetaData().addWebInfResource(ResourceFactory.root().newResource(testSciJar));
             context.getContext().getServletContext().setEffectiveMajorVersion(3);
             context.getContext().getServletContext().setEffectiveMinorVersion(1);
-            scis = config.getNonExcludedInitializers(context);
+            config.preConfigure(context);
+            State state = (State)context.getAttribute(AnnotationConfiguration.STATE);
+            scis = config.getNonExcludedInitializers(state);
             assertNotNull(scis);
             assertEquals(3, scis.size());
             assertEquals("com.acme.ServerServletContainerInitializer", scis.get(0).getClass().getName()); // container
@@ -292,10 +301,10 @@ public class TestAnnotationConfiguration
 
         ClassLoader old = Thread.currentThread().getContextClassLoader();
 
-        File orderedFragmentJar = new File(jarDir, "test-sci-with-ordering.jar");
-        assertTrue(orderedFragmentJar.exists());
+        Path orderedFragmentJar = jarDir.resolve("test-sci-with-ordering.jar");
+        assertTrue(Files.exists(orderedFragmentJar));
         URLClassLoader orderedLoader = new URLClassLoader(new URL[]{
-            orderedFragmentJar.toURI().toURL(), testSciJar.toURI().toURL(),
+            orderedFragmentJar.toUri().toURL(), testSciJar.toUri().toURL(),
             targetClasses.getURI().toURL(), webInfClasses.getURI().toURL()
         },
             containerLoader);
@@ -305,18 +314,21 @@ public class TestAnnotationConfiguration
         {
             AnnotationConfiguration config = new AnnotationConfiguration();
             WebAppContext context = new WebAppContext();
+            config.preConfigure(context);
             List<ServletContainerInitializer> scis;
             context.setClassLoader(orderedLoader);
-            context.getMetaData().setWebDescriptor(new WebDescriptor(Resource.newResource(web31true)));
+            context.getMetaData().setWebDescriptor(new WebDescriptor(context.getResourceFactory().newResource(web31true)));
             RelativeOrdering ordering = new RelativeOrdering(context.getMetaData());
             context.getMetaData().setOrdering(ordering);
-            context.getMetaData().addWebInfResource(Resource.newResource(orderedFragmentJar.toURI().toURL()));
-            context.getMetaData().addWebInfResource(Resource.newResource(testSciJar.toURI().toURL()));
+            context.getMetaData().addWebInfResource(ResourceFactory.root().newResource(orderedFragmentJar));
+            context.getMetaData().addWebInfResource(ResourceFactory.root().newResource(testSciJar));
             context.getMetaData().setWebInfClassesResources(classes);
             context.getMetaData().orderFragments();
             context.getContext().getServletContext().setEffectiveMajorVersion(3);
             context.getContext().getServletContext().setEffectiveMinorVersion(1);
-            scis = config.getNonExcludedInitializers(context);
+            config.preConfigure(context);
+            State state = (State)context.getAttribute(AnnotationConfiguration.STATE);
+            scis = config.getNonExcludedInitializers(state);
             assertNotNull(scis);
             assertEquals(4, scis.size());
             assertEquals("com.acme.ServerServletContainerInitializer", scis.get(0).getClass().getName()); //container path
@@ -340,21 +352,24 @@ public class TestAnnotationConfiguration
             //test 2.5 webapp with configurationDiscovered=false loads only server scis
             AnnotationConfiguration config = new AnnotationConfiguration();
             WebAppContext context = new WebAppContext();
+            config.preConfigure(context);
             List<ServletContainerInitializer> scis;
             context.setConfigurationDiscovered(false);
             context.setClassLoader(webAppLoader);
-            context.getMetaData().setWebDescriptor(new WebDescriptor(Resource.newResource(web25)));
+            context.getMetaData().setWebDescriptor(new WebDescriptor(context.getResourceFactory().newResource(web25)));
             context.getMetaData().setWebInfClassesResources(classes);
-            context.getMetaData().addWebInfResource(Resource.newResource(testSciJar.toURI().toURL()));
+            context.getMetaData().addWebInfResource(ResourceFactory.root().newResource(testSciJar));
             context.getContext().getServletContext().setEffectiveMajorVersion(2);
             context.getContext().getServletContext().setEffectiveMinorVersion(5);
-            scis = config.getNonExcludedInitializers(context);
+            config.preConfigure(context);
+            State state = (State)context.getAttribute(AnnotationConfiguration.STATE);
+            scis = config.getNonExcludedInitializers(state);
             assertNotNull(scis);
             for (ServletContainerInitializer s : scis)
             {
                 //should not have any of the web-inf lib scis in here
-                assertFalse(s.getClass().getName().equals("com.acme.ordering.AcmeServletContainerInitializer"));
-                assertFalse(s.getClass().getName().equals("com.acme.initializer.FooInitializer"));
+                assertNotEquals("com.acme.ordering.AcmeServletContainerInitializer", s.getClass().getName());
+                assertNotEquals("com.acme.initializer.FooInitializer", s.getClass().getName());
                 //NOTE: should also not have the web-inf classes scis in here either, but due to the
                 //way the test is set up, the sci we're pretending is in web-inf classes will actually
                 //NOT be loaded by the webapp's classloader, but rather by the junit classloader, so
@@ -377,17 +392,20 @@ public class TestAnnotationConfiguration
             //test 2.5 webapp with configurationDiscovered=true loads both server and webapp scis
             AnnotationConfiguration config = new AnnotationConfiguration();
             WebAppContext context = new WebAppContext();
+            config.preConfigure(context);
             List<ServletContainerInitializer> scis;
             context.setConfigurationDiscovered(true);
             context.setClassLoader(webAppLoader);
-            context.getMetaData().setWebDescriptor(new WebDescriptor(Resource.newResource(web25)));
+            context.getMetaData().setWebDescriptor(new WebDescriptor(context.getResourceFactory().newResource(web25)));
             context.getMetaData().setWebInfClassesResources(classes);
-            context.getMetaData().addWebInfResource(Resource.newResource(testSciJar.toURI().toURL()));
+            context.getMetaData().addWebInfResource(ResourceFactory.root().newResource(testSciJar));
             context.getContext().getServletContext().setEffectiveMajorVersion(2);
             context.getContext().getServletContext().setEffectiveMinorVersion(5);
-            scis = config.getNonExcludedInitializers(context);
+            config.preConfigure(context);
+            State state = (State)context.getAttribute(AnnotationConfiguration.STATE);
+            scis = config.getNonExcludedInitializers(state);
             assertNotNull(scis);
-            assertEquals(3, scis.size(), () ->  scis.toString());
+            assertEquals(3, scis.size(), scis::toString);
             assertEquals("com.acme.ServerServletContainerInitializer", scis.get(0).getClass().getName()); //container path
             assertEquals("com.acme.webinf.WebInfClassServletContainerInitializer", scis.get(1).getClass().getName()); // web-inf
             assertEquals("com.acme.initializer.FooInitializer", scis.get(2).getClass().getName()); //web-inf jar no web-fragment

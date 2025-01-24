@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -28,7 +28,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.Stack;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import jakarta.servlet.GenericServlet;
@@ -46,10 +45,12 @@ import jakarta.servlet.UnavailableException;
 import jakarta.servlet.http.HttpServletResponse;
 import org.eclipse.jetty.ee9.nested.ContextHandler;
 import org.eclipse.jetty.ee9.nested.Request;
-import org.eclipse.jetty.ee9.nested.UserIdentity;
-import org.eclipse.jetty.ee9.security.IdentityService;
-import org.eclipse.jetty.ee9.security.RunAsToken;
+import org.eclipse.jetty.ee9.nested.UserIdentityScope;
+import org.eclipse.jetty.security.IdentityService;
+import org.eclipse.jetty.security.IdentityService.Association;
+import org.eclipse.jetty.security.IdentityService.RunAsToken;
 import org.eclipse.jetty.util.Loader;
+import org.eclipse.jetty.util.NanoTime;
 import org.eclipse.jetty.util.StringUtil;
 import org.eclipse.jetty.util.annotation.ManagedAttribute;
 import org.eclipse.jetty.util.annotation.ManagedObject;
@@ -68,7 +69,7 @@ import org.slf4j.LoggerFactory;
  * requested.
  */
 @ManagedObject("Servlet Holder")
-public class ServletHolder extends Holder<Servlet> implements UserIdentity.Scope, Comparable<ServletHolder>
+public class ServletHolder extends Holder<Servlet> implements UserIdentityScope, Comparable<ServletHolder>
 {
     private static final Logger LOG = LoggerFactory.getLogger(ServletHolder.class);
     private int _initOrder = -1;
@@ -735,7 +736,7 @@ public class ServletHolder extends Holder<Servlet> implements UserIdentity.Scope
         {
             MultipartConfigElement mpce = ((Registration)_registration).getMultipartConfig();
             if (mpce != null)
-                baseRequest.setAttribute(Request.__MULTIPART_CONFIG_ELEMENT, mpce);
+                baseRequest.setAttribute(Request.MULTIPART_CONFIG_ELEMENT, mpce);
         }
     }
 
@@ -883,6 +884,7 @@ public class ServletHolder extends Holder<Servlet> implements UserIdentity.Scope
     }
 
     /**
+     * Get the package for all jsps.
      * @return the package for all jsps
      */
     public String getJspPackagePrefix()
@@ -971,7 +973,7 @@ public class ServletHolder extends Holder<Servlet> implements UserIdentity.Scope
                 return clash;
 
             //otherwise apply all of them
-            ServletMapping mapping = new ServletMapping(Source.JAVAX_API);
+            ServletMapping mapping = new ServletMapping(Source.JAKARTA_API);
             mapping.setServletName(ServletHolder.this.getName());
             mapping.setPathSpecs(urlPatterns);
             getServletHandler().addServletMapping(mapping);
@@ -1218,9 +1220,9 @@ public class ServletHolder extends Holder<Servlet> implements UserIdentity.Scope
                 _unavailableStart = null;
             else
             {
-                long start = System.nanoTime();
+                long start = NanoTime.now();
                 while (start == 0)
-                    start = System.nanoTime();
+                    start = NanoTime.now();
                 _unavailableStart = new AtomicLong(start);
             }
         }
@@ -1238,7 +1240,7 @@ public class ServletHolder extends Holder<Servlet> implements UserIdentity.Scope
             {
                 long start = _unavailableStart.get();
 
-                if (start == 0 || System.nanoTime() - start < TimeUnit.SECONDS.toNanos(_unavailableException.getUnavailableSeconds()))
+                if (start == 0 || NanoTime.secondsSince(start) < _unavailableException.getUnavailableSeconds())
                 {
                     ((HttpServletResponse)res).sendError(HttpServletResponse.SC_SERVICE_UNAVAILABLE);
                 }
@@ -1351,42 +1353,27 @@ public class ServletHolder extends Holder<Servlet> implements UserIdentity.Scope
         @Override
         public void init(ServletConfig config) throws ServletException
         {
-            Object oldRunAs = _identityService.setRunAs(_identityService.getSystemUserIdentity(), _runAsToken);
-            try
+            try (Association ignored = _identityService.associate(_identityService.getSystemUserIdentity(), _runAsToken))
             {
                 getWrapped().init(config);
-            }
-            finally
-            {
-                _identityService.unsetRunAs(oldRunAs);
             }
         }
 
         @Override
         public void service(ServletRequest req, ServletResponse res) throws ServletException, IOException
         {
-            Object oldRunAs = _identityService.setRunAs(_identityService.getSystemUserIdentity(), _runAsToken);
-            try
+            try (Association ignored = _identityService.associate(_identityService.getSystemUserIdentity(), _runAsToken))
             {
                 getWrapped().service(req, res);
-            }
-            finally
-            {
-                _identityService.unsetRunAs(oldRunAs);
             }
         }
 
         @Override
         public void destroy()
         {
-            Object oldRunAs = _identityService.setRunAs(_identityService.getSystemUserIdentity(), _runAsToken);
-            try
+            try (Association ignored = _identityService.associate(_identityService.getSystemUserIdentity(), _runAsToken))
             {
                 getWrapped().destroy();
-            }
-            finally
-            {
-                _identityService.unsetRunAs(oldRunAs);
             }
         }
     }

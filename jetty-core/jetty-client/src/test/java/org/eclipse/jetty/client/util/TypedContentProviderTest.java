@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -17,13 +17,15 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 import org.eclipse.jetty.client.AbstractHttpClientServerTest;
+import org.eclipse.jetty.client.ContentResponse;
 import org.eclipse.jetty.client.EmptyServerHandler;
-import org.eclipse.jetty.client.api.ContentResponse;
+import org.eclipse.jetty.client.FormRequestContent;
+import org.eclipse.jetty.client.StringRequestContent;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpMethod;
 import org.eclipse.jetty.http.MimeTypes;
 import org.eclipse.jetty.io.Content;
-import org.eclipse.jetty.server.FutureFormFields;
+import org.eclipse.jetty.server.FormFields;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.util.Fields;
@@ -55,7 +57,7 @@ public class TypedContentProviderTest extends AbstractHttpClientServerTest
             {
                 assertEquals("POST", request.getMethod());
                 assertEquals(MimeTypes.Type.FORM_ENCODED.asString(), request.getHeaders().get(HttpHeader.CONTENT_TYPE));
-                new FutureFormFields(request).whenComplete((fields, failure) ->
+                FormFields.from(request).whenComplete((fields, failure) ->
                 {
                     assertEquals(value1, fields.get(name1).getValue());
                     List<String> values = fields.get(name2).getValues();

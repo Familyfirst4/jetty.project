@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -31,11 +31,12 @@ public class JspConfiguration extends AbstractConfiguration
 
     public JspConfiguration()
     {
-        addDependencies(WebXmlConfiguration.class, MetaInfConfiguration.class, WebInfConfiguration.class, FragmentConfiguration.class);
-        addDependents(WebAppConfiguration.class);
-        protectAndExpose("org.eclipse.jetty.ee10.jsp.");
-        expose("org.eclipse.jetty.ee10.apache.");
-        hide("org.eclipse.jdt.");
+        super(new Builder()
+            .addDependencies(WebXmlConfiguration.class, MetaInfConfiguration.class, WebInfConfiguration.class, FragmentConfiguration.class)
+            .addDependents(WebAppConfiguration.class)
+            .protectAndExpose("org.eclipse.jetty.ee10.jsp.")
+            .expose("org.eclipse.jetty.ee10.apache.")
+            .hide("org.eclipse.jdt."));
     }
 
     @Override

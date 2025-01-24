@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,27 +13,35 @@
 
 package org.eclipse.jetty.deploy.providers;
 
-import java.io.File;
 import java.io.FilenameFilter;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Collectors;
 
 import org.eclipse.jetty.deploy.App;
 import org.eclipse.jetty.deploy.AppProvider;
 import org.eclipse.jetty.deploy.DeploymentManager;
+import org.eclipse.jetty.server.Deployable;
+import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.util.Scanner;
+import org.eclipse.jetty.util.StringUtil;
 import org.eclipse.jetty.util.annotation.ManagedAttribute;
 import org.eclipse.jetty.util.annotation.ManagedObject;
 import org.eclipse.jetty.util.annotation.ManagedOperation;
 import org.eclipse.jetty.util.component.ContainerLifeCycle;
 import org.eclipse.jetty.util.component.Environment;
+import org.eclipse.jetty.util.component.LifeCycle;
 import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
+import org.eclipse.jetty.util.resource.Resources;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -42,7 +50,7 @@ public abstract class ScanningAppProvider extends ContainerLifeCycle implements 
 {
     private static final Logger LOG = LoggerFactory.getLogger(ScanningAppProvider.class);
 
-    private final Map<String, App> _appMap = new HashMap<>();
+    private final Map<Path, App> _appMap = new HashMap<>();
 
     private DeploymentManager _deploymentManager;
     private FilenameFilter _filenameFilter;
@@ -51,25 +59,26 @@ public abstract class ScanningAppProvider extends ContainerLifeCycle implements 
     private Scanner _scanner;
     private boolean _useRealPaths;
     private String _environmentName;
+    private boolean _deferInitialScan = false;
 
     private final Scanner.DiscreteListener _scannerListener = new Scanner.DiscreteListener()
     {
         @Override
-        public void fileAdded(String filename) throws Exception
+        public void pathAdded(Path path) throws Exception
         {
-            ScanningAppProvider.this.fileAdded(filename);
+            ScanningAppProvider.this.pathAdded(path);
         }
 
         @Override
-        public void fileChanged(String filename) throws Exception
+        public void pathChanged(Path path) throws Exception
         {
-            ScanningAppProvider.this.fileChanged(filename);
+            ScanningAppProvider.this.pathChanged(path);
         }
 
         @Override
-        public void fileRemoved(String filename) throws Exception
+        public void pathRemoved(Path path) throws Exception
         {
-            ScanningAppProvider.this.fileRemoved(filename);
+            ScanningAppProvider.this.pathRemoved(path);
         }
     };
 
@@ -81,7 +90,7 @@ public abstract class ScanningAppProvider extends ContainerLifeCycle implements 
     protected ScanningAppProvider(FilenameFilter filter)
     {
         _filenameFilter = filter;
-        addBean(_appMap);
+        installBean(_appMap);
     }
 
     @Override
@@ -121,7 +130,7 @@ public abstract class ScanningAppProvider extends ContainerLifeCycle implements 
     /**
      * @return The index of currently deployed applications.
      */
-    protected Map<String, App> getDeployedApps()
+    protected Map<Path, App> getDeployedApps()
     {
         return _appMap;
     }
@@ -131,22 +140,48 @@ public abstract class ScanningAppProvider extends ContainerLifeCycle implements 
      * Isolated in a method so that it is possible to override the default App
      * object for specialized implementations of the AppProvider.
      *
-     * @param filename The file that is the context.xml. It is resolved by
-     * {@link Resource#newResource(String)}
+     * @param path The file that is the context.xml. It is resolved by
+     * {@link org.eclipse.jetty.util.resource.ResourceFactory#newResource(String)}
      * @return The App object for this particular context definition file.
      */
-    protected App createApp(String filename)
+    protected App createApp(Path path)
     {
-        App app = new App(_deploymentManager, this, filename);
+        App app = new App(_deploymentManager, this, path);
+        if (LOG.isDebugEnabled())
+            LOG.debug("{} creating {}", this, app);
 
-        // Only deploy apps for this environment
-        if (app.getEnvironmentName().equals(getEnvironmentName()))
-            return app;
+        String defaultEnvironmentName = _deploymentManager.getDefaultEnvironmentName();
 
-        boolean appProvider4env = _deploymentManager.getAppProviders().stream()
-            .map(AppProvider::getEnvironmentName).anyMatch(app.getEnvironmentName()::equals);
-        if (!appProvider4env)
-            LOG.warn("No AppProvider with environment {} for {}", app.getEnvironmentName(), app);
+        String environmentName = app.getEnvironmentName();
+        if (StringUtil.isBlank(environmentName) && StringUtil.isNotBlank(defaultEnvironmentName))
+        {
+            environmentName = defaultEnvironmentName;
+            app.getProperties().put(Deployable.ENVIRONMENT, environmentName);
+            if (LOG.isDebugEnabled())
+                LOG.debug("{} default environment for {}", this, app);
+        }
+
+        if (StringUtil.isNotBlank(environmentName))
+        {
+            // If the app specifies the environment for this provider, then this deployer will deploy it.
+            if (environmentName.equalsIgnoreCase(getEnvironmentName()))
+            {
+                if (LOG.isDebugEnabled())
+                    LOG.debug("{} created {}", this, app);
+                return app;
+            }
+
+            // If we are the default provider then we may warn
+            if (getEnvironmentName().equalsIgnoreCase(defaultEnvironmentName))
+            {
+                // if the app specified an environment name, then produce warning if there is no provider for it.
+                if (!_deploymentManager.hasAppProviderFor(environmentName))
+                    LOG.warn("No AppProvider with environment {} for {}", environmentName, app);
+                return null;
+            }
+        }
+
+        LOG.warn("{} no environment for {}, ignoring", this, app);
         return null;
     }
 
@@ -170,13 +205,29 @@ public abstract class ScanningAppProvider extends ContainerLifeCycle implements 
             throw new IllegalStateException("Unknown environment " + _environmentName);
 
         LOG.info("Deployment monitor {} in {} at intervals {}s", getEnvironmentName(), _monitored, getScanInterval());
-        List<File> files = new ArrayList<>();
+        List<Path> files = new ArrayList<>();
         for (Resource resource : _monitored)
         {
-            if (resource.exists() && resource.getFile().canRead())
-                files.add(resource.getFile());
-            else
+            if (Resources.missing(resource))
+            {
                 LOG.warn("Does not exist: {}", resource);
+                continue; // skip
+            }
+
+            // handle resource smartly
+            for (Resource r: resource)
+            {
+                Path path = r.getPath();
+                if (path == null)
+                {
+                    LOG.warn("Not based on FileSystem Path: {}", r);
+                    continue; // skip
+                }
+                if (Files.isDirectory(path) || Files.isReadable(path))
+                    files.add(resource.getPath());
+                else
+                    LOG.warn("Unsupported Path (not a directory and/or not readable): {}", r);
+            }
         }
 
         _scanner = new Scanner(null, _useRealPaths);
@@ -186,8 +237,29 @@ public abstract class ScanningAppProvider extends ContainerLifeCycle implements 
         _scanner.setReportDirs(true);
         _scanner.setScanDepth(1); //consider direct dir children of monitored dir
         _scanner.addListener(_scannerListener);
-
+        _scanner.setReportExistingFilesOnStartup(true);
+        _scanner.setAutoStartScanning(!_deferInitialScan);
         addBean(_scanner);
+
+        if (isDeferInitialScan())
+        {
+            // Setup listener to wait for Server in STARTED state, which
+            // triggers the first scan of the monitored directories
+            getDeploymentManager().getServer().addEventListener(
+                new LifeCycle.Listener()
+                {
+                    @Override
+                    public void lifeCycleStarted(LifeCycle event)
+                    {
+                        if (event instanceof Server)
+                        {
+                            if (LOG.isDebugEnabled())
+                                LOG.debug("Triggering Deferred Scan of {}", _monitored);
+                            _scanner.startScanning();
+                        }
+                    }
+                });
+        }
 
         super.doStart();
     }
@@ -209,39 +281,39 @@ public abstract class ScanningAppProvider extends ContainerLifeCycle implements 
         return _scanner.exists(path);
     }
 
-    protected void fileAdded(String filename) throws Exception
+    protected void pathAdded(Path path) throws Exception
     {
-        App app = ScanningAppProvider.this.createApp(filename);
+        App app = ScanningAppProvider.this.createApp(path);
         if (LOG.isDebugEnabled())
-            LOG.debug("fileAdded {}: {}", filename, app);
+            LOG.debug("fileAdded {}: {}", path, app);
 
         if (app != null)
         {
-            _appMap.put(filename, app);
+            _appMap.put(path, app);
             _deploymentManager.addApp(app);
         }
     }
 
-    protected void fileChanged(String filename) throws Exception
+    protected void pathChanged(Path path) throws Exception
     {
-        App oldApp = _appMap.remove(filename);
+        App oldApp = _appMap.remove(path);
         if (oldApp != null)
             _deploymentManager.removeApp(oldApp);
-        App app = ScanningAppProvider.this.createApp(filename);
+        App app = ScanningAppProvider.this.createApp(path);
         if (LOG.isDebugEnabled())
-            LOG.debug("fileChanged {}: {}", filename, app);
+            LOG.debug("fileChanged {}: {}", path, app);
         if (app != null)
         {
-            _appMap.put(filename, app);
+            _appMap.put(path, app);
             _deploymentManager.addApp(app);
         }
     }
 
-    protected void fileRemoved(String filename) throws Exception
+    protected void pathRemoved(Path path) throws Exception
     {
-        App app = _appMap.remove(filename);
+        App app = _appMap.remove(path);
         if (LOG.isDebugEnabled())
-            LOG.debug("fileRemoved {}: {}", filename, app);
+            LOG.debug("fileRemoved {}: {}", path, app);
         if (app != null)
             _deploymentManager.removeApp(app);
     }
@@ -286,7 +358,9 @@ public abstract class ScanningAppProvider extends ContainerLifeCycle implements 
     public void setMonitoredResources(List<Resource> resources)
     {
         _monitored.clear();
-        _monitored.addAll(resources);
+        if (resources == null)
+            return;
+        resources.stream().filter(Objects::nonNull).forEach(_monitored::add);
     }
 
     public List<Resource> getMonitoredResources()
@@ -319,7 +393,7 @@ public abstract class ScanningAppProvider extends ContainerLifeCycle implements 
             List<Resource> resources = new ArrayList<>();
             for (String dir : directories)
             {
-                resources.add(Resource.newResource(dir));
+                resources.add(ResourceFactory.of(this).newResource(dir));
             }
             setMonitoredResources(resources);
         }
@@ -327,6 +401,34 @@ public abstract class ScanningAppProvider extends ContainerLifeCycle implements 
         {
             throw new IllegalArgumentException(e);
         }
+    }
+
+    /**
+     * Test if initial scan should be deferred.
+     *
+     * @return true if initial scan is deferred, false to have initial scan occur on startup of ScanningAppProvider.
+     */
+    public boolean isDeferInitialScan()
+    {
+        return _deferInitialScan;
+    }
+
+    /**
+     * Flag to control initial scan behavior.
+     *
+     * <ul>
+     *     <li>{@code true} - to have initial scan deferred until the {@link Server} component
+     *     has reached it's STARTED state.<br>
+     *     Note: any failures in a deploy will not fail the Server startup in this mode.</li>
+     *     <li>{@code false} - (default value) to have initial scan occur as normal on
+     *     ScanningAppProvider startup.</li>
+     * </ul>
+     *
+     * @param defer true to defer initial scan, false to have initial scan occur on startup of ScanningAppProvider.
+     */
+    public void setDeferInitialScan(boolean defer)
+    {
+        _deferInitialScan = defer;
     }
 
     public void setScanInterval(int scanInterval)

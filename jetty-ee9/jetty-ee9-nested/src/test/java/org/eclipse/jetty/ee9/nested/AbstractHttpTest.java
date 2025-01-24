@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -38,6 +38,7 @@ import org.junit.jupiter.api.BeforeEach;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 public abstract class AbstractHttpTest
 {
@@ -78,9 +79,9 @@ public abstract class AbstractHttpTest
                 writer.write("\r\n");
                 writer.flush();
 
-                HttpTester.Response response = new HttpTester.Response();
                 HttpTester.Input input = HttpTester.from(socket.getInputStream());
-                HttpTester.parseResponse(input, response);
+                HttpTester.Response response = HttpTester.parseResponse(input);
+                assertNotNull(response);
 
                 if (httpVersion.is("HTTP/1.1") &&
                     response.isComplete() &&
@@ -102,7 +103,7 @@ public abstract class AbstractHttpTest
         }
     }
 
-    protected class ThrowExceptionOnDemandHandler extends Handler.Processor
+    protected class ThrowExceptionOnDemandHandler extends Handler.Abstract
     {
         private final boolean throwException;
         private volatile Throwable failure;
@@ -113,11 +114,12 @@ public abstract class AbstractHttpTest
         }
 
         @Override
-        public void process(Request request, Response response, Callback callback) throws Exception
+        public boolean handle(Request request, Response response, Callback callback) throws Exception
         {
             if (throwException)
                 throw new TestCommitException();
             callback.succeeded();
+            return true;
         }
 
         protected void markFailed(Throwable x)

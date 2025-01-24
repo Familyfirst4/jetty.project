@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -15,10 +15,10 @@ package org.eclipse.jetty.unixdomain.server;
 
 import java.io.Closeable;
 import java.io.IOException;
-import java.net.ProtocolFamily;
 import java.net.SocketAddress;
 import java.net.StandardProtocolFamily;
 import java.net.StandardSocketOptions;
+import java.net.UnixDomainSocketAddress;
 import java.nio.channels.Channel;
 import java.nio.channels.SelectableChannel;
 import java.nio.channels.SelectionKey;
@@ -42,7 +42,6 @@ import org.eclipse.jetty.server.HttpConnectionFactory;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.util.IO;
-import org.eclipse.jetty.util.JavaVersion;
 import org.eclipse.jetty.util.annotation.ManagedAttribute;
 import org.eclipse.jetty.util.annotation.ManagedObject;
 import org.eclipse.jetty.util.thread.Scheduler;
@@ -79,11 +78,11 @@ public class UnixDomainServerConnector extends AbstractConnector
         this(server, null, null, null, acceptors, selectors, factories);
     }
 
-    public UnixDomainServerConnector(Server server, Executor executor, Scheduler scheduler, ByteBufferPool pool, int acceptors, int selectors, ConnectionFactory... factories)
+    public UnixDomainServerConnector(Server server, Executor executor, Scheduler scheduler, ByteBufferPool bufferPool, int acceptors, int selectors, ConnectionFactory... factories)
     {
-        super(server, executor, scheduler, pool, acceptors, factories.length > 0 ? factories : new ConnectionFactory[]{new HttpConnectionFactory()});
+        super(server, executor, scheduler, bufferPool, acceptors, factories.length > 0 ? factories : new ConnectionFactory[]{new HttpConnectionFactory()});
         selectorManager = newSelectorManager(getExecutor(), getScheduler(), selectors);
-        addBean(selectorManager, true);
+        installBean(selectorManager, true);
     }
 
     protected SelectorManager newSelectorManager(Executor executor, Scheduler scheduler, int selectors)
@@ -146,13 +145,33 @@ public class UnixDomainServerConnector extends AbstractConnector
         this.acceptedSendBufferSize = acceptedSendBufferSize;
     }
 
+    public SocketAddress getLocalSocketAddress()
+    {
+        try
+        {
+            return serverChannel == null ? null : serverChannel.getLocalAddress();
+        }
+        catch (Throwable x)
+        {
+            return null;
+        }
+    }
+
     @Override
     protected void doStart() throws Exception
     {
         getBeans(SelectorManager.SelectorManagerListener.class).forEach(selectorManager::addEventListener);
+
         serverChannel = open();
         addBean(serverChannel);
+
         super.doStart();
+
+        if (getAcceptors() == 0)
+        {
+            serverChannel.configureBlocking(false);
+            acceptor.set(selectorManager.acceptor(serverChannel));
+        }
     }
 
     @Override
@@ -202,25 +221,6 @@ public class UnixDomainServerConnector extends AbstractConnector
 
     private ServerSocketChannel open() throws IOException
     {
-        ServerSocketChannel serverChannel = openServerSocketChannel();
-        if (getAcceptors() == 0)
-        {
-            serverChannel.configureBlocking(false);
-            acceptor.set(selectorManager.acceptor(serverChannel));
-        }
-        return serverChannel;
-    }
-
-    private void close() throws IOException
-    {
-        ServerSocketChannel serverChannel = this.serverChannel;
-        this.serverChannel = null;
-        IO.close(serverChannel);
-        Files.deleteIfExists(getUnixDomainPath());
-    }
-
-    private ServerSocketChannel openServerSocketChannel() throws IOException
-    {
         ServerSocketChannel serverChannel = null;
         if (isInheritChannel())
         {
@@ -235,37 +235,21 @@ public class UnixDomainServerConnector extends AbstractConnector
         return serverChannel;
     }
 
+    private void close() throws IOException
+    {
+        ServerSocketChannel serverChannel = this.serverChannel;
+        this.serverChannel = null;
+        IO.close(serverChannel);
+        Files.deleteIfExists(getUnixDomainPath());
+    }
+
     private ServerSocketChannel bindServerSocketChannel() throws IOException
     {
         Path unixDomainPath = getUnixDomainPath();
-
-        ServerSocketChannel serverChannel;
-        SocketAddress socketAddress;
-        try
-        {
-            ProtocolFamily family = Enum.valueOf(StandardProtocolFamily.class, "UNIX");
-            Class<?> channelClass = Class.forName("java.nio.channels.ServerSocketChannel");
-            serverChannel = (ServerSocketChannel)channelClass.getMethod("open", ProtocolFamily.class).invoke(null, family);
-            // Unix-Domain does not support SO_REUSEADDR.
-            Class<?> addressClass = Class.forName("java.net.UnixDomainSocketAddress");
-            socketAddress = (SocketAddress)addressClass.getMethod("of", Path.class).invoke(null, unixDomainPath);
-        }
-        catch (Throwable x)
-        {
-            String message = "Unix-Domain SocketChannels are available starting from Java 16, your Java version is: " + JavaVersion.VERSION;
-            throw new UnsupportedOperationException(message, x);
-        }
-
-        try
-        {
-            serverChannel.bind(socketAddress, getAcceptQueueSize());
-            return serverChannel;
-        }
-        catch (IOException x)
-        {
-            String message = String.format("Could not bind %s to %s", UnixDomainServerConnector.class.getSimpleName(), unixDomainPath);
-            throw new IOException(message, x);
-        }
+        ServerSocketChannel serverChannel = ServerSocketChannel.open(StandardProtocolFamily.UNIX);
+        SocketAddress socketAddress = UnixDomainSocketAddress.of(unixDomainPath);
+        serverChannel.bind(socketAddress, getAcceptQueueSize());
+        return serverChannel;
     }
 
     @Override

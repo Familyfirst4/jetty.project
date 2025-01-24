@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -15,51 +15,50 @@ package org.eclipse.jetty.util.resource;
 
 import java.io.BufferedWriter;
 import java.io.ByteArrayOutputStream;
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.StringReader;
 import java.io.StringWriter;
-import java.lang.reflect.InvocationTargetException;
-import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URL;
-import java.nio.ByteBuffer;
-import java.nio.channels.ReadableByteChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileSystem;
 import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Arrays;
+import java.nio.file.Paths;
+import java.time.Instant;
 import java.util.List;
-import java.util.stream.Stream;
 
 import org.eclipse.jetty.toolchain.test.FS;
 import org.eclipse.jetty.toolchain.test.IO;
 import org.eclipse.jetty.toolchain.test.jupiter.WorkDir;
 import org.eclipse.jetty.toolchain.test.jupiter.WorkDirExtension;
-import org.eclipse.jetty.util.BufferUtil;
 import org.hamcrest.BaseMatcher;
 import org.hamcrest.Description;
 import org.hamcrest.Matcher;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledOnOs;
-import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.MethodSource;
-import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.api.parallel.Isolated;
 
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.empty;
+import static org.hamcrest.Matchers.endsWith;
+import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
-import static org.hamcrest.Matchers.lessThanOrEqualTo;
+import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.notNullValue;
-import static org.hamcrest.Matchers.nullValue;
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.hamcrest.Matchers.startsWith;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -69,110 +68,71 @@ import static org.junit.jupiter.api.condition.OS.MAC;
 import static org.junit.jupiter.api.condition.OS.WINDOWS;
 
 @ExtendWith(WorkDirExtension.class)
+@Isolated("Access static FileSystemPool.INSTANCE.mounts()")
 public class FileSystemResourceTest
 {
-    public WorkDir workDir;
 
-    public static Stream<Class<PathResource>> fsResourceProvider()
+    @BeforeEach
+    public void beforeEach()
     {
-        return Stream.of(PathResource.class);
+        assertThat(FileSystemPool.INSTANCE.mounts(), empty());
     }
 
-    public Resource newResource(Class<? extends Resource> resourceClass, URL url) throws Exception
+    @AfterEach
+    public void afterEach()
     {
-        try
-        {
-            return resourceClass.getConstructor(URL.class).newInstance(url);
-        }
-        catch (InvocationTargetException e)
-        {
-            try
-            {
-                throw e.getTargetException();
-            }
-            catch (Exception | Error ex)
-            {
-                throw ex;
-            }
-            catch (Throwable th)
-            {
-                throw new Error(th);
-            }
-        }
+        assertThat(FileSystemPool.INSTANCE.mounts(), empty());
     }
 
-    public Resource newResource(Class<? extends Resource> resourceClass, URI uri) throws Exception
-    {
-        try
-        {
-            return resourceClass.getConstructor(URI.class).newInstance(uri);
-        }
-        catch (InvocationTargetException e)
-        {
-            try
-            {
-                throw e.getTargetException();
-            }
-            catch (Exception | Error ex)
-            {
-                throw ex;
-            }
-            catch (Throwable th)
-            {
-                throw new Error(th);
-            }
-        }
-    }
-
-    public Resource newResource(Class<? extends Resource> resourceClass, File file) throws Exception
-    {
-        try
-        {
-            return resourceClass.getConstructor(File.class).newInstance(file);
-        }
-        catch (InvocationTargetException e)
-        {
-            try
-            {
-                throw e.getTargetException();
-            }
-            catch (Exception | Error ex)
-            {
-                throw ex;
-            }
-            catch (Throwable th)
-            {
-                throw new Error(th);
-            }
-        }
-    }
-
-    private Matcher<Resource> hasNoAlias()
+    private Matcher<Resource> isAlias()
     {
         return new BaseMatcher<>()
         {
             @Override
             public boolean matches(Object item)
             {
-                final Resource res = (Resource)item;
-                return !res.isAlias();
+                return ((Resource)item).isAlias();
             }
 
             @Override
             public void describeTo(Description description)
             {
-                description.appendText("getAlias should return null");
+                description.appendText("isAlias() should return true");
             }
 
             @Override
             public void describeMismatch(Object item, Description description)
             {
-                description.appendText("was ").appendValue(((Resource)item).getAlias());
+                description.appendText("was ").appendValue(((Resource)item).getRealURI());
             }
         };
     }
 
-    private Matcher<Resource> isAliasFor(final Resource resource)
+    private Matcher<Resource> isNotAlias()
+    {
+        return new BaseMatcher<>()
+        {
+            @Override
+            public boolean matches(Object item)
+            {
+                return !((Resource)item).isAlias();
+            }
+
+            @Override
+            public void describeTo(Description description)
+            {
+                description.appendText("isAlias() should return false");
+            }
+
+            @Override
+            public void describeMismatch(Object item, Description description)
+            {
+                description.appendText("was ").appendValue(((Resource)item).getRealURI());
+            }
+        };
+    }
+
+    private Matcher<Resource> isRealResourceFor(final Resource resource)
     {
         return new BaseMatcher<>()
         {
@@ -180,148 +140,143 @@ public class FileSystemResourceTest
             public boolean matches(Object item)
             {
                 final Resource ritem = (Resource)item;
-                final URI alias = ritem.getAlias();
-                if (alias == null)
-                {
-                    return resource.getAlias() == null;
-                }
-                else
-                {
-                    return alias.equals(resource.getURI());
-                }
+                return ritem.getRealURI().equals(resource.getRealURI());
             }
 
             @Override
             public void describeTo(Description description)
             {
-                description.appendText("getAlias should return ").appendValue(resource.getURI());
+                description.appendText("getRealURI should return ").appendValue(resource.getURI());
             }
 
             @Override
             public void describeMismatch(Object item, Description description)
             {
-                description.appendText("was ").appendValue(((Resource)item).getAlias());
+                description.appendText("was ").appendValue(((Resource)item).getRealURI());
             }
         };
     }
 
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testNonAbsoluteURI(Class<PathResource> resourceClass)
+    @Test
+    public void testNonAbsoluteURI(WorkDir workDir) throws Exception
     {
-        assertThrows(IllegalArgumentException.class,
-            () -> newResource(resourceClass, new URI("path/to/resource")));
+        // Doesn't exist.
+        Resource resource = ResourceFactory.root().newResource(new URI("path/to/resource"));
+        assertTrue(Resources.missing(resource));
+
+        // Create a directory
+        Path testdir = workDir.getEmptyPathDir().resolve("path/to/resource");
+        Files.createDirectories(testdir);
+
+        Path pwd = Paths.get(System.getProperty("user.dir"));
+
+        // Establish a relative path URI that uses uri "/" path separators (now windows "\")
+        URI relativePath = pwd.toUri().relativize(testdir.toUri());
+
+        // Get a path relative name using unix/uri "/" (not windows "\")
+        assertThat("Should not have path navigation entries", relativePath.toASCIIString(), not(containsString("..")));
+        assertFalse(relativePath.isAbsolute());
+
+        resource = ResourceFactory.root().newResource(relativePath);
+        assertThat("Relative newResource: " + relativePath, resource, notNullValue());
+        assertThat(resource.getURI().toString(), startsWith("file:"));
+        assertThat(resource.getURI().toString(), endsWith("/path/to/resource/"));
     }
 
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testNotFileURI(Class<PathResource> resourceClass)
+    @Test
+    @Tag("flaky")
+    public void testNotFileURI()
     {
         assertThrows(IllegalArgumentException.class,
-            () -> newResource(resourceClass, new URI("https://www.eclipse.org/jetty/")));
+            () -> ResourceFactory.root().newResource(new URI("https://jetty.org/")));
     }
 
-    @ParameterizedTest
+    @Test
     @EnabledOnOs(WINDOWS)
-    @MethodSource("fsResourceProvider")
-    public void testBogusFilenameWindows(Class<PathResource> resourceClass)
+    public void testBogusFilenameWindows()
     {
         // "CON" is a reserved name under windows
         assertThrows(IllegalArgumentException.class,
-            () -> newResource(resourceClass, new URI("file://CON")));
+            () -> ResourceFactory.root().newResource(new URI("file://CON")));
     }
 
-    @ParameterizedTest
+    @Test
     @EnabledOnOs({LINUX, MAC})
-    @MethodSource("fsResourceProvider")
-    public void testBogusFilenameUnix(Class<PathResource> resourceClass)
+    public void testBogusFilenameUnix()
     {
         // A windows path is invalid under unix
-        assertThrows(IllegalArgumentException.class,
-            () -> newResource(resourceClass, new URI("file://Z:/:")));
+        assertThrows(IllegalArgumentException.class, () -> ResourceFactory.root().newResource(URI.create("file://Z:/:")));
     }
 
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testNewResourceWithSpace(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testNewResourceWithSpace(WorkDir workDir) throws Exception
     {
-        Path dir = workDir.getPath().normalize().toRealPath();
+        Path dir = workDir.getEmptyPathDir().normalize().toRealPath();
 
         Path baseDir = dir.resolve("base with spaces");
-        FS.ensureDirExists(baseDir.toFile());
+        FS.ensureDirExists(baseDir);
 
         Path subdir = baseDir.resolve("sub");
-        FS.ensureDirExists(subdir.toFile());
+        FS.ensureDirExists(subdir);
 
         URL baseUrl = baseDir.toUri().toURL();
 
         assertThat("url.protocol", baseUrl.getProtocol(), is("file"));
 
-        try (Resource base = newResource(resourceClass, baseUrl))
-        {
-            Resource sub = base.addPath("sub");
-            assertThat("sub/.isDirectory", sub.isDirectory(), is(true));
+        Resource base = ResourceFactory.root().newResource(baseUrl);
+        Resource sub = base.resolve("sub");
+        assertThat("sub/.isDirectory", sub.isDirectory(), is(true));
 
-            Resource tmp = sub.addPath("/tmp");
-            assertThat("No root", tmp.exists(), is(false));
-        }
+        Resource tmp = sub.resolve("/tmp");
+        assertTrue(Resources.missing(tmp), "Reference to root not allowed");
     }
 
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testAddPathClass(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testResolvePathClass(WorkDir workDir)
     {
         Path dir = workDir.getEmptyPathDir();
-
         Path subdir = dir.resolve("sub");
-        FS.ensureDirExists(subdir.toFile());
+        FS.ensureDirExists(subdir);
 
-        try (Resource base = newResource(resourceClass, dir.toFile()))
-        {
-            Resource sub = base.addPath("sub");
-            assertThat("sub/.isDirectory", sub.isDirectory(), is(true));
+        Resource base = ResourceFactory.root().newResource(dir);
+        Resource sub = base.resolve("sub");
+        assertThat("sub.isDirectory", sub.isDirectory(), is(true));
 
-            Resource tmp = sub.addPath("/tmp");
-            assertThat("No root", tmp.exists(), is(false));
-        }
+        Resource tmp = sub.resolve("/tmp");
+        assertTrue(Resources.missing(tmp), "Reference to root not allowed");
     }
 
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testAddRootPath(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testResolveRootPath(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
         Path subdir = dir.resolve("sub");
         Files.createDirectories(subdir);
 
-        String readableRootDir = findRootDir(dir.getFileSystem());
+        String readableRootDir = findAnyDirectoryOffRoot(dir.getFileSystem());
         assumeTrue(readableRootDir != null, "Readable Root Dir found");
 
-        try (Resource base = newResource(resourceClass, dir.toFile()))
-        {
-            Resource sub = base.addPath("sub");
-            assertThat("sub", sub.isDirectory(), is(true));
+        Resource base = ResourceFactory.root().newResource(dir);
+        Resource sub = base.resolve("sub");
+        assertThat("sub", sub.isDirectory(), is(true));
 
-            try
-            {
-                Resource rrd = sub.addPath(readableRootDir);
-                // valid path for unix and OSX
-                assertThat("Readable Root Dir", rrd.exists(), is(false));
-            }
-            catch (MalformedURLException | InvalidPathException e)
-            {
-                // valid path on Windows
-            }
+        try
+        {
+            Resource rrd = sub.resolve(readableRootDir);
+            // we are executing on unix and OSX
+            assertTrue(Resources.missing(rrd), "Readable Root Dir");
+        }
+        catch (InvalidPathException e)
+        {
+            // we are executing on Windows
         }
     }
 
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testAccessUniCodeFile(Class resourceClass) throws Exception
+    @Test
+    public void testAccessUniCodeFile(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
-
-        String readableRootDir = findRootDir(dir.getFileSystem());
+        String readableRootDir = findAnyDirectoryOffRoot(dir.getFileSystem());
         assumeTrue(readableRootDir != null, "Readable Root Dir found");
 
         Path subdir = dir.resolve("sub");
@@ -331,32 +286,46 @@ public class FileSystemResourceTest
         touchFile(subdir.resolve("swedish-ä.txt"), "hi a-with-two-dots");
         touchFile(subdir.resolve("swedish-ö.txt"), "hi o-with-two-dots");
 
-        try (Resource base = newResource(resourceClass, subdir.toFile()))
+        Resource base = ResourceFactory.root().newResource(subdir);
+
+        // Use decoded Unicode
+        Resource refD1 = base.resolve("swedish-å.txt");
+        Resource refD2 = base.resolve("swedish-ä.txt");
+        Resource refD3 = base.resolve("swedish-ö.txt");
+
+        assertTrue(refD1.exists(), "Ref D1 exists");
+        assertTrue(refD2.exists(), "Ref D2 exists");
+        assertTrue(refD3.exists(), "Ref D3 exists");
+
+        // Use encoded Unicode
+        Resource refE1 = base.resolve("swedish-%C3%A5.txt"); // swedish-å.txt
+        Resource refE2 = base.resolve("swedish-%C3%A4.txt"); // swedish-ä.txt
+        Resource refE3 = base.resolve("swedish-%C3%B6.txt"); // swedish-ö.txt
+
+        assertTrue(refE1.exists(), "Ref E1 exists");
+        assertTrue(refE2.exists(), "Ref E2 exists");
+        assertTrue(refE3.exists(), "Ref E3 exists");
+
+        if (LINUX.isCurrentOs())
         {
-            Resource refA1 = base.addPath("swedish-å.txt");
-            Resource refA2 = base.addPath("swedish-ä.txt");
-            Resource refO1 = base.addPath("swedish-ö.txt");
-
-            assertThat("Ref A1 exists", refA1.exists(), is(true));
-            assertThat("Ref A2 exists", refA2.exists(), is(true));
-            assertThat("Ref O1 exists", refO1.exists(), is(true));
-
-            if (LINUX.isCurrentOs())
-            {
-                assertThat("Ref A1 alias", refA1.isAlias(), is(false));
-                assertThat("Ref A2 alias", refA2.isAlias(), is(false));
-                assertThat("Ref O1 alias", refO1.isAlias(), is(false));
-            }
-
-            assertThat("Ref A1 contents", toString(refA1), is("hi a-with-circle"));
-            assertThat("Ref A2 contents", toString(refA2), is("hi a-with-two-dots"));
-            assertThat("Ref O1 contents", toString(refO1), is("hi o-with-two-dots"));
+            assertThat("Ref A1 alias", refE1.isAlias(), is(false));
+            assertThat("Ref A2 alias", refE2.isAlias(), is(false));
+            assertThat("Ref O1 alias", refE3.isAlias(), is(false));
         }
+
+        assertThat("Ref A1 contents", toString(refE1), is("hi a-with-circle"));
+        assertThat("Ref A2 contents", toString(refE2), is("hi a-with-two-dots"));
+        assertThat("Ref O1 contents", toString(refE3), is("hi o-with-two-dots"));
     }
 
-    private String findRootDir(FileSystem fs)
+    /**
+     * Best effort discovery a directory off the provided FileSystem.
+     * @param fs the provided FileSystem.
+     * @return a directory off the root FileSystem.
+     */
+    private String findAnyDirectoryOffRoot(FileSystem fs)
     {
-        // look for a directory off of a root path
+        // look for anything that's a directory off of any root paths of the provided FileSystem
         for (Path rootDir : fs.getRootDirectories())
         {
             try (DirectoryStream<Path> dir = Files.newDirectoryStream(rootDir))
@@ -371,32 +340,33 @@ public class FileSystemResourceTest
             }
             catch (Exception ignored)
             {
-                // FIXME why ignoring exceptions??
+                // Don't care if there's an error, we'll just try the next possible root directory.
+                // if no directories are found, then that means the users test environment is
+                // super odd, and we cannot continue these tests anyway, and are skipped with an assume().
             }
         }
 
         return null;
     }
 
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testIsContainedIn(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testIsContainedIn(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
         Files.createDirectories(dir);
         Path foo = dir.resolve("foo");
         Files.createFile(foo);
 
-        try (Resource base = newResource(resourceClass, dir.toFile()))
-        {
-            Resource res = base.addPath("foo");
-            assertThat("is contained in", res.isContainedIn(base), is(true));
-        }
+        Resource base = ResourceFactory.root().newResource(dir);
+        Resource res = base.resolve("foo");
+        assertThat("is contained in", res.isContainedIn(base), is(true));
+        assertThat(base.contains(res), is(true));
+        assertThat(base.getPathTo(res).getNameCount(), is(1));
+        assertThat(base.getPathTo(res).getName(0).toString(), is("foo"));
     }
 
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testIsDirectory(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testIsDirectory(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
         Files.createDirectories(dir);
@@ -406,49 +376,30 @@ public class FileSystemResourceTest
         Path subdir = dir.resolve("sub");
         Files.createDirectories(subdir);
 
-        try (Resource base = newResource(resourceClass, dir.toFile()))
-        {
-            Resource res = base.addPath("foo");
-            assertThat("foo.isDirectory", res.isDirectory(), is(false));
+        Resource base = ResourceFactory.root().newResource(dir);
+        Resource res = base.resolve("foo");
+        assertThat("foo.isDirectory", res.isDirectory(), is(false));
 
-            Resource sub = base.addPath("sub");
-            assertThat("sub/.isDirectory", sub.isDirectory(), is(true));
-        }
+        Resource sub = base.resolve("sub");
+        assertThat("sub/.isDirectory", sub.isDirectory(), is(true));
     }
 
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testLastModified(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testLastModified(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
-        File file = workDir.getPathFile("foo").toFile();
-        assertTrue(file.createNewFile());
+        Path file = dir.resolve("foo");
+        Files.createFile(file);
 
-        long expected = file.lastModified();
+        Instant expected = Files.getLastModifiedTime(file).toInstant();
 
-        try (Resource base = newResource(resourceClass, dir.toFile()))
-        {
-            Resource res = base.addPath("foo");
-            assertThat("foo.lastModified", res.lastModified() / 1000 * 1000, lessThanOrEqualTo(expected));
-        }
+        Resource base = ResourceFactory.root().newResource(dir);
+        Resource res = base.resolve("foo");
+        assertThat("foo.lastModified", res.lastModified(), is(expected));
     }
 
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testLastModifiedNotExists(Class<PathResource> resourceClass) throws Exception
-    {
-        Path dir = workDir.getEmptyPathDir();
-
-        try (Resource base = newResource(resourceClass, dir.toFile()))
-        {
-            Resource res = base.addPath("foo");
-            assertThat("foo.lastModified", res.lastModified(), is(0L));
-        }
-    }
-
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testLength(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testLength(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
         Files.createDirectories(dir);
@@ -458,192 +409,109 @@ public class FileSystemResourceTest
 
         long expected = Files.size(file);
 
-        try (Resource base = newResource(resourceClass, dir.toFile()))
-        {
-            Resource res = base.addPath("foo");
-            assertThat("foo.length", res.length(), is(expected));
-        }
+        Resource base = ResourceFactory.root().newResource(dir);
+        Resource res = base.resolve("foo");
+        assertThat("foo.length", res.length(), is(expected));
     }
 
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testLengthNotExists(Class<PathResource> resourceClass) throws Exception
-    {
-        Path dir = workDir.getEmptyPathDir();
-        Files.createDirectories(dir);
-
-        try (Resource base = newResource(resourceClass, dir.toFile()))
-        {
-            Resource res = base.addPath("foo");
-            assertThat("foo.length", res.length(), is(0L));
-        }
-    }
-
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testDelete(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testDelete(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
         Files.createDirectories(dir);
         Path file = dir.resolve("foo");
         Files.createFile(file);
 
-        try (Resource base = newResource(resourceClass, dir.toFile()))
-        {
-            // Is it there?
-            Resource res = base.addPath("foo");
-            assertThat("foo.exists", res.exists(), is(true));
-            // delete it
-            assertThat("foo.delete", res.delete(), is(true));
-            // is it there?
-            assertThat("foo.exists", res.exists(), is(false));
-        }
+        Resource base = ResourceFactory.root().newResource(dir);
+        // Is it there?
+        Resource res = base.resolve("foo");
+        assertThat("foo.exists", res.exists(), is(true));
+        // delete it
+        Files.delete(res.getPath());
+        // is it there?
+        assertThat("foo.exists", res.exists(), is(false));
     }
 
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testDeleteNotExists(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testName(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
-        Files.createDirectories(dir);
-
-        try (Resource base = newResource(resourceClass, dir.toFile()))
-        {
-            // Is it there?
-            Resource res = base.addPath("foo");
-            assertThat("foo.exists", res.exists(), is(false));
-            // delete it
-            assertThat("foo.delete", res.delete(), is(false));
-            // is it there?
-            assertThat("foo.exists", res.exists(), is(false));
-        }
-    }
-
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testName(Class<PathResource> resourceClass) throws Exception
-    {
-        Path dir = workDir.getEmptyPathDir();
-        Files.createDirectories(dir);
-
         String expected = dir.toAbsolutePath().toString();
 
-        try (Resource base = newResource(resourceClass, dir.toFile()))
-        {
-            assertThat("base.name", base.getName(), is(expected));
-        }
+        Resource base = ResourceFactory.root().newResource(dir);
+        assertThat("base.name", base.getName(), is(expected));
     }
 
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testInputStream(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testFileName(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
-        Files.createDirectories(dir);
+        String expected = dir.getFileName().toString();
 
+        Resource base = ResourceFactory.root().newResource(dir);
+        assertThat("base.filename", base.getFileName(), is(expected));
+    }
+
+    @Test
+    public void testInputStream(WorkDir workDir) throws Exception
+    {
+        Path dir = workDir.getEmptyPathDir();
         Path file = dir.resolve("foo");
         String content = "Foo is here";
         touchFile(file, content);
 
-        try (Resource base = newResource(resourceClass, dir.toFile()))
-        {
-            Resource foo = base.addPath("foo");
-            try (InputStream stream = foo.getInputStream();
-                 InputStreamReader reader = new InputStreamReader(stream);
-                 StringWriter writer = new StringWriter())
-            {
-                IO.copy(reader, writer);
-                assertThat("Stream", writer.toString(), is(content));
-            }
-        }
-    }
-
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testReadableByteChannel(Class<PathResource> resourceClass) throws Exception
-    {
-        Path dir = workDir.getEmptyPathDir();
-        Files.createDirectories(dir);
-
-        Path file = dir.resolve("foo");
-        String content = "Foo is here";
-
-        try (StringReader reader = new StringReader(content);
-             BufferedWriter writer = Files.newBufferedWriter(file))
+        Resource base = ResourceFactory.root().newResource(dir);
+        Resource foo = base.resolve("foo");
+        try (InputStream stream = foo.newInputStream();
+             InputStreamReader reader = new InputStreamReader(stream);
+             StringWriter writer = new StringWriter())
         {
             IO.copy(reader, writer);
-        }
-
-        try (Resource base = newResource(resourceClass, dir.toFile()))
-        {
-            Resource foo = base.addPath("foo");
-            try (ReadableByteChannel channel = foo.getReadableByteChannel())
-            {
-                ByteBuffer buf = ByteBuffer.allocate(256);
-                channel.read(buf);
-                buf.flip();
-                String actual = BufferUtil.toUTF8String(buf);
-                assertThat("ReadableByteChannel content", actual, is(content));
-            }
+            assertThat("Stream", writer.toString(), is(content));
         }
     }
 
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testGetURI(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testGetURI(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
-        Files.createDirectories(dir);
-
         Path file = dir.resolve("foo");
         Files.createFile(file);
 
         URI expected = file.toUri();
 
-        try (Resource base = newResource(resourceClass, dir.toFile()))
-        {
-            Resource foo = base.addPath("foo");
-            assertThat("getURI", foo.getURI(), is(expected));
-        }
+        Resource base = ResourceFactory.root().newResource(dir);
+        Resource foo = base.resolve("foo");
+        assertThat("getURI", foo.getURI(), is(expected));
     }
 
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testList(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testList(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
-        Files.createDirectories(dir);
-
         Files.createFile(dir.resolve("foo"));
         Files.createFile(dir.resolve("bar"));
         Files.createDirectories(dir.resolve("tick"));
         Files.createDirectories(dir.resolve("tock"));
 
-        List<String> expected = new ArrayList<>();
-        expected.add("foo");
-        expected.add("bar");
-        expected.add("tick/");
-        expected.add("tock/");
+        String[] expectedFileNames = {
+            "foo",
+            "bar",
+            "tick",
+            "tock"
+        };
 
-        try (Resource base = newResource(resourceClass, dir.toFile()))
-        {
-            String[] list = base.list();
-            List<String> actual = Arrays.asList(list);
+        Resource base = ResourceFactory.root().newResource(dir);
+        List<Resource> listing = base.list();
+        List<String> actualFileNames = listing.stream().map(Resource::getFileName).toList();
 
-            assertEquals(expected.size(), actual.size());
-            for (String s : expected)
-            {
-                assertTrue(actual.contains(s));
-            }
-        }
+        assertThat(actualFileNames, containsInAnyOrder(expectedFileNames));
     }
 
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testSymlink(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testSymlink(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
-
         Path foo = dir.resolve("foo");
         Path bar = dir.resolve("bar");
 
@@ -661,40 +529,36 @@ public class FileSystemResourceTest
 
         assumeTrue(symlinkSupported, "Symlink not supported");
 
-        try (Resource base = newResource(resourceClass, dir.toFile()))
-        {
-            Resource resFoo = base.addPath("foo");
-            Resource resBar = base.addPath("bar");
+        Resource base = ResourceFactory.root().newResource(dir);
+        Resource resFoo = base.resolve("foo");
+        Resource resBar = base.resolve("bar");
 
-            assertThat("resFoo.uri", resFoo.getURI(), is(foo.toUri()));
+        assertThat("resFoo.uri", resFoo.getURI(), is(foo.toUri()));
 
-            // Access to the same resource, but via a symlink means that they are not equivalent
-            assertThat("foo.equals(bar)", resFoo.equals(resBar), is(false));
+        // Access to the same resource, but via a symlink means that they are not equivalent
+        assertThat("foo.equals(bar)", resFoo.equals(resBar), is(false));
 
-            assertThat("resource.alias", resFoo, hasNoAlias());
-            assertThat("resource.uri.alias", newResource(resourceClass, resFoo.getURI()), hasNoAlias());
-            assertThat("resource.file.alias", newResource(resourceClass, resFoo.getFile()), hasNoAlias());
+        assertThat("resource.targetURI", resFoo, isNotAlias());
+        assertThat("resource.uri.targetURI", ResourceFactory.root().newResource(resFoo.getURI()), isNotAlias());
+        assertThat("resource.file.targetURI", ResourceFactory.root().newResource(resFoo.getPath()), isNotAlias());
 
-            assertThat("alias", resBar, isAliasFor(resFoo));
-            assertThat("uri.alias", newResource(resourceClass, resBar.getURI()), isAliasFor(resFoo));
-            assertThat("file.alias", newResource(resourceClass, resBar.getFile()), isAliasFor(resFoo));
-        }
+        assertThat("targetURI", resBar, isRealResourceFor(resFoo));
+        assertThat("uri.targetURI", ResourceFactory.root().newResource(resBar.getURI()), isRealResourceFor(resFoo));
+        assertThat("file.targetURI", ResourceFactory.root().newResource(resBar.getPath()), isRealResourceFor(resFoo));
     }
 
-    @ParameterizedTest
-    @ValueSource(classes = PathResource.class) // FileResource does not support this
-    public void testNonExistantSymlink(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testNonExistentSymlink(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
-        Files.createDirectories(dir);
-
-        Path foo = dir.resolve("foo");
-        Path bar = dir.resolve("bar");
+        Path foo = dir.resolve("foo"); // does not exist
+        Path bar = dir.resolve("bar"); // to become a link to "foo"
 
         boolean symlinkSupported;
         try
         {
             Files.createSymbolicLink(bar, foo);
+            // Now a "bar" symlink exists, pointing to a "foo" that doesn't exist
             symlinkSupported = true;
         }
         catch (UnsupportedOperationException | FileSystemException e)
@@ -704,54 +568,38 @@ public class FileSystemResourceTest
 
         assumeTrue(symlinkSupported, "Symlink not supported");
 
-        try (Resource base = newResource(resourceClass, dir.toFile()))
-        {
-            Resource resFoo = base.addPath("foo");
-            Resource resBar = base.addPath("bar");
+        Resource base = ResourceFactory.root().newResource(dir);
+        Resource resFoo = base.resolve("foo");
+        Resource resBar = base.resolve("bar");
 
-            assertThat("resFoo.uri", resFoo.getURI(), is(foo.toUri()));
-
-            // Access to the same resource, but via a symlink means that they are not equivalent
-            assertThat("foo.equals(bar)", resFoo.equals(resBar), is(false));
-
-            assertThat("resource.alias", resFoo, hasNoAlias());
-            assertThat("resource.uri.alias", newResource(resourceClass, resFoo.getURI()), hasNoAlias());
-            assertThat("resource.file.alias", newResource(resourceClass, resFoo.getFile()), hasNoAlias());
-
-            assertThat("alias", resBar, isAliasFor(resFoo));
-            assertThat("uri.alias", newResource(resourceClass, resBar.getURI()), isAliasFor(resFoo));
-            assertThat("file.alias", newResource(resourceClass, resBar.getFile()), isAliasFor(resFoo));
-        }
+        assertTrue(Resources.missing(resFoo), "resFoo");
+        assertTrue(Resources.missing(resBar), "resBar");
     }
 
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testCaseInsensitiveAlias(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testCaseInsensitiveAlias(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
-        Files.createDirectories(dir);
         Path path = dir.resolve("file");
         Files.createFile(path);
 
-        try (Resource base = newResource(resourceClass, dir.toFile()))
+        Resource base = ResourceFactory.root().newResource(dir);
+        // Reference to actual resource that exists
+        Resource resource = base.resolve("file");
+
+        assertThat("resource.targetURI", resource, isNotAlias());
+        assertThat("resource.uri.targetURI", ResourceFactory.root().newResource(resource.getURI()), isNotAlias());
+        assertThat("resource.file.targetURI", ResourceFactory.root().newResource(resource.getPath()), isNotAlias());
+
+        // On some case-insensitive file systems, lets see if an alternate
+        // case for the filename results in an alias reference
+        Resource alias = base.resolve("FILE");
+        if (Resources.exists(alias))
         {
-            // Reference to actual resource that exists
-            Resource resource = base.addPath("file");
-
-            assertThat("resource.alias", resource, hasNoAlias());
-            assertThat("resource.uri.alias", newResource(resourceClass, resource.getURI()), hasNoAlias());
-            assertThat("resource.file.alias", newResource(resourceClass, resource.getFile()), hasNoAlias());
-
-            // On some case insensitive file systems, lets see if an alternate
-            // case for the filename results in an alias reference
-            Resource alias = base.addPath("FILE");
-            if (alias.exists())
-            {
-                // If it exists, it must be an alias
-                assertThat("alias", alias, isAliasFor(resource));
-                assertThat("alias.uri", newResource(resourceClass, alias.getURI()), isAliasFor(resource));
-                assertThat("alias.file", newResource(resourceClass, alias.getFile()), isAliasFor(resource));
-            }
+            // If it exists, it must be an alias
+            assertThat("targetURI", alias, isRealResourceFor(resource));
+            assertThat("targetURI.uri", ResourceFactory.root().newResource(alias.getURI()), isRealResourceFor(resource));
+            assertThat("targetURI.file", ResourceFactory.root().newResource(alias.getPath()), isRealResourceFor(resource));
         }
     }
 
@@ -759,186 +607,164 @@ public class FileSystemResourceTest
      * Test for Windows feature that exposes 8.3 filename references
      * for long filenames.
      * <p>
-     * See: http://support.microsoft.com/kb/142982
+     * See: <a href="http://support.microsoft.com/kb/142982">Microsoft KB 142982</a>
      *
      * @throws Exception failed test
      */
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
+    @Test
     @EnabledOnOs(WINDOWS)
-    public void testCase8dot3Alias(Class<PathResource> resourceClass) throws Exception
+    public void testCase8dot3Alias(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
-        Files.createDirectories(dir);
-
         Path path = dir.resolve("TextFile.Long.txt");
         Files.createFile(path);
 
-        try (Resource base = newResource(resourceClass, dir.toFile()))
+        Resource base = ResourceFactory.root().newResource(dir);
+        // Long filename
+        Resource resource = base.resolve("TextFile.Long.txt");
+
+        assertThat("resource.targetURI", resource, isNotAlias());
+        assertThat("resource.uri.targetURI", ResourceFactory.root().newResource(resource.getURI()), isNotAlias());
+        assertThat("resource.file.targetURI", ResourceFactory.root().newResource(resource.getPath()), isNotAlias());
+
+        // On some versions of Windows, the long filename can be referenced
+        // via a short 8.3 equivalent filename.
+        Resource alias = base.resolve("TEXTFI~1.TXT");
+        if (alias.exists())
         {
-            // Long filename
-            Resource resource = base.addPath("TextFile.Long.txt");
+            // If it exists, it must be an alias
+            assertThat("targetURI", alias, isRealResourceFor(resource));
+            assertThat("targetURI.uri", ResourceFactory.root().newResource(alias.getURI()), isRealResourceFor(resource));
+            assertThat("targetURI.file", ResourceFactory.root().newResource(alias.getPath()), isRealResourceFor(resource));
+        }
+    }
 
-            assertThat("resource.alias", resource, hasNoAlias());
-            assertThat("resource.uri.alias", newResource(resourceClass, resource.getURI()), hasNoAlias());
-            assertThat("resource.file.alias", newResource(resourceClass, resource.getFile()), hasNoAlias());
+    /**
+     * NTFS Alternative Data / File Streams.
+     * <p>
+     * See: <a href="http://msdn.microsoft.com/en-us/library/windows/desktop/aa364404(v=vs.85).aspx">Microsoft: Win32 / Desktop Technologies / Data Access and Storage / Local File Systems / File Streams (Local File Systems)</a>
+     *
+     * @throws Exception failed test
+     */
+    @Test
+    @EnabledOnOs(WINDOWS)
+    public void testNTFSFileStreamAlias(WorkDir workDir) throws Exception
+    {
+        Path dir = workDir.getEmptyPathDir();
+        Path path = dir.resolve("testfile");
+        Files.createFile(path);
 
-            // On some versions of Windows, the long filename can be referenced
-            // via a short 8.3 equivalent filename.
-            Resource alias = base.addPath("TEXTFI~1.TXT");
+        Resource base = ResourceFactory.root().newResource(dir);
+        Resource resource = base.resolve("testfile");
+
+        assertThat("resource.targetURI", resource, isNotAlias());
+        assertThat("resource.uri.targetURI", ResourceFactory.root().newResource(resource.getURI()), isNotAlias());
+        assertThat("resource.file.targetURI", ResourceFactory.root().newResource(resource.getPath()), isNotAlias());
+
+        try
+        {
+            // Attempt to reference same file, but via NTFS simple stream
+            Resource alias = base.resolve("testfile:stream");
             if (alias.exists())
             {
                 // If it exists, it must be an alias
-                assertThat("alias", alias, isAliasFor(resource));
-                assertThat("alias.uri", newResource(resourceClass, alias.getURI()), isAliasFor(resource));
-                assertThat("alias.file", newResource(resourceClass, alias.getFile()), isAliasFor(resource));
+                assertThat("resource.targetURI", alias, isRealResourceFor(resource));
+                assertThat("resource.uri.targetURI", ResourceFactory.root().newResource(alias.getURI()), isRealResourceFor(resource));
+                assertThat("resource.file.targetURI", ResourceFactory.root().newResource(alias.getPath()), isRealResourceFor(resource));
             }
+        }
+        catch (InvalidPathException e)
+        {
+            assumeTrue(false, "NTFS simple streams not supported");
         }
     }
 
     /**
      * NTFS Alternative Data / File Streams.
      * <p>
-     * See: http://msdn.microsoft.com/en-us/library/windows/desktop/aa364404(v=vs.85).aspx
+     * See: <a href="http://msdn.microsoft.com/en-us/library/windows/desktop/aa364404(v=vs.85).aspx">Microsoft: Win32 / Desktop Technologies / Data Access and Storage / Local File Systems / File Streams (Local File Systems)</a>
      *
      * @throws Exception failed test
      */
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
+    @Test
     @EnabledOnOs(WINDOWS)
-    public void testNTFSFileStreamAlias(Class<PathResource> resourceClass) throws Exception
+    public void testNTFSFileDataStreamAlias(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
-        Files.createDirectories(dir);
-
         Path path = dir.resolve("testfile");
         Files.createFile(path);
 
-        try (Resource base = newResource(resourceClass, dir.toFile()))
+        Resource base = ResourceFactory.root().newResource(dir);
+        Resource resource = base.resolve("testfile");
+
+        assertThat("resource.targetURI", resource, isNotAlias());
+        assertThat("resource.uri.targetURI", ResourceFactory.root().newResource(resource.getURI()), isNotAlias());
+        assertThat("resource.file.targetURI", ResourceFactory.root().newResource(resource.getPath()), isNotAlias());
+
+        try
         {
-            Resource resource = base.addPath("testfile");
-
-            assertThat("resource.alias", resource, hasNoAlias());
-            assertThat("resource.uri.alias", newResource(resourceClass, resource.getURI()), hasNoAlias());
-            assertThat("resource.file.alias", newResource(resourceClass, resource.getFile()), hasNoAlias());
-
-            try
+            // Attempt to reference same file, but via NTFS DATA stream
+            Resource alias = base.resolve("testfile::$DATA");
+            if (alias.exists())
             {
-                // Attempt to reference same file, but via NTFS simple stream
-                Resource alias = base.addPath("testfile:stream");
-                if (alias.exists())
-                {
-                    // If it exists, it must be an alias
-                    assertThat("resource.alias", alias, isAliasFor(resource));
-                    assertThat("resource.uri.alias", newResource(resourceClass, alias.getURI()), isAliasFor(resource));
-                    assertThat("resource.file.alias", newResource(resourceClass, alias.getFile()), isAliasFor(resource));
-                }
+                assumeTrue(alias.getURI().getScheme().equals("file"));
+
+                // If it exists, it must be an alias
+                assertThat("resource.targetURI", alias, isRealResourceFor(resource));
+                assertThat("resource.uri.targetURI", ResourceFactory.root().newResource(alias.getURI()), isRealResourceFor(resource));
+                assertThat("resource.file.targetURI", ResourceFactory.root().newResource(alias.getPath()), isRealResourceFor(resource));
             }
-            catch (InvalidPathException e)
-            {
-                assumeTrue(false, "NTFS simple streams not supported");
-            }
+        }
+        catch (InvalidPathException e)
+        {
+            assumeTrue(false, "NTFS $DATA streams not supported");
         }
     }
 
     /**
      * NTFS Alternative Data / File Streams.
      * <p>
-     * See: http://msdn.microsoft.com/en-us/library/windows/desktop/aa364404(v=vs.85).aspx
+     * See: <a href="http://msdn.microsoft.com/en-us/library/windows/desktop/aa364404(v=vs.85).aspx">Microsoft: Win32 / Desktop Technologies / Data Access and Storage / Local File Systems / File Streams (Local File Systems)</a>
      *
      * @throws Exception failed test
      */
-    @ParameterizedTest
-    @ValueSource(classes = PathResource.class) // not supported on FileResource
+    @Test
     @EnabledOnOs(WINDOWS)
-    public void testNTFSFileDataStreamAlias(Class<PathResource> resourceClass) throws Exception
+    public void testNTFSFileEncodedDataStreamAlias(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
-        Files.createDirectories(dir);
-
         Path path = dir.resolve("testfile");
         Files.createFile(path);
 
-        try (Resource base = newResource(resourceClass, dir.toFile()))
+        Resource base = ResourceFactory.root().newResource(dir);
+        Resource resource = base.resolve("testfile");
+
+        assertThat("resource.targetURI", resource, isNotAlias());
+        assertThat("resource.uri.targetURI", ResourceFactory.root().newResource(resource.getURI()), isNotAlias());
+        assertThat("resource.file.targetURI", ResourceFactory.root().newResource(resource.getPath()), isNotAlias());
+
+        try
         {
-            Resource resource = base.addPath("testfile");
-
-            assertThat("resource.alias", resource, hasNoAlias());
-            assertThat("resource.uri.alias", newResource(resourceClass, resource.getURI()), hasNoAlias());
-            assertThat("resource.file.alias", newResource(resourceClass, resource.getFile()), hasNoAlias());
-
-            try
+            // Attempt to reference same file, but via NTFS DATA stream (encoded addPath version)
+            Resource alias = base.resolve("testfile::%24DATA");
+            if (alias.exists())
             {
-                // Attempt to reference same file, but via NTFS DATA stream
-                Resource alias = base.addPath("testfile::$DATA");
-                if (alias.exists())
-                {
-                    assumeTrue(alias.getURI().getScheme().equals("file"));
-
-                    // If it exists, it must be an alias
-                    assertThat("resource.alias", alias, isAliasFor(resource));
-                    assertThat("resource.uri.alias", newResource(resourceClass, alias.getURI()), isAliasFor(resource));
-                    assertThat("resource.file.alias", newResource(resourceClass, alias.getFile()), isAliasFor(resource));
-                }
+                // If it exists, it must be an alias
+                assertThat("resource.targetURI", alias, isRealResourceFor(resource));
+                assertThat("resource.uri.targetURI", ResourceFactory.root().newResource(alias.getURI()), isRealResourceFor(resource));
+                assertThat("resource.file.targetURI", ResourceFactory.root().newResource(alias.getPath()), isRealResourceFor(resource));
             }
-            catch (InvalidPathException e)
-            {
-                assumeTrue(false, "NTFS $DATA streams not supported");
-            }
+        }
+        catch (InvalidPathException e)
+        {
+            assumeTrue(false, "NTFS $DATA streams not supported");
         }
     }
 
-    /**
-     * NTFS Alternative Data / File Streams.
-     * <p>
-     * See: http://msdn.microsoft.com/en-us/library/windows/desktop/aa364404(v=vs.85).aspx
-     *
-     * @throws Exception failed test
-     */
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    @EnabledOnOs(WINDOWS)
-    public void testNTFSFileEncodedDataStreamAlias(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testSemicolon(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
-        Files.createDirectories(dir);
-
-        Path path = dir.resolve("testfile");
-        Files.createFile(path);
-
-        try (Resource base = newResource(resourceClass, dir.toFile()))
-        {
-            Resource resource = base.addPath("testfile");
-
-            assertThat("resource.alias", resource, hasNoAlias());
-            assertThat("resource.uri.alias", newResource(resourceClass, resource.getURI()), hasNoAlias());
-            assertThat("resource.file.alias", newResource(resourceClass, resource.getFile()), hasNoAlias());
-
-            try
-            {
-                // Attempt to reference same file, but via NTFS DATA stream (encoded addPath version) 
-                Resource alias = base.addPath("testfile::%24DATA");
-                if (alias.exists())
-                {
-                    // If it exists, it must be an alias
-                    assertThat("resource.alias", alias, isAliasFor(resource));
-                    assertThat("resource.uri.alias", newResource(resourceClass, alias.getURI()), isAliasFor(resource));
-                    assertThat("resource.file.alias", newResource(resourceClass, alias.getFile()), isAliasFor(resource));
-                }
-            }
-            catch (InvalidPathException e)
-            {
-                assumeTrue(false, "NTFS $DATA streams not supported");
-            }
-        }
-    }
-
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testSemicolon(Class<PathResource> resourceClass) throws Exception
-    {
-        Path dir = workDir.getEmptyPathDir();
-
         try
         {
             // attempt to create file
@@ -950,20 +776,15 @@ public class FileSystemResourceTest
             assumeTrue(false, "Unable to create file with semicolon");
         }
 
-        try (Resource base = newResource(resourceClass, dir.toFile()))
-        {
-            Resource res = base.addPath("foo;");
-            assertThat("Alias: " + res, res, hasNoAlias());
-        }
+        Resource base = ResourceFactory.root().newResource(dir);
+        Resource res = base.resolve("foo;");
+        assertThat("Target URI: " + res, res, isNotAlias());
     }
 
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testSingleQuote(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testSingleQuote(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
-        Files.createDirectories(dir);
-
         try
         {
             // attempt to create file
@@ -975,20 +796,19 @@ public class FileSystemResourceTest
             assumeTrue(false, "Unable to create file with single quote");
         }
 
-        try (Resource base = newResource(resourceClass, dir.toFile()))
-        {
-            Resource res = base.addPath("foo' bar");
-            assertThat("Alias: " + res, res.getAlias(), nullValue());
-        }
+        Resource base = ResourceFactory.root().newResource(dir);
+        // access via encoded form
+        Resource test = base.resolve("foo'%20bar");
+        assertTrue(test.exists());
+        // access via raw form
+        test = base.resolve("foo' bar");
+        assertTrue(test.exists());
     }
 
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testSingleBackTick(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testSingleBackTick(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
-        Files.createDirectories(dir);
-
         try
         {
             // attempt to create file
@@ -1000,20 +820,19 @@ public class FileSystemResourceTest
             assumeTrue(false, "Unable to create file with single back tick");
         }
 
-        try (Resource base = newResource(resourceClass, dir.toFile()))
-        {
-            Resource res = base.addPath("foo` bar");
-            assertThat("Alias: " + res, res.getAlias(), nullValue());
-        }
+        Resource base = ResourceFactory.root().newResource(dir);
+        // access via encoded form
+        Resource file = base.resolve("foo%60%20bar");
+        assertTrue(file.exists());
+        // access via raw form
+        file = base.resolve("foo` bar");
+        assertTrue(file.exists());
     }
 
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testBrackets(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testBrackets(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
-        Files.createDirectories(dir);
-
         try
         {
             // attempt to create file
@@ -1025,20 +844,19 @@ public class FileSystemResourceTest
             assumeTrue(false, "Unable to create file with square brackets");
         }
 
-        try (Resource base = newResource(resourceClass, dir.toFile()))
-        {
-            Resource res = base.addPath("foo[1]");
-            assertThat("Alias: " + res, res.getAlias(), nullValue());
-        }
+        Resource base = ResourceFactory.root().newResource(dir);
+        // access via encoded form
+        Resource file = base.resolve("foo%5B1%5D");
+        assertTrue(file.exists());
+        // access via raw form
+        file = base.resolve("foo[1]");
+        assertTrue(file.exists());
     }
 
-    @ParameterizedTest
-    @ValueSource(classes = PathResource.class) // FileResource does not support this
-    public void testBraces(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testBraces(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
-        Files.createDirectories(dir);
-
         try
         {
             // attempt to create file
@@ -1050,20 +868,20 @@ public class FileSystemResourceTest
             assumeTrue(false, "Unable to create file with squiggle braces");
         }
 
-        try (Resource base = newResource(resourceClass, dir.toFile()))
-        {
-            Resource res = base.addPath("foo.{bar}.txt");
-            assertThat("Alias: " + res, res.getAlias(), nullValue());
-        }
+        Resource base = ResourceFactory.root().newResource(dir);
+        Resource file = base.resolve("foo.%7Bbar%7D.txt");
+        assertTrue(file.exists());
+
+        // access in un-encoded way
+        file = base.resolve("foo.{bar}.txt");
+        assertTrue(file.exists());
+
     }
 
-    @ParameterizedTest
-    @ValueSource(classes = PathResource.class) // FileResource does not support this
-    public void testCaret(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testCaret(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
-        Files.createDirectories(dir);
-
         try
         {
             // attempt to create file
@@ -1075,20 +893,19 @@ public class FileSystemResourceTest
             assumeTrue(false, "Unable to create file with caret");
         }
 
-        try (Resource base = newResource(resourceClass, dir.toFile()))
-        {
-            Resource res = base.addPath("foo^3.txt");
-            assertThat("Alias: " + res, res.getAlias(), nullValue());
-        }
+        Resource base = ResourceFactory.root().newResource(dir);
+        // access via encoded form
+        Resource file = base.resolve("foo%5E3.txt");
+        assertTrue(file.exists());
+        // access via raw form
+        file = base.resolve("foo^3.txt");
+        assertTrue(file.exists());
     }
 
-    @ParameterizedTest
-    @ValueSource(classes = PathResource.class) // FileResource does not support this
-    public void testPipe(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testPipe(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
-        Files.createDirectories(dir);
-
         try
         {
             // attempt to create file
@@ -1100,11 +917,13 @@ public class FileSystemResourceTest
             assumeTrue(false, "Unable to create file with pipe symbol");
         }
 
-        try (Resource base = newResource(resourceClass, dir.toFile()))
-        {
-            Resource res = base.addPath("foo|bar.txt");
-            assertThat("Alias: " + res, res.getAlias(), nullValue());
-        }
+        Resource base = ResourceFactory.root().newResource(dir);
+        // access via encoded form
+        Resource file = base.resolve("foo%7Cbar.txt");
+        assertTrue(file.exists());
+        // access via raw form
+        file = base.resolve("foo|bar.txt");
+        assertTrue(file.exists());
     }
 
     /**
@@ -1112,9 +931,8 @@ public class FileSystemResourceTest
      *
      * @throws Exception failed test
      */
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testExistNormal(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testExistNormal(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
         Files.createDirectories(dir);
@@ -1122,16 +940,13 @@ public class FileSystemResourceTest
         Path path = dir.resolve("a.jsp");
         Files.createFile(path);
 
-        URI ref = workDir.getPath().toUri().resolve("a.jsp");
-        try (Resource fileres = newResource(resourceClass, ref))
-        {
-            assertThat("Resource: " + fileres, fileres.exists(), is(true));
-        }
+        URI ref = dir.toUri().resolve("a.jsp");
+        Resource fileres = ResourceFactory.root().newResource(ref);
+        assertThat("Resource: " + fileres, fileres.exists(), is(true));
     }
 
-    @ParameterizedTest
-    @ValueSource(classes = PathResource.class) // FileResource not supported here
-    public void testSingleQuoteInFileName(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testSingleQuoteInFileName(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
         Files.createDirectories(dir);
@@ -1144,35 +959,27 @@ public class FileSystemResourceTest
 
         URI refQuoted = dir.resolve("foo's.txt").toUri();
 
-        try (Resource fileres = newResource(resourceClass, refQuoted))
-        {
-            assertThat("Exists: " + refQuoted, fileres.exists(), is(true));
-            assertThat("Alias: " + refQuoted, fileres, hasNoAlias());
-        }
+        Resource fileres = ResourceFactory.root().newResource(refQuoted);
+        assertThat("Exists: " + refQuoted, fileres.exists(), is(true));
+        assertThat("Is Not Alias: " + refQuoted, fileres, isNotAlias());
 
         URI refEncoded = dir.toUri().resolve("foo%27s.txt");
 
-        try (Resource fileres = newResource(resourceClass, refEncoded))
-        {
-            assertThat("Exists: " + refEncoded, fileres.exists(), is(true));
-            assertThat("Alias: " + refEncoded, fileres, hasNoAlias());
-        }
+        fileres = ResourceFactory.root().newResource(refEncoded);
+        assertThat("Exists: " + refEncoded, fileres.exists(), is(true));
+        assertThat("Is Alias: " + refEncoded, fileres, isAlias());
 
         URI refQuoteSpace = dir.toUri().resolve("f%20o's.txt");
 
-        try (Resource fileres = newResource(resourceClass, refQuoteSpace))
-        {
-            assertThat("Exists: " + refQuoteSpace, fileres.exists(), is(true));
-            assertThat("Alias: " + refQuoteSpace, fileres, hasNoAlias());
-        }
+        fileres = ResourceFactory.root().newResource(refQuoteSpace);
+        assertThat("Exists: " + refQuoteSpace, fileres.exists(), is(true));
+        assertThat("Is Not Alias: " + refQuoteSpace, fileres, isNotAlias());
 
         URI refEncodedSpace = dir.toUri().resolve("f%20o%27s.txt");
 
-        try (Resource fileres = newResource(resourceClass, refEncodedSpace))
-        {
-            assertThat("Exists: " + refEncodedSpace, fileres.exists(), is(true));
-            assertThat("Alias: " + refEncodedSpace, fileres, hasNoAlias());
-        }
+        fileres = ResourceFactory.root().newResource(refEncodedSpace);
+        assertThat("Exists: " + refEncodedSpace, fileres.exists(), is(true));
+        assertThat("Is Alias: " + refEncodedSpace, fileres, isAlias());
 
         URI refA = dir.toUri().resolve("foo's.txt");
         URI refB = dir.toUri().resolve("foo%27s.txt");
@@ -1183,75 +990,68 @@ public class FileSystemResourceTest
             "URI[b] = " + refB;
         assertThat(msg, refA.equals(refB), is(false));
 
-        // now show that Resource.equals() does work
-        try (Resource a = newResource(resourceClass, refA);
-             Resource b = newResource(resourceClass, refB))
-        {
-            assertThat("A.equals(B)", a.equals(b), is(true));
-        }
+        // These resources are not equal because they have different request URIs.
+        Resource a = ResourceFactory.root().newResource(refA);
+        Resource b = ResourceFactory.root().newResource(refB);
+        assertThat("A.equals(B)", a.equals(b), is(false));
+        assertThat(a.getPath(), equalTo(b.getPath()));
+        assertThat(a.getRealURI(), equalTo(b.getRealURI()));
+        assertFalse(a.isAlias());
+        assertTrue(b.isAlias());
     }
 
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testExistBadURINull(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testExistBadURINull(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
-        Files.createDirectories(dir);
-
         Path path = dir.resolve("a.jsp");
         Files.createFile(path);
 
         try
         {
             // request with null at end
-            URI uri = workDir.getPath().toUri().resolve("a.jsp%00");
+            URI uri = dir.toUri().resolve("a.jsp%00");
             assertThat("Null URI", uri, notNullValue());
 
-            Resource r = newResource(resourceClass, uri);
+            Resource r = ResourceFactory.root().newResource(uri);
 
             // if we have r, then it better not exist
             assertFalse(r.exists());
         }
-        catch (InvalidPathException e)
+        catch (IllegalArgumentException e)
         {
             // Exception is acceptable
         }
     }
 
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testExistBadURINullX(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testExistBadURINullX(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
-        Files.createDirectories(dir);
-
         Path path = dir.resolve("a.jsp");
         Files.createFile(path);
 
         try
         {
             // request with null and x at end
-            URI uri = workDir.getPath().toUri().resolve("a.jsp%00x");
+            URI uri = dir.toUri().resolve("a.jsp%00x");
             assertThat("NullX URI", uri, notNullValue());
 
-            Resource r = newResource(resourceClass, uri);
+            Resource r = ResourceFactory.root().newResource(uri);
 
             // if we have r, then it better not exist
             assertFalse(r.exists());
         }
-        catch (InvalidPathException e)
+        catch (IllegalArgumentException e)
         {
             // Exception is acceptable
         }
     }
 
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testAddPathWindowsSlash(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testResolveWindowsSlash(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
-        Files.createDirectories(dir);
-
         Path basePath = dir.resolve("base");
         FS.ensureDirExists(basePath);
         Path dirPath = basePath.resolve("aa");
@@ -1259,40 +1059,40 @@ public class FileSystemResourceTest
         Path filePath = dirPath.resolve("foo.txt");
         Files.createFile(filePath);
 
-        try (Resource base = newResource(resourceClass, basePath.toFile()))
+        Resource base = ResourceFactory.root().newResource(basePath);
+        try
         {
             assertThat("Exists: " + basePath, base.exists(), is(true));
-            assertThat("Alias: " + basePath, base, hasNoAlias());
+            assertThat("Target URI: " + basePath, base, isNotAlias());
 
-            Resource r = base.addPath("aa\\/foo.txt");
-            assertThat("getURI()", r.getURI().toASCIIString(), containsString("aa%5C/foo.txt"));
+            Resource r = base.resolve("aa%5C/foo.txt");
 
-            if (org.junit.jupiter.api.condition.OS.WINDOWS.isCurrentOs())
+            if (WINDOWS.isCurrentOs())
             {
+                // On windows, the extra "\" is stripped when working with java.nio.Path objects
+                assertThat("getURI()", r.getPath().toString(), containsString("aa\\foo.txt"));
+                assertThat("getURI()", r.getURI().toASCIIString(), containsString("aa%5C/foo.txt"));
                 assertThat("isAlias()", r.isAlias(), is(true));
-                assertThat("getAlias()", r.getAlias(), notNullValue());
-                assertThat("getAlias()", r.getAlias().toASCIIString(), containsString("aa/foo.txt"));
+                assertThat("getRealURI()", r.getRealURI(), notNullValue());
+                assertThat("getRealURI()", r.getRealURI().toASCIIString(), containsString("aa/foo.txt"));
                 assertThat("Exists: " + r, r.exists(), is(true));
             }
             else
             {
-                assertThat("isAlias()", r.isAlias(), is(false));
-                assertThat("Exists: " + r, r.exists(), is(false));
+                assertTrue(Resources.missing(r), "Backslash resource");
             }
         }
-        catch (InvalidPathException e)
+        catch (IllegalArgumentException e)
         {
             // Exception is acceptable
+            assertThat(e.getCause(), instanceOf(InvalidPathException.class));
         }
     }
 
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testAddPathWindowsExtensionLess(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testResolveWindowsExtensionLess(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
-        Files.createDirectories(dir);
-
         Path basePath = dir.resolve("base");
         FS.ensureDirExists(basePath);
         Path dirPath = basePath.resolve("aa");
@@ -1300,100 +1100,94 @@ public class FileSystemResourceTest
         Path filePath = dirPath.resolve("foo.txt");
         Files.createFile(filePath);
 
-        try (Resource base = newResource(resourceClass, basePath.toFile()))
+        Resource base = ResourceFactory.root().newResource(basePath);
+        try
         {
             assertThat("Exists: " + basePath, base.exists(), is(true));
-            assertThat("Alias: " + basePath, base, hasNoAlias());
+            assertThat("Is Not Alias: " + basePath, base, isNotAlias());
 
-            Resource r = base.addPath("aa./foo.txt");
-            assertThat("getURI()", r.getURI().toASCIIString(), containsString("aa./foo.txt"));
+            Resource r = base.resolve("aa./foo.txt");
 
-            if (OS.WINDOWS.isCurrentOs())
+            if (WINDOWS.isCurrentOs())
             {
+                assertThat("getURI()", r.getURI().toASCIIString(), containsString("aa./foo.txt"));
                 assertThat("isAlias()", r.isAlias(), is(true));
-                assertThat("getAlias()", r.getAlias(), notNullValue());
-                assertThat("getAlias()", r.getAlias().toASCIIString(), containsString("aa/foo.txt"));
+                assertThat("getRealURI()", r.getRealURI(), notNullValue());
+                assertThat("getRealURI()", r.getRealURI().toASCIIString(), containsString("aa/foo.txt"));
                 assertThat("Exists: " + r, r.exists(), is(true));
             }
             else
             {
-                assertThat("isAlias()", r.isAlias(), is(false));
-                assertThat("Exists: " + r, r.exists(), is(false));
+                assertTrue(Resources.missing(r), "extension-less directory reference");
             }
         }
-        catch (InvalidPathException e)
+        catch (IllegalArgumentException e)
         {
             // Exception is acceptable
+            assertThat(e.getCause(), instanceOf(InvalidPathException.class));
         }
     }
 
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testAddInitialSlash(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testResolveInitialSlash(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
-        Files.createDirectories(dir);
-
         Path basePath = dir.resolve("base");
         FS.ensureDirExists(basePath);
         Path filePath = basePath.resolve("foo.txt");
         Files.createFile(filePath);
 
-        try (Resource base = newResource(resourceClass, basePath.toFile()))
+        Resource base = ResourceFactory.root().newResource(basePath);
+        try
         {
             assertThat("Exists: " + basePath, base.exists(), is(true));
-            assertThat("Alias: " + basePath, base, hasNoAlias());
+            assertThat("Is Not Alias: " + basePath, base, isNotAlias());
 
-            Resource r = base.addPath("/foo.txt");
+            Resource r = base.resolve("/foo.txt");
             assertThat("getURI()", r.getURI().toASCIIString(), containsString("/foo.txt"));
 
             assertThat("isAlias()", r.isAlias(), is(false));
             assertThat("Exists: " + r, r.exists(), is(true));
         }
-        catch (InvalidPathException e)
+        catch (IllegalArgumentException e)
         {
             // Exception is acceptable
+            assertThat(e.getCause(), instanceOf(InvalidPathException.class));
         }
     }
 
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testAddInitialDoubleSlash(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testResolveInitialDoubleSlash(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
-        Files.createDirectories(dir);
-
         Path basePath = dir.resolve("base");
         FS.ensureDirExists(basePath);
         Path filePath = basePath.resolve("foo.txt");
         Files.createFile(filePath);
 
-        try (Resource base = newResource(resourceClass, basePath.toFile()))
+        Resource base = ResourceFactory.root().newResource(basePath);
+        try
         {
             assertThat("Exists: " + basePath, base.exists(), is(true));
-            assertThat("Alias: " + basePath, base, hasNoAlias());
+            assertThat("Is Not Alias: " + basePath, base, isNotAlias());
 
-            Resource r = base.addPath("//foo.txt");
-            assertThat("getURI()", r.getURI().toASCIIString(), containsString("//foo.txt"));
+            Resource r = base.resolve("//foo.txt");
+            assertThat("getURI()", r.getURI().toASCIIString(), containsString("/foo.txt"));
 
-            assertThat("isAlias()", r.isAlias(), is(true));
-            assertThat("getAlias()", r.getAlias(), notNullValue());
-            assertThat("getAlias()", r.getAlias().toASCIIString(), containsString("/foo.txt"));
-            assertThat("Exists: " + r, r.exists(), is(true));
+            assertThat("isAlias()", r.isAlias(), is(false));
+            assertThat("Is Not Alias: " + r.getPath(), r, isNotAlias());
         }
-        catch (InvalidPathException e)
+        catch (IllegalArgumentException e)
         {
             // Exception is acceptable
+            assertThat(e.getCause(), instanceOf(InvalidPathException.class));
         }
     }
 
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testAddDoubleSlash(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testResolveDoubleSlash(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
-        Files.createDirectories(dir);
-
         Path basePath = dir.resolve("base");
         FS.ensureDirExists(basePath);
         Path dirPath = basePath.resolve("aa");
@@ -1401,52 +1195,45 @@ public class FileSystemResourceTest
         Path filePath = dirPath.resolve("foo.txt");
         Files.createFile(filePath);
 
-        try (Resource base = newResource(resourceClass, basePath.toFile()))
+        Resource base = ResourceFactory.root().newResource(basePath);
+        try
         {
             assertThat("Exists: " + basePath, base.exists(), is(true));
-            assertThat("Alias: " + basePath, base, hasNoAlias());
+            assertThat("Is Not Alias: " + basePath, base, isNotAlias());
 
-            Resource r = base.addPath("aa//foo.txt");
-            assertThat("getURI()", r.getURI().toASCIIString(), containsString("aa//foo.txt"));
+            Resource r = base.resolve("aa//foo.txt");
+            assertThat("getURI()", r.getURI().toASCIIString(), containsString("aa/foo.txt"));
 
-            assertThat("isAlias()", r.isAlias(), is(true));
-            assertThat("getAlias()", r.getAlias(), notNullValue());
-            assertThat("getAlias()", r.getAlias().toASCIIString(), containsString("aa/foo.txt"));
-            assertThat("Exists: " + r, r.exists(), is(true));
+            assertThat("isAlias()", r.isAlias(), is(false));
+            assertThat("Is Not Alias: " + r.getPath(), r, isNotAlias());
         }
-        catch (InvalidPathException e)
+        catch (IllegalArgumentException e)
         {
             // Exception is acceptable
+            assertThat(e.getCause(), instanceOf(InvalidPathException.class));
         }
     }
 
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testEncoding(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testEncoding(WorkDir workDir) throws Exception
     {
         Path dir = workDir.getEmptyPathDir();
-        Files.createDirectories(dir);
-
         Path specials = dir.resolve("a file with,spe#ials");
         Files.createFile(specials);
 
-        try (Resource res = newResource(resourceClass, specials.toFile()))
-        {
-            assertThat("Specials URL", res.getURI().toASCIIString(), containsString("a%20file%20with,spe%23ials"));
-            assertThat("Specials Filename", res.getFile().toString(), containsString("a file with,spe#ials"));
+        Resource res = ResourceFactory.root().newResource(specials);
+        assertThat("Specials URL", res.getURI().toASCIIString(), containsString("a%20file%20with,spe%23ials"));
+        assertThat("Specials Filename", res.getPath().toString(), containsString("a file with,spe#ials"));
 
-            res.delete();
-            assertThat("File should have been deleted.", res.exists(), is(false));
-        }
+        Files.delete(res.getPath());
+        assertThat("File should have been deleted.", res.exists(), is(false));
     }
 
-    @ParameterizedTest
-    @MethodSource("fsResourceProvider")
-    public void testUtf8Dir(Class<PathResource> resourceClass) throws Exception
+    @Test
+    public void testUtf8Dir(WorkDir workDir) throws Exception
     {
-        Path dir = workDir.getEmptyPathDir();
         Path utf8Dir;
-
+        Path dir = workDir.getEmptyPathDir();
         try
         {
             utf8Dir = dir.resolve("bãm");
@@ -1461,38 +1248,43 @@ public class FileSystemResourceTest
         Path file = utf8Dir.resolve("file.txt");
         Files.createFile(file);
 
-        try (Resource base = newResource(resourceClass, utf8Dir.toFile()))
-        {
-            assertThat("Exists: " + utf8Dir, base.exists(), is(true));
-            assertThat("Alias: " + utf8Dir, base, hasNoAlias());
+        Resource base = ResourceFactory.root().newResource(utf8Dir);
+        assertThat("Exists: " + utf8Dir, base.exists(), is(true));
+        assertThat("Is Not Alias: " + utf8Dir, base, isNotAlias());
 
-            Resource r = base.addPath("file.txt");
-            assertThat("Exists: " + r, r.exists(), is(true));
-            assertThat("Alias: " + r, r, hasNoAlias());
+        Resource r = base.resolve("file.txt");
+        assertThat("Exists: " + r, r.exists(), is(true));
+        if (WINDOWS.isCurrentOs())
+        {
+            // On windows, the base.resolve results in a representation of ".../testUtf8Dir/b%C3%A3m/file.txt"
+            // But that differs from the input URI of ".../testUtf8Dir/bãm/file.txt", so it is viewed as an alias.
+            assertThat("Is Alias: " + r, r, isAlias());
+            URI realURI = r.getRealURI();
+            assertThat(realURI, is(file.toUri()));
         }
+        else
+            assertThat("Is Not Alias: " + r, r, isNotAlias());
     }
 
-    @ParameterizedTest
-    @ValueSource(classes = PathResource.class) // FileResource does not support this
+    @Test
     @EnabledOnOs(WINDOWS)
-    public void testUncPath(Class<PathResource> resourceClass) throws Exception
+    public void testUncPath()
     {
-        try (Resource base = newResource(resourceClass, URI.create("file:////127.0.0.1/path")))
-        {
-            Resource resource = base.addPath("WEB-INF/");
-            assertThat("getURI()", resource.getURI().toASCIIString(), containsString("path/WEB-INF/"));
-            assertThat("isAlias()", resource.isAlias(), is(false));
-            assertThat("getAlias()", resource.getAlias(), nullValue());
-        }
+        Resource base = ResourceFactory.root().newResource(URI.create("file:////127.0.0.1/path"));
+        assumeTrue(base != null);
+        Resource resource = base.resolve("WEB-INF/");
+        assertThat("getURI()", resource.getURI().toASCIIString(), containsString("path/WEB-INF/"));
+        assertThat("isAlias()", resource.isAlias(), is(false));
+        assertThat("Is Not Alias: " + resource.getPath(), resource, isNotAlias());
     }
 
     private String toString(Resource resource) throws IOException
     {
-        try (InputStream inputStream = resource.getInputStream();
+        try (InputStream inputStream = resource.newInputStream();
              ByteArrayOutputStream outputStream = new ByteArrayOutputStream())
         {
             IO.copy(inputStream, outputStream);
-            return outputStream.toString("utf-8");
+            return outputStream.toString(StandardCharsets.UTF_8);
         }
     }
 

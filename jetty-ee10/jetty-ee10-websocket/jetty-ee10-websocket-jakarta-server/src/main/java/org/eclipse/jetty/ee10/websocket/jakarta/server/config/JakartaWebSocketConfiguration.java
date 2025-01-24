@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -29,12 +29,12 @@ public class JakartaWebSocketConfiguration extends AbstractConfiguration
 {
     public JakartaWebSocketConfiguration()
     {
-        addDependencies(WebXmlConfiguration.class, MetaInfConfiguration.class, WebInfConfiguration.class, FragmentConfiguration.class);
-        addDependents("org.eclipse.jetty.ee10.annotations.AnnotationConfiguration", WebAppConfiguration.class.getName());
-
-        protectAndExpose("org.eclipse.jetty.ee10.websocket.servlet."); // For WebSocketUpgradeFilter
-        protectAndExpose("org.eclipse.jetty.ee10.websocket.jakarta.server.config.");
-        protectAndExpose("org.eclipse.jetty.ee10.websocket.jakarta.client.JakartaWebSocketClientContainerProvider");
-        protectAndExpose("org.eclipse.jetty.ee10.websocket.jakarta.client.JakartaWebSocketShutdownContainer");
+        super(new Builder()
+            .addDependencies(WebXmlConfiguration.class, MetaInfConfiguration.class, WebInfConfiguration.class, FragmentConfiguration.class)
+            .addDependents("org.eclipse.jetty.ee10.annotations.AnnotationConfiguration", WebAppConfiguration.class.getName())
+            .protectAndExpose("org.eclipse.jetty.ee10.websocket.servlet.") // For WebSocketUpgradeFilter
+            .protectAndExpose("org.eclipse.jetty.ee10.websocket.jakarta.server.config.")
+            .protectAndExpose("org.eclipse.jetty.ee10.websocket.jakarta.client.JakartaWebSocketClientContainerProvider")
+            .protectAndExpose("org.eclipse.jetty.ee10.websocket.jakarta.client.JakartaWebSocketShutdownContainer"));
     }
 }

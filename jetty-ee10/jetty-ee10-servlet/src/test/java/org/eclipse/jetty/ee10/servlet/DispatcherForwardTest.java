@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -29,7 +29,6 @@ import org.eclipse.jetty.server.Server;
 import org.hamcrest.Matcher;
 import org.hamcrest.Matchers;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -51,9 +50,10 @@ public class DispatcherForwardTest
         connector = new LocalConnector(server);
         server.addConnector(connector);
 
-        ServletContextHandler context = new ServletContextHandler(server, "/");
+        ServletContextHandler context = new ServletContextHandler("/");
         context.addServlet(new ServletHolder(servlet1), "/one");
         context.addServlet(new ServletHolder(servlet2), "/two");
+        server.setHandler(context);
 
         server.start();
     }
@@ -451,7 +451,6 @@ public class DispatcherForwardTest
     }
 
     @Test
-    @Disabled // TODO
     public void testContentCanBeReadViaInputStreamAfterForwardWithoutQuery() throws Exception
     {
         CountDownLatch latch = new CountDownLatch(1);
@@ -501,7 +500,6 @@ public class DispatcherForwardTest
     }
 
     @Test
-    @Disabled // TODO
     public void testContentCanBeReadViaInputStreamAfterForwardWithQuery() throws Exception
     {
         CountDownLatch latch = new CountDownLatch(1);

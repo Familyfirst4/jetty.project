@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -18,12 +18,11 @@ import java.nio.charset.StandardCharsets;
 import java.util.stream.Stream;
 
 import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
+import org.eclipse.jetty.client.ContentResponse;
 import org.eclipse.jetty.client.HttpClient;
 import org.eclipse.jetty.client.HttpProxy;
-import org.eclipse.jetty.client.api.ContentResponse;
-import org.eclipse.jetty.client.api.Request;
-import org.eclipse.jetty.client.http.HttpClientTransportOverHTTP;
+import org.eclipse.jetty.client.Request;
+import org.eclipse.jetty.client.transport.HttpClientTransportOverHTTP;
 import org.eclipse.jetty.ee10.servlet.ServletContextHandler;
 import org.eclipse.jetty.ee10.servlet.ServletHolder;
 import org.eclipse.jetty.http.HttpHeader;
@@ -40,9 +39,9 @@ import org.eclipse.jetty.server.ForwardedRequestCustomizer;
 import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.HttpConfiguration;
 import org.eclipse.jetty.server.HttpConnectionFactory;
-import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
+import org.eclipse.jetty.server.handler.ConnectHandler;
 import org.eclipse.jetty.toolchain.test.MavenTestingUtils;
 import org.eclipse.jetty.toolchain.test.Net;
 import org.eclipse.jetty.util.BufferUtil;
@@ -110,7 +109,8 @@ public class ForwardProxyServerTest
         connectHandler.setConnectTimeout(1000);
         proxy.setHandler(connectHandler);
 
-        ServletContextHandler proxyHandler = new ServletContextHandler(connectHandler, "/");
+        ServletContextHandler proxyHandler = new ServletContextHandler("/");
+        connectHandler.setHandler(proxyHandler);
         proxyHandler.addServlet(new ServletHolder(proxyServlet), "/*");
 
         proxy.start();
@@ -172,7 +172,7 @@ public class ForwardProxyServerTest
                             }
                             Utf8StringBuilder builder = new Utf8StringBuilder();
                             builder.append(buffer);
-                            String request = builder.toString();
+                            String request = builder.toCompleteString();
 
                             // ProxyServlet will receive an absolute URI from
                             // the client, and convert it to a relative URI.
@@ -184,10 +184,11 @@ public class ForwardProxyServerTest
                             else
                                 assertFalse(request.contains("https://"));
 
-                            String response =
-                                "HTTP/1.1 200 OK\r\n" +
-                                    "Content-Length: 0\r\n" +
-                                    "\r\n";
+                            String response = """
+                                HTTP/1.1 200 OK
+                                Content-Length: 0
+                                
+                                """;
                             getEndPoint().write(Callback.NOOP, ByteBuffer.wrap(response.getBytes(StandardCharsets.UTF_8)));
                         }
                         catch (Throwable x)
@@ -205,7 +206,7 @@ public class ForwardProxyServerTest
         ClientConnector clientConnector = new ClientConnector();
         clientConnector.setSslContextFactory(clientTLS);
         HttpClient httpClient = new HttpClient(new HttpClientTransportOverHTTP(clientConnector));
-        httpClient.getProxyConfiguration().getProxies().add(newHttpProxy());
+        httpClient.getProxyConfiguration().addProxy(newHttpProxy());
         httpClient.start();
 
         try
@@ -233,16 +234,15 @@ public class ForwardProxyServerTest
         HttpConfiguration httpConfig = new HttpConfiguration();
         httpConfig.addCustomizer(new ForwardedRequestCustomizer());
         ConnectionFactory http = new HttpConnectionFactory(httpConfig);
-        startServer(null, http, new EmptyServerHandler()
+        startServer(null, http, new Handler.Abstract()
         {
             @Override
-            public void process(org.eclipse.jetty.server.Request request, org.eclipse.jetty.server.Response response, Callback callback)
+            public boolean handle(org.eclipse.jetty.server.Request request, org.eclipse.jetty.server.Response response, Callback callback)
             {
-                //TODO fix me
-                /*                String remoteHost = request.getRemoteHost();
+                String remoteHost = org.eclipse.jetty.server.Request.getRemoteAddr(request);
                 assertThat(remoteHost, Matchers.matchesPattern("\\[.+\\]"));
-                String remoteAddr = request.getRemoteAddr();
-                assertThat(remoteAddr, Matchers.matchesPattern("\\[.+\\]"));*/
+                callback.succeeded();
+                return true;
             }
         });
         startProxy(new ProxyServlet()
@@ -255,7 +255,7 @@ public class ForwardProxyServerTest
         });
 
         HttpClient httpClient = new HttpClient();
-        httpClient.getProxyConfiguration().getProxies().add(newHttpProxy());
+        httpClient.getProxyConfiguration().addProxy(newHttpProxy());
         httpClient.start();
 
         ContentResponse response = httpClient.newRequest("[::1]", serverConnector.getLocalPort())
@@ -273,16 +273,15 @@ public class ForwardProxyServerTest
         HttpConfiguration httpConfig = new HttpConfiguration();
         httpConfig.addCustomizer(new ForwardedRequestCustomizer());
         ConnectionFactory http = new HttpConnectionFactory(httpConfig);
-        startServer(null, http, new EmptyServerHandler()
+        startServer(null, http, new Handler.Abstract()
         {
             @Override
-            public void process(org.eclipse.jetty.server.Request request, org.eclipse.jetty.server.Response response, Callback callback)
+            public boolean handle(org.eclipse.jetty.server.Request request, org.eclipse.jetty.server.Response response, Callback callback)
             {
-                //TODO fixme
-                /*                String remoteHost = request.getRemoteHost();
+                String remoteHost = org.eclipse.jetty.server.Request.getRemoteAddr(request);
                 assertThat(remoteHost, Matchers.matchesPattern("\\[.+\\]"));
-                String remoteAddr = request.getRemoteAddr();
-                assertThat(remoteAddr, Matchers.matchesPattern("\\[.+\\]"));*/
+                callback.succeeded();
+                return true;
             }
         });
         startProxy(new ProxyServlet()
@@ -295,7 +294,7 @@ public class ForwardProxyServerTest
         });
 
         HttpClient httpClient = new HttpClient();
-        httpClient.getProxyConfiguration().getProxies().add(newHttpProxy());
+        httpClient.getProxyConfiguration().addProxy(newHttpProxy());
         httpClient.start();
 
         ContentResponse response = httpClient.newRequest("[::1]", serverConnector.getLocalPort())
