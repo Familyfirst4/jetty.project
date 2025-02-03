@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -21,17 +21,16 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import org.eclipse.jetty.ee10.websocket.api.RemoteEndpoint;
-import org.eclipse.jetty.ee10.websocket.api.Session;
-import org.eclipse.jetty.ee10.websocket.api.annotations.OnWebSocketClose;
-import org.eclipse.jetty.ee10.websocket.api.annotations.OnWebSocketConnect;
-import org.eclipse.jetty.ee10.websocket.api.annotations.OnWebSocketMessage;
-import org.eclipse.jetty.ee10.websocket.api.annotations.WebSocket;
 import org.eclipse.jetty.ee10.websocket.server.JettyServerUpgradeRequest;
 import org.eclipse.jetty.ee10.websocket.server.JettyServerUpgradeResponse;
 import org.eclipse.jetty.ee10.websocket.server.JettyWebSocketCreator;
 import org.eclipse.jetty.ee10.websocket.server.JettyWebSocketServlet;
 import org.eclipse.jetty.ee10.websocket.server.JettyWebSocketServletFactory;
+import org.eclipse.jetty.websocket.api.Session;
+import org.eclipse.jetty.websocket.api.annotations.OnWebSocketClose;
+import org.eclipse.jetty.websocket.api.annotations.OnWebSocketMessage;
+import org.eclipse.jetty.websocket.api.annotations.OnWebSocketOpen;
+import org.eclipse.jetty.websocket.api.annotations.WebSocket;
 
 @SuppressWarnings("serial")
 public class WebSocketChatServlet extends JettyWebSocketServlet implements JettyWebSocketCreator
@@ -71,13 +70,11 @@ public class WebSocketChatServlet extends JettyWebSocketServlet implements Jetty
     public class ChatWebSocket
     {
         volatile Session session;
-        volatile RemoteEndpoint remote;
 
-        @OnWebSocketConnect
-        public void onOpen(Session sess)
+        @OnWebSocketOpen
+        public void onOpen(Session session)
         {
-            this.session = sess;
-            this.remote = sess.getRemote();
+            this.session = session;
             members.add(this);
         }
 
@@ -103,7 +100,7 @@ public class WebSocketChatServlet extends JettyWebSocketServlet implements Jetty
                 }
 
                 // Async write the message back.
-                member.remote.sendString(data, null);
+                member.session.sendText(data, null);
             }
         }
 

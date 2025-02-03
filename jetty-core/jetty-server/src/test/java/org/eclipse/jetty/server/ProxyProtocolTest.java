@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -24,9 +24,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 
 import org.eclipse.jetty.io.EndPoint;
-import org.eclipse.jetty.server.internal.HttpConnection;
 import org.eclipse.jetty.util.Callback;
-import org.eclipse.jetty.util.TypeUtil;
+import org.eclipse.jetty.util.StringUtil;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -60,10 +59,10 @@ public class ProxyProtocolTest
     {
         final String remoteAddr = "192.168.0.0";
         final int remotePort = 12345;
-        start(new Handler.Processor()
+        start(new Handler.Abstract.NonBlocking()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 SocketAddress addr = request.getConnectionMetaData().getRemoteSocketAddress();
                 if (addr instanceof InetSocketAddress iAddr)
@@ -77,6 +76,7 @@ public class ProxyProtocolTest
                 {
                     callback.failed(new Throwable("no inet address"));
                 }
+                return true;
             }
         });
 
@@ -94,7 +94,7 @@ public class ProxyProtocolTest
             InputStream input = socket.getInputStream();
             BufferedReader reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8));
             String response1 = reader.readLine();
-            assertTrue(response1.startsWith("HTTP/1.1 200 "));
+            assertThat(response1, startsWith("HTTP/1.1 200 "));
             while (true)
             {
                 if (reader.readLine().isEmpty())
@@ -128,10 +128,10 @@ public class ProxyProtocolTest
         final byte[] customE0 = new byte[] {1, 2};
         final byte[] customE1 = new byte[] {-1, -1, -1};
 
-        start(new Handler.Processor()
+        start(new Handler.Abstract.NonBlocking()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 if (validateEndPoint(request) &&
                     remoteAddr.equals(Request.getRemoteAddr(request)) &&
@@ -139,16 +139,16 @@ public class ProxyProtocolTest
                     callback.succeeded();
                 else
                     callback.failed(new Throwable());
+                return true;
             }
 
-            private boolean validateEndPoint(Request request) 
+            private boolean validateEndPoint(Request request)
             {
-                HttpConnection con = (HttpConnection)request.getAttribute(HttpConnection.class.getName());
-                EndPoint endPoint = con.getEndPoint();
+                EndPoint endPoint = request.getConnectionMetaData().getConnection().getEndPoint();
                 ProxyConnectionFactory.ProxyEndPoint proxyEndPoint = (ProxyConnectionFactory.ProxyEndPoint)endPoint;
                 return Arrays.equals(customE0, proxyEndPoint.getTLV(0xE0)) &&
-                       Arrays.equals(customE1, proxyEndPoint.getTLV(0xE1)) &&
-                       proxyEndPoint.getTLV(0xE2) == null;
+                    Arrays.equals(customE1, proxyEndPoint.getTLV(0xE1)) &&
+                    proxyEndPoint.getTLV(0xE2) == null;
             }
         });
 
@@ -190,7 +190,7 @@ public class ProxyProtocolTest
                     "Host: localhost\r\n" +
                     "\r\n";
             OutputStream output = socket.getOutputStream();
-            output.write(TypeUtil.fromHexString(proxy));
+            output.write(StringUtil.fromHexString(proxy));
             output.write(request1.getBytes(StandardCharsets.UTF_8));
             output.flush();
 
@@ -226,12 +226,13 @@ public class ProxyProtocolTest
     @Test
     public void testProxyProtocolV2Local() throws Exception
     {
-        start(new Handler.Processor()
+        start(new Handler.Abstract.NonBlocking()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 callback.succeeded();
+                return true;
             }
         });
 
@@ -267,7 +268,7 @@ public class ProxyProtocolTest
                     "Host: localhost\r\n" +
                     "\r\n";
             OutputStream output = socket.getOutputStream();
-            output.write(TypeUtil.fromHexString(proxy));
+            output.write(StringUtil.fromHexString(proxy));
             output.write(request1.getBytes(StandardCharsets.UTF_8));
             output.flush();
 

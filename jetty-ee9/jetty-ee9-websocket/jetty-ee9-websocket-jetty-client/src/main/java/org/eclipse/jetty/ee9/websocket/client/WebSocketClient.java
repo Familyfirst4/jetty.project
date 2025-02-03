@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,7 +14,6 @@
 package org.eclipse.jetty.ee9.websocket.client;
 
 import java.io.IOException;
-import java.net.CookieStore;
 import java.net.SocketAddress;
 import java.net.URI;
 import java.time.Duration;
@@ -28,10 +27,10 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 import org.eclipse.jetty.client.HttpClient;
-import org.eclipse.jetty.client.HttpRequest;
-import org.eclipse.jetty.client.HttpResponse;
-import org.eclipse.jetty.client.api.Request;
+import org.eclipse.jetty.client.Request;
+import org.eclipse.jetty.client.Response;
 import org.eclipse.jetty.ee9.websocket.api.Session;
+import org.eclipse.jetty.ee9.websocket.api.StatusCode;
 import org.eclipse.jetty.ee9.websocket.api.WebSocketBehavior;
 import org.eclipse.jetty.ee9.websocket.api.WebSocketContainer;
 import org.eclipse.jetty.ee9.websocket.api.WebSocketPolicy;
@@ -40,7 +39,6 @@ import org.eclipse.jetty.ee9.websocket.client.impl.JettyClientUpgradeRequest;
 import org.eclipse.jetty.ee9.websocket.common.JettyWebSocketFrameHandler;
 import org.eclipse.jetty.ee9.websocket.common.JettyWebSocketFrameHandlerFactory;
 import org.eclipse.jetty.ee9.websocket.common.SessionTracker;
-import org.eclipse.jetty.io.ByteBufferPool;
 import org.eclipse.jetty.io.Connection;
 import org.eclipse.jetty.util.DecoratedObjectFactory;
 import org.eclipse.jetty.util.component.ContainerLifeCycle;
@@ -87,7 +85,7 @@ public class WebSocketClient extends ContainerLifeCycle implements WebSocketPoli
         addManaged(coreClient);
         frameHandlerFactory = new JettyWebSocketFrameHandlerFactory(this, components);
         sessionListeners.add(sessionTracker);
-        addBean(sessionTracker);
+        installBean(sessionTracker);
     }
 
     public CompletableFuture<Session> connect(Object websocket, URI toUri) throws IOException
@@ -138,13 +136,13 @@ public class WebSocketClient extends ContainerLifeCycle implements WebSocketPoli
             upgradeRequest.addListener(new UpgradeListener()
             {
                 @Override
-                public void onHandshakeRequest(HttpRequest request)
+                public void onHandshakeRequest(Request request)
                 {
                     upgradeListener.onHandshakeRequest(request);
                 }
 
                 @Override
-                public void onHandshakeResponse(HttpRequest request, HttpResponse response)
+                public void onHandshakeResponse(Request request, Response response)
                 {
                     upgradeListener.onHandshakeResponse(request, response);
                 }
@@ -324,21 +322,6 @@ public class WebSocketClient extends ContainerLifeCycle implements WebSocketPoli
         getHttpClient().setConnectTimeout(ms);
     }
 
-    public CookieStore getCookieStore()
-    {
-        return getHttpClient().getCookieStore();
-    }
-
-    public void setCookieStore(CookieStore cookieStore)
-    {
-        getHttpClient().setCookieStore(cookieStore);
-    }
-
-    public ByteBufferPool getBufferPool()
-    {
-        return getHttpClient().getByteBufferPool();
-    }
-
     @Override
     public Executor getExecutor()
     {
@@ -361,6 +344,7 @@ public class WebSocketClient extends ContainerLifeCycle implements WebSocketPoli
     }
 
     /**
+     * Get the {@link SslContextFactory} that manages TLS encryption.
      * @return the {@link SslContextFactory} that manages TLS encryption
      */
     public SslContextFactory getSslContextFactory()
@@ -389,7 +373,7 @@ public class WebSocketClient extends ContainerLifeCycle implements WebSocketPoli
     }
 
     /**
-     * The timeout to allow all remaining open Sessions to be closed gracefully using  the close code {@link org.eclipse.jetty.ee9.websocket.api.StatusCode#SHUTDOWN}.
+     * The timeout to allow all remaining open Sessions to be closed gracefully using  the close code {@link StatusCode#SHUTDOWN}.
      * @param stopTimeout the time in ms to wait for the graceful close, use a value less than or equal to 0 to not gracefully close.
      */
     public void setStopTimeout(long stopTimeout)

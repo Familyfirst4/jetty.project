@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -27,6 +27,7 @@ import org.eclipse.jetty.jmx.MBeanContainer;
 import org.eclipse.jetty.server.Connector;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
+import org.eclipse.jetty.server.handler.ContextHandler;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
@@ -47,14 +48,15 @@ public class DoSFilterJMXTest
         Connector connector = new ServerConnector(server);
         server.addConnector(connector);
 
-        ServletContextHandler context = new ServletContextHandler(server, "/", ServletContextHandler.SESSIONS);
+        ServletContextHandler context = new ServletContextHandler("/", ServletContextHandler.SESSIONS);
+        server.setHandler(context);
         DoSFilter filter = new DoSFilter();
         FilterHolder holder = new FilterHolder(filter);
         String name = "dos";
         holder.setName(name);
         holder.setInitParameter(DoSFilter.MANAGED_ATTR_INIT_PARAM, "true");
         context.addFilter(holder, "/*", EnumSet.of(DispatcherType.REQUEST));
-        context.setInitParameter(ServletContextHandler.MANAGED_ATTRIBUTES, name);
+        context.setInitParameter(ContextHandler.MANAGED_ATTRIBUTES, name);
 
         MBeanServer mbeanServer = ManagementFactory.getPlatformMBeanServer();
         MBeanContainer mbeanContainer = new MBeanContainer(mbeanServer);

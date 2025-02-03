@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -15,12 +15,10 @@ package org.eclipse.jetty.server;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
-import org.eclipse.jetty.http.HttpField;
 import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.http.HttpTester;
 import org.eclipse.jetty.util.Callback;
@@ -30,7 +28,6 @@ import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.is;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -287,15 +284,14 @@ public class HttpChannelEventTest
             @Override
             public void onRequestBegin(Request request)
             {
-                request.setAttribute(attribute, System.nanoTime());
+                request.setAttribute(attribute, NanoTime.now());
             }
 
             @Override
             public void onComplete(Request request)
             {
-                long endTime = System.nanoTime();
                 long beginTime = (Long)request.getAttribute(attribute);
-                elapsed.set(endTime - beginTime);
+                elapsed.set(NanoTime.since(beginTime));
                 latch.countDown();
             }
         });
@@ -346,10 +342,10 @@ public class HttpChannelEventTest
         assertTrue(latch.await(5, TimeUnit.SECONDS));
     }
 
-    private static class TestHandler extends Handler.Processor
+    private static class TestHandler extends Handler.Abstract
     {
         @Override
-        public void process(Request request, Response response, Callback callback) throws Exception
+        public boolean handle(Request request, Response response, Callback callback) throws Exception
         {
             try
             {
@@ -363,6 +359,7 @@ public class HttpChannelEventTest
             {
                 callback.succeeded();
             }
+            return true;
         }
 
         protected void handle(Request request, Response response) throws IOException

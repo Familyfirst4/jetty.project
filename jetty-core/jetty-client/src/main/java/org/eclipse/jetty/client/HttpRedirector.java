@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,10 +13,8 @@
 
 package org.eclipse.jetty.client;
 
-import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -25,11 +23,14 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.eclipse.jetty.client.api.Request;
-import org.eclipse.jetty.client.api.Response;
-import org.eclipse.jetty.client.api.Result;
-import org.eclipse.jetty.client.util.BufferingResponseListener;
+import org.eclipse.jetty.client.internal.HttpContentResponse;
+import org.eclipse.jetty.client.transport.HttpConversation;
+import org.eclipse.jetty.client.transport.HttpRequest;
+import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpMethod;
+import org.eclipse.jetty.http.HttpStatus;
+import org.eclipse.jetty.util.NanoTime;
+import org.eclipse.jetty.util.URIUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -38,7 +39,7 @@ import org.slf4j.LoggerFactory;
  * <p>
  * Applications can disable redirection via {@link Request#followRedirects(boolean)}
  * and then rely on this class to perform the redirect in a simpler way, for example:
- * <pre>
+ * <pre>{@code
  * HttpRedirector redirector = new HttpRedirector(httpClient);
  *
  * Request request = httpClient.newRequest("http://host/path").followRedirects(false);
@@ -53,7 +54,7 @@ import org.slf4j.LoggerFactory;
  *     request = result.getRequest();
  *     response = result.getResponse();
  * }
- * </pre>
+ * }</pre>
  */
 public class HttpRedirector
 {
@@ -69,12 +70,10 @@ public class HttpRedirector
     private static final String ATTRIBUTE = HttpRedirector.class.getName() + ".redirects";
 
     private final HttpClient client;
-    private final ResponseNotifier notifier;
 
     public HttpRedirector(HttpClient client)
     {
         this.client = client;
-        this.notifier = new ResponseNotifier();
     }
 
     /**
@@ -85,7 +84,11 @@ public class HttpRedirector
     {
         return switch (response.getStatus())
         {
-            case 301, 302, 303, 307, 308 -> true;
+            case HttpStatus.MOVED_PERMANENTLY_301,
+                HttpStatus.MOVED_TEMPORARILY_302,
+                HttpStatus.SEE_OTHER_303,
+                HttpStatus.TEMPORARY_REDIRECT_307,
+                HttpStatus.PERMANENT_REDIRECT_308 -> true;
             default -> false;
         };
     }
@@ -185,7 +188,7 @@ public class HttpRedirector
         int status = response.getStatus();
         switch (status)
         {
-            case 301:
+            case HttpStatus.MOVED_PERMANENTLY_301:
             {
                 String method = request.getMethod();
                 if (HttpMethod.GET.is(method) || HttpMethod.HEAD.is(method) || HttpMethod.PUT.is(method))
@@ -195,7 +198,7 @@ public class HttpRedirector
                 fail(request, response, new HttpResponseException("HTTP protocol violation: received 301 for non GET/HEAD/POST/PUT request", response));
                 return null;
             }
-            case 302:
+            case HttpStatus.MOVED_TEMPORARILY_302:
             {
                 String method = request.getMethod();
                 if (HttpMethod.HEAD.is(method) || HttpMethod.PUT.is(method))
@@ -203,7 +206,7 @@ public class HttpRedirector
                 else
                     return redirect(request, response, listener, newURI, HttpMethod.GET.asString());
             }
-            case 303:
+            case HttpStatus.SEE_OTHER_303:
             {
                 String method = request.getMethod();
                 if (HttpMethod.HEAD.is(method))
@@ -211,8 +214,8 @@ public class HttpRedirector
                 else
                     return redirect(request, response, listener, newURI, HttpMethod.GET.asString());
             }
-            case 307:
-            case 308:
+            case HttpStatus.TEMPORARY_REDIRECT_307:
+            case HttpStatus.PERMANENT_REDIRECT_308:
             {
                 // Keep same method
                 return redirect(request, response, listener, newURI, request.getMethod());
@@ -276,7 +279,7 @@ public class HttpRedirector
             Matcher matcher = URI_PATTERN.matcher(location);
             if (matcher.matches())
             {
-                String scheme = matcher.group(2);
+                String scheme = URIUtil.normalizeScheme(matcher.group(2));
                 String authority = matcher.group(3);
                 String path = matcher.group(4);
                 String query = matcher.group(5);
@@ -302,17 +305,42 @@ public class HttpRedirector
     {
         try
         {
-            Request.Content body = httpRequest.getBody();
-            if (body != null && !body.rewind())
-                throw new IOException("Could not reproduce request content for " + httpRequest);
             Request redirect = client.copyRequest(httpRequest, location);
+
+            // Use the given method.
+            redirect.method(method);
+
+            if (HttpMethod.GET.is(method))
+            {
+                redirect.body(null);
+                redirect.headers(headers ->
+                {
+                    headers.remove(HttpHeader.CONTENT_LENGTH);
+                    headers.remove(HttpHeader.CONTENT_TYPE);
+                });
+            }
+            else if (HttpMethod.CONNECT.is(method))
+            {
+                redirect.path(httpRequest.getPath());
+            }
+
+            Request.Content body = redirect.getBody();
+            if (body != null && !body.rewind())
+            {
+                if (LOG.isDebugEnabled())
+                    LOG.debug("Could not redirect to {}, request body is not reproducible", location);
+                HttpConversation conversation = httpRequest.getConversation();
+                conversation.updateResponseListeners(null);
+                conversation.getResponseListeners().emitSuccessComplete(new Result(httpRequest, response));
+                return null;
+            }
 
             // Adjust the timeout of the new request, taking into account the
             // timeout of the previous request and the time already elapsed.
-            long timeoutAt = httpRequest.getTimeoutAt();
-            if (timeoutAt < Long.MAX_VALUE)
+            long timeoutNanoTime = httpRequest.getTimeoutNanoTime();
+            if (timeoutNanoTime < Long.MAX_VALUE)
             {
-                long newTimeout = timeoutAt - System.nanoTime();
+                long newTimeout = NanoTime.until(timeoutNanoTime);
                 if (newTimeout > 0)
                 {
                     redirect.timeout(newTimeout, TimeUnit.NANOSECONDS);
@@ -324,16 +352,6 @@ public class HttpRedirector
                     return null;
                 }
             }
-
-            // Use given method
-            redirect.method(method);
-
-            redirect.onRequestBegin(request ->
-            {
-                Throwable cause = httpRequest.getAbortCause();
-                if (cause != null)
-                    request.abort(cause);
-            });
 
             redirect.send(listener);
             return redirect;
@@ -359,8 +377,6 @@ public class HttpRedirector
     {
         HttpConversation conversation = ((HttpRequest)request).getConversation();
         conversation.updateResponseListeners(null);
-        List<Response.ResponseListener> listeners = conversation.getResponseListeners();
-        notifier.notifyFailure(listeners, response, responseFailure);
-        notifier.notifyComplete(listeners, new Result(request, requestFailure, response, responseFailure));
+        conversation.getResponseListeners().emitFailureComplete(new Result(request, requestFailure, response, responseFailure));
     }
 }

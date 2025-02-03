@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -34,31 +34,39 @@ import jakarta.servlet.ServletInputStream;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.eclipse.jetty.ee10.servlet.ServletApiRequest;
+import org.eclipse.jetty.ee10.servlet.ServletChannelState;
 import org.eclipse.jetty.ee10.servlet.ServletContextHandler;
+import org.eclipse.jetty.ee10.servlet.ServletContextRequest;
 import org.eclipse.jetty.ee10.servlet.ServletHolder;
 import org.eclipse.jetty.http.HttpVersion;
 import org.eclipse.jetty.http2.server.HTTP2CServerConnectionFactory;
+import org.eclipse.jetty.io.ArrayByteBufferPool;
 import org.eclipse.jetty.server.Connector;
-import org.eclipse.jetty.server.HttpChannel;
 import org.eclipse.jetty.server.HttpConfiguration;
 import org.eclipse.jetty.server.HttpConnectionFactory;
 import org.eclipse.jetty.server.LocalConnector;
 import org.eclipse.jetty.server.LocalConnector.LocalEndPoint;
 import org.eclipse.jetty.server.NetworkConnector;
-import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.SecureRequestCustomizer;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.server.SslConnectionFactory;
 import org.eclipse.jetty.util.BufferUtil;
 import org.eclipse.jetty.util.IO;
+import org.eclipse.jetty.util.component.LifeCycle;
 import org.eclipse.jetty.util.ssl.SslContextFactory;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import static org.awaitility.Awaitility.await;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.not;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -73,13 +81,15 @@ public class HttpInputIntegrationTest
     private static Server __server;
     private static HttpConfiguration __config;
     private static SslContextFactory.Server __sslContextFactory;
+    private static ArrayByteBufferPool.Tracking __bufferPool;
 
     @BeforeAll
     public static void beforeClass() throws Exception
     {
         __config = new HttpConfiguration();
 
-        __server = new Server();
+        __bufferPool = new ArrayByteBufferPool.Tracking();
+        __server = new Server(null, null, __bufferPool);
         LocalConnector local = new LocalConnector(__server, new HttpConnectionFactory(__config));
         local.setIdleTimeout(4000);
         __server.addConnector(local);
@@ -117,7 +127,8 @@ public class HttpInputIntegrationTest
         http2.setIdleTimeout(5000);
         __server.addConnector(http2);
 
-        ServletContextHandler context = new ServletContextHandler(__server, "/ctx");
+        ServletContextHandler context = new ServletContextHandler("/ctx");
+        __server.setHandler(context);
         ServletHolder holder = new ServletHolder(new TestServlet());
         holder.setAsyncSupported(true);
         context.addServlet(holder, "/*");
@@ -126,9 +137,16 @@ public class HttpInputIntegrationTest
     }
 
     @AfterAll
-    public static void afterClass() throws Exception
+    public static void afterClass()
     {
-        __server.stop();
+        try
+        {
+            await().atMost(5, TimeUnit.SECONDS).untilAsserted(() -> assertThat("Server leaks: " + __bufferPool.dumpLeaks(), __bufferPool.getLeaks().size(), is(0)));
+        }
+        finally
+        {
+            LifeCycle.stop(__server);
+        }
     }
 
     interface TestClient
@@ -197,7 +215,7 @@ public class HttpInputIntegrationTest
         return tests.stream().map(Arguments::of);
     }
 
-    private static void runMode(Mode mode, Request request, Runnable test)
+    private static void runMode(Mode mode, ServletContextRequest request, Runnable test)
     {
         switch (mode)
         {
@@ -235,27 +253,24 @@ public class HttpInputIntegrationTest
             case ASYNC_OTHER_WAIT:
             {
                 CountDownLatch latch = new CountDownLatch(1);
-                //TODO
-                /*                HttpChannel.State state = request.getHttpChannelState().getState();
+                ServletChannelState servletRequestState = request.getServletChannel().getServletRequestState();
+                ServletChannelState.State state = servletRequestState.getState();
                 new Thread(() ->
                 {
                     try
                     {
                         if (!latch.await(5, TimeUnit.SECONDS))
                             fail("latch expired");
-                
-                        // Spin until state change
-                        while (request.getHttpChannelState().getState() == state)
-                        {
-                            Thread.yield();
-                        }
+
+                        // Wait until the state changes.
+                        await().atMost(5, TimeUnit.SECONDS).until(servletRequestState::getState, not(state));
                         test.run();
                     }
                     catch (Exception e)
                     {
                         e.printStackTrace();
                     }
-                }).start();*/
+                }).start();
                 // ensure other thread running before trying to return
                 latch.countDown();
                 break;
@@ -289,6 +304,7 @@ public class HttpInputIntegrationTest
         assertTrue(response.contains("sum=" + sum));
     }
 
+    @Tag("stress")
     @ParameterizedTest(name = "[{index}] STRESS {0}")
     @MethodSource("scenarios")
     public void testStress(Scenario scenario) throws Exception
@@ -371,7 +387,7 @@ public class HttpInputIntegrationTest
                 catch (Exception e)
                 {
                     e.printStackTrace();
-                    resp.setStatus(500);
+                    resp.setStatus(599);
                     resp.getWriter().println("read=" + e);
                     resp.getWriter().println("sum=-1");
                 }
@@ -382,12 +398,11 @@ public class HttpInputIntegrationTest
                 AsyncContext context = req.startAsync();
                 context.setTimeout(10000);
                 ServletInputStream in = req.getInputStream();
-                //TODO
-                //Request request = Request.getBaseRequest(req);
+                ServletContextRequest request = (ServletContextRequest)((ServletApiRequest)req).getRequest();
                 AtomicInteger read = new AtomicInteger(0);
                 AtomicInteger sum = new AtomicInteger(0);
 
-                runMode(mode, /* request */ null, () -> in.setReadListener(new ReadListener()
+                runMode(mode, request, () -> in.setReadListener(new ReadListener()
                 {
                     @Override
                     public void onError(Throwable t)
@@ -395,7 +410,7 @@ public class HttpInputIntegrationTest
                         t.printStackTrace();
                         try
                         {
-                            resp.sendError(500);
+                            resp.sendError(599);
                         }
                         catch (IOException e)
                         {
@@ -408,7 +423,7 @@ public class HttpInputIntegrationTest
                     @Override
                     public void onDataAvailable()
                     {
-                        runMode(mode, /* request */ null, () ->
+                        runMode(mode, request, () ->
                         {
                             while (in.isReady() && !in.isFinished())
                             {
@@ -421,9 +436,7 @@ public class HttpInputIntegrationTest
                                     int i = read.getAndIncrement();
                                     if (b != expected.charAt(i))
                                     {
-                                        /*System.err.printf("XXX '%c'!='%c' at %d%n", expected.charAt(i), (char)b, i);
-                                        System.err.println("    " + request.getHttpChannel());
-                                        System.err.println("    " + request.getHttpChannel().getHttpTransport());*/
+                                        onError(new AssertionError("'%c'!='%c' at %d".formatted(expected.charAt(i), (char)b, i)));
                                     }
                                 }
                                 catch (IOException e)

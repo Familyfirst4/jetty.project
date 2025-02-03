@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -31,6 +31,7 @@ import jakarta.servlet.RequestDispatcher;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.eclipse.jetty.http.HttpField;
 import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpStatus;
@@ -43,14 +44,12 @@ import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.handler.ContextHandler;
 import org.eclipse.jetty.util.BufferUtil;
 import org.eclipse.jetty.util.Callback;
-import org.eclipse.jetty.util.QuotedStringTokenizer;
 import org.eclipse.jetty.util.StringUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class ErrorHandler implements Request.Processor
+public class ErrorHandler implements Request.Handler
 {
-
     // TODO This classes API needs to be majorly refactored/cleanup in jetty-10
     private static final Logger LOG = LoggerFactory.getLogger(ErrorHandler.class);
     public static final String ERROR_PAGE = "org.eclipse.jetty.server.error_page";
@@ -81,16 +80,18 @@ public class ErrorHandler implements Request.Processor
     }
 
     @Override
-    public void process(Request request, Response response, Callback callback) throws Exception
+    public boolean handle(Request request, Response response, Callback callback) throws Exception
     {
         if (!errorPageForMethod(request.getMethod()))
         {
             callback.succeeded();
-            return;
+            return true;
         }
 
         ServletContextRequest servletContextRequest = Request.as(request, ServletContextRequest.class);
-
+        HttpServletRequest httpServletRequest = servletContextRequest.getServletApiRequest();
+        HttpServletResponse httpServletResponse = servletContextRequest.getHttpServletResponse();
+        ServletContextHandler contextHandler = servletContextRequest.getServletContext().getServletContextHandler();
         String cacheControl = getCacheControl();
         if (cacheControl != null)
             response.getHeaders().put(HttpHeader.CACHE_CONTROL.asString(), cacheControl);
@@ -98,8 +99,8 @@ public class ErrorHandler implements Request.Processor
         // Look for an error page dispatcher
         // This logic really should be in ErrorPageErrorHandler, but some implementations extend ErrorHandler
         // and implement ErrorPageMapper directly, so we do this here in the base class.
-        String errorPage = (this instanceof ErrorPageMapper) ? ((ErrorPageMapper)this).getErrorPage(servletContextRequest.getHttpServletRequest()) : null;
-        ServletContextHandler.Context context = servletContextRequest.getErrorContext();
+        String errorPage = (this instanceof ErrorPageMapper) ? ((ErrorPageMapper)this).getErrorPage(httpServletRequest) : null;
+        ServletContextHandler.ServletScopedContext context = servletContextRequest.getErrorContext();
         Dispatcher errorDispatcher = (errorPage != null && context != null)
             ? (Dispatcher)context.getServletContext().getRequestDispatcher(errorPage) : null;
 
@@ -107,17 +108,26 @@ public class ErrorHandler implements Request.Processor
         {
             try
             {
-                errorDispatcher.error(servletContextRequest.getHttpServletRequest(), servletContextRequest.getHttpServletResponse());
+                try
+                {
+                    contextHandler.requestInitialized(servletContextRequest, httpServletRequest);
+                    errorDispatcher.error(httpServletRequest, httpServletResponse);
+                }
+                finally
+                {
+                    contextHandler.requestDestroyed(servletContextRequest, httpServletRequest);
+                }
                 callback.succeeded();
-                return;
+                return true;
             }
             catch (ServletException e)
             {
-                LOG.debug("Unable to call error dispatcher", e);
+                if (LOG.isDebugEnabled())
+                    LOG.debug("Unable to call error dispatcher", e);
                 if (response.isCommitted())
                 {
                     callback.failed(e);
-                    return;
+                    return true;
                 }
             }
         }
@@ -125,8 +135,9 @@ public class ErrorHandler implements Request.Processor
         String message = (String)request.getAttribute(Dispatcher.ERROR_MESSAGE);
         if (message == null)
             message = HttpStatus.getMessage(response.getStatus());
-        generateAcceptableResponse(servletContextRequest, servletContextRequest.getHttpServletRequest(), servletContextRequest.getHttpServletResponse(), response.getStatus(), message);
+        generateAcceptableResponse(servletContextRequest, httpServletRequest, httpServletResponse, response.getStatus(), message);
         callback.succeeded();
+        return true;
     }
 
     /**
@@ -157,7 +168,7 @@ public class ErrorHandler implements Request.Processor
             for (String mimeType : acceptable)
             {
                 generateAcceptableResponse(baseRequest, request, response, code, message, mimeType);
-                if (response.isCommitted() || baseRequest.getResponse().isWritingOrStreaming())
+                if (response.isCommitted() || baseRequest.getServletContextResponse().isWritingOrStreaming())
                     break;
             }
         }
@@ -293,7 +304,7 @@ public class ErrorHandler implements Request.Processor
                 // TODO error page may cause a BufferOverflow.  In which case we try
                 // TODO again with stacks disabled. If it still overflows, it is
                 // TODO written without a body.
-                ByteBuffer buffer = baseRequest.getResponse().getHttpOutput().getBuffer();
+                ByteBuffer buffer = baseRequest.getServletContextResponse().getHttpOutput().getByteBuffer();
                 ByteBufferOutputStream out = new ByteBufferOutputStream(buffer);
                 PrintWriter writer = new PrintWriter(new OutputStreamWriter(out, charset));
 
@@ -327,7 +338,7 @@ public class ErrorHandler implements Request.Processor
                     LOG.warn("Error page too large: {} {} {}", code, message, request, e);
                 else
                     LOG.warn("Error page too large: {} {} {}", code, message, request);
-                baseRequest.getResponse().resetContent();
+                baseRequest.getServletContextResponse().resetContent();
                 if (!_disableStacks)
                 {
                     LOG.info("Disabling showsStacks for {}", this);
@@ -339,7 +350,7 @@ public class ErrorHandler implements Request.Processor
         }
 
         // Do an asynchronous completion.
-        baseRequest.getServletChannel().sendResponseAndComplete();
+        baseRequest.getServletChannel().sendErrorResponseAndComplete();
     }
 
     protected void handleErrorPage(HttpServletRequest request, Writer writer, int code, String message) throws IOException
@@ -388,7 +399,7 @@ public class ErrorHandler implements Request.Processor
         if (showStacks && !_disableStacks)
             writeErrorPageStacks(request, writer);
 
-        ((ServletContextRequest.ServletApiRequest)request).getRequest().getServletChannel().getHttpConfiguration()
+        ((ServletApiRequest)request).getServletRequestInfo().getServletChannel().getHttpConfiguration()
             .writePoweredBy(writer, "<hr/>", "<hr/>\n");
     }
 
@@ -432,7 +443,7 @@ public class ErrorHandler implements Request.Processor
         writer.write("</td></tr>\n");
     }
 
-    private void writeErrorPlain(HttpServletRequest request, PrintWriter writer, int code, String message)
+    protected void writeErrorPlain(HttpServletRequest request, PrintWriter writer, int code, String message)
     {
         writer.write("HTTP ERROR ");
         writer.write(Integer.toString(code));
@@ -458,7 +469,7 @@ public class ErrorHandler implements Request.Processor
         }
     }
 
-    private void writeErrorJson(HttpServletRequest request, PrintWriter writer, int code, String message)
+    protected void writeErrorJson(HttpServletRequest request, PrintWriter writer, int code, String message)
     {
         Throwable cause = (Throwable)request.getAttribute(Dispatcher.ERROR_EXCEPTION);
         Object servlet = request.getAttribute(Dispatcher.ERROR_SERVLET_NAME);
@@ -479,9 +490,7 @@ public class ErrorHandler implements Request.Processor
         }
 
         writer.append(json.entrySet().stream()
-            .map(e -> QuotedStringTokenizer.quote(e.getKey()) +
-                ":" +
-                QuotedStringTokenizer.quote(StringUtil.sanitizeXmlString((e.getValue()))))
+            .map(e -> HttpField.NAME_VALUE_TOKENIZER.quote(e.getKey()) + ":" + HttpField.NAME_VALUE_TOKENIZER.quote(StringUtil.sanitizeXmlString((e.getValue()))))
             .collect(Collectors.joining(",\n", "{\n", "\n}")));
     }
 
@@ -579,6 +588,7 @@ public class ErrorHandler implements Request.Processor
     }
 
     /**
+     * Set if true, the error message appears in page title.
      * @param showMessageInTitle if true, the error message appears in page title
      */
     public void setShowMessageInTitle(boolean showMessageInTitle)
@@ -604,13 +614,13 @@ public class ErrorHandler implements Request.Processor
         String getErrorPage(HttpServletRequest request);
     }
 
-    public static Request.Processor getErrorProcessor(Server server, ContextHandler context)
+    public static Request.Handler getErrorHandler(Server server, ContextHandler context)
     {
-        Request.Processor errorProcessor = null;
+        Request.Handler errorHandler = null;
         if (context != null)
-            errorProcessor = context.getErrorProcessor();
-        if (errorProcessor == null && server != null)
-            errorProcessor = server.getErrorProcessor();
-        return errorProcessor;
+            errorHandler = context.getErrorHandler();
+        if (errorHandler == null && server != null)
+            errorHandler = server.getErrorHandler();
+        return errorHandler;
     }
 }

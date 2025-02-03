@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -95,7 +95,7 @@ public class CacheControlHeaderTest
         servletHolder.setServlet(new DefaultServlet());
         servletHolder.setInitParameter("cacheControl", "max-age=3600,public");
         Path resBase = MavenTestingUtils.getTargetPath("test-classes/contextResources");
-        servletHolder.setInitParameter("resourceBase", resBase.toFile().toURI().toASCIIString());
+        servletHolder.setInitParameter("baseResource", resBase.toFile().toURI().toASCIIString());
         context.addServlet(servletHolder, "/*");
         if (forceFilter)
         {

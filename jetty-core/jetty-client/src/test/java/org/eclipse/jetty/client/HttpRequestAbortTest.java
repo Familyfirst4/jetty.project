@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -22,9 +22,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import org.eclipse.jetty.client.api.Request;
-import org.eclipse.jetty.client.api.Result;
-import org.eclipse.jetty.client.util.ByteBufferRequestContent;
+import org.eclipse.jetty.client.transport.HttpDestination;
 import org.eclipse.jetty.io.Content;
 import org.eclipse.jetty.logging.StacklessLogging;
 import org.eclipse.jetty.server.Handler;
@@ -82,13 +80,16 @@ public class HttpRequestAbortTest extends AbstractHttpClientServerTest
         Request request = client.newRequest("localhost", connector.getLocalPort()).scheme(scenario.getScheme());
         ExecutionException x = assertThrows(ExecutionException.class, () ->
         {
-            request.listener(new Request.Listener.Adapter()
+            request.listener(new Request.Listener()
             {
                 @Override
                 public void onQueued(Request request)
                 {
-                    aborted.set(request.abort(cause));
-                    latch.countDown();
+                    request.abort(cause).thenAccept(b ->
+                    {
+                        aborted.set(b);
+                        latch.countDown();
+                    });
                 }
 
                 @Override
@@ -125,13 +126,16 @@ public class HttpRequestAbortTest extends AbstractHttpClientServerTest
         Request request = client.newRequest("localhost", connector.getLocalPort()).scheme(scenario.getScheme());
         ExecutionException x = assertThrows(ExecutionException.class, () ->
         {
-            request.listener(new Request.Listener.Adapter()
+            request.listener(new Request.Listener()
             {
                 @Override
                 public void onBegin(Request request)
                 {
-                    aborted.set(request.abort(cause));
-                    latch.countDown();
+                    request.abort(cause).thenAccept(b ->
+                    {
+                        aborted.set(b);
+                        latch.countDown();
+                    });
                 }
 
                 @Override
@@ -167,13 +171,16 @@ public class HttpRequestAbortTest extends AbstractHttpClientServerTest
         Request request = client.newRequest("localhost", connector.getLocalPort()).scheme(scenario.getScheme());
         ExecutionException x = assertThrows(ExecutionException.class, () ->
         {
-            request.listener(new Request.Listener.Adapter()
+            request.listener(new Request.Listener()
             {
                 @Override
                 public void onHeaders(Request request)
                 {
-                    aborted.set(request.abort(cause));
-                    latch.countDown();
+                    request.abort(cause).thenAccept(b ->
+                    {
+                        aborted.set(b);
+                        latch.countDown();
+                    });
                 }
 
                 @Override
@@ -214,8 +221,11 @@ public class HttpRequestAbortTest extends AbstractHttpClientServerTest
         {
             request.onRequestCommit(r ->
             {
-                aborted.set(r.abort(cause));
-                latch.countDown();
+                r.abort(cause).thenAccept(b ->
+                {
+                    aborted.set(b);
+                    latch.countDown();
+                });
             }).timeout(5, TimeUnit.SECONDS).send();
         });
         assertTrue(latch.await(5, TimeUnit.SECONDS));
@@ -253,8 +263,11 @@ public class HttpRequestAbortTest extends AbstractHttpClientServerTest
         {
             request.onRequestCommit(r ->
             {
-                aborted.set(r.abort(cause));
-                latch.countDown();
+                r.abort(cause).thenAccept(b ->
+                {
+                    aborted.set(b);
+                    latch.countDown();
+                });
             }).body(new ByteBufferRequestContent(ByteBuffer.wrap(new byte[]{0}), ByteBuffer.wrap(new byte[]{1}))
             {
                 @Override
@@ -309,8 +322,11 @@ public class HttpRequestAbortTest extends AbstractHttpClientServerTest
             {
                 request.onRequestContent((r, c) ->
                 {
-                    aborted.set(r.abort(cause));
-                    latch.countDown();
+                    r.abort(cause).thenAccept(b ->
+                    {
+                        aborted.set(b);
+                        latch.countDown();
+                    });
                 }).body(new ByteBufferRequestContent(ByteBuffer.wrap(new byte[]{0}), ByteBuffer.wrap(new byte[]{1}))
                 {
                     @Override
@@ -395,8 +411,11 @@ public class HttpRequestAbortTest extends AbstractHttpClientServerTest
             try
             {
                 TimeUnit.MILLISECONDS.sleep(delay);
-                aborted.set(request.abort(cause));
-                latch.countDown();
+                request.abort(cause).thenAccept(b ->
+                {
+                    aborted.set(b);
+                    latch.countDown();
+                });
             }
             catch (InterruptedException x)
             {
@@ -459,39 +478,29 @@ public class HttpRequestAbortTest extends AbstractHttpClientServerTest
     @ArgumentsSource(ScenarioProvider.class)
     public void testAbortConversation(Scenario scenario) throws Exception
     {
-        start(scenario, new Handler.Processor()
+        start(scenario, new Handler.Abstract()
         {
             @Override
-            public void process(org.eclipse.jetty.server.Request request, Response response, Callback callback)
+            public boolean handle(org.eclipse.jetty.server.Request request, Response response, Callback callback)
             {
-                if ("/done".equals(request.getPathInContext()))
+                if ("/done".equals(org.eclipse.jetty.server.Request.getPathInContext(request)))
                     callback.succeeded();
                 else
                     Response.sendRedirect(request, response, callback, "/done");
+                return true;
             }
         });
 
-        // The test may fail to abort the request in this way:
-        // T1 aborts the request, which aborts the sender, which shuts down the output;
-        // server reads -1 and closes; T2 reads -1 and the receiver fails the response with an EOFException;
-        // T1 tries to abort the receiver, but it's already failed.
-
-        final Throwable cause = new Exception();
-        final AtomicBoolean aborted = new AtomicBoolean();
-        final CountDownLatch latch = new CountDownLatch(1);
+        Throwable cause = new Exception();
         client.getProtocolHandlers().clear();
         client.getProtocolHandlers().put(new RedirectProtocolHandler(client)
         {
             @Override
             public void onComplete(Result result)
             {
-                // Abort the request after the 3xx response but before issuing the next request
-                if (!result.isFailed())
-                {
-                    aborted.set(result.getRequest().abort(cause));
-                    latch.countDown();
-                }
-                super.onComplete(result);
+                // Fake the fact that the redirect failed.
+                Result newResult = new Result(result, cause);
+                super.onComplete(newResult);
             }
         });
 
@@ -503,8 +512,6 @@ public class HttpRequestAbortTest extends AbstractHttpClientServerTest
                     .timeout(5, TimeUnit.SECONDS)
                     .send();
         });
-        assertTrue(latch.await(5, TimeUnit.SECONDS));
-        if (aborted.get())
-            assertSame(cause, e.getCause());
+        assertSame(cause, e.getCause());
     }
 }

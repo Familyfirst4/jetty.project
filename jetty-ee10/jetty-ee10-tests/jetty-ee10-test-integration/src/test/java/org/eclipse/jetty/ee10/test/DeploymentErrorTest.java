@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,7 +13,6 @@
 
 package org.eclipse.jetty.ee10.test;
 
-import java.io.File;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Path;
@@ -25,12 +24,13 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
+import org.eclipse.jetty.client.ContentResponse;
 import org.eclipse.jetty.client.HttpClient;
-import org.eclipse.jetty.client.api.ContentResponse;
 import org.eclipse.jetty.deploy.App;
 import org.eclipse.jetty.deploy.AppLifeCycle;
 import org.eclipse.jetty.deploy.DeploymentManager;
 import org.eclipse.jetty.deploy.graph.Node;
+import org.eclipse.jetty.deploy.providers.ContextProvider;
 import org.eclipse.jetty.ee10.webapp.AbstractConfiguration;
 import org.eclipse.jetty.ee10.webapp.Configuration;
 import org.eclipse.jetty.ee10.webapp.Configurations;
@@ -51,7 +51,9 @@ import org.eclipse.jetty.toolchain.test.IO;
 import org.eclipse.jetty.toolchain.test.MavenTestingUtils;
 import org.eclipse.jetty.toolchain.test.jupiter.WorkDir;
 import org.eclipse.jetty.toolchain.test.jupiter.WorkDirExtension;
-import org.eclipse.jetty.util.resource.PathResource;
+import org.eclipse.jetty.util.component.Environment;
+import org.eclipse.jetty.util.component.LifeCycle;
+import org.eclipse.jetty.util.resource.ResourceFactory;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -70,7 +72,6 @@ public class DeploymentErrorTest
     private StacklessLogging stacklessLogging;
     private Server server;
     private DeploymentManager deploymentManager;
-    private ContextHandlerCollection contexts;
 
     public Path startServer(Consumer<Path> docrootSetupConsumer) throws Exception
     {
@@ -81,8 +82,14 @@ public class DeploymentErrorTest
         connector.setPort(0);
         server.addConnector(connector);
 
+        ResourceFactory resourceFactory = ResourceFactory.of(server);
+
         // Empty contexts collections
-        contexts = new ContextHandlerCollection();
+        ContextHandlerCollection contexts = new ContextHandlerCollection();
+
+        //Environment
+        Environment ee10 = Environment.ensure("ee10");
+        ee10.setAttribute("contextHandlerClass", "org.eclipse.jetty.ee10.webapp.WebAppContext");
 
         // Deployment Manager
         deploymentManager = new DeploymentManager();
@@ -99,23 +106,25 @@ public class DeploymentErrorTest
         }
 
         System.setProperty("test.docroots", docroots.toAbsolutePath().toString());
-        //TODO fix
-        /*        WebAppProvider appProvider = new WebAppProvider();
-        appProvider.setMonitoredDirResource(new PathResource(docroots));
+        ContextProvider appProvider = new ContextProvider();
+        appProvider.setEnvironmentName("ee10");
+
         appProvider.setScanInterval(1);
-        deploymentManager.addAppProvider(appProvider);*/
+        appProvider.setMonitoredDirResource(resourceFactory.newResource(docroots));
+        deploymentManager.addAppProvider(appProvider);
+
         server.addBean(deploymentManager);
 
         // Server handlers
-        server.setHandler(new Handler.Collection(contexts, new DefaultHandler()));
+        server.setHandler(new Handler.Sequence(contexts, new DefaultHandler()));
 
         // Setup Configurations
         Configurations.setServerDefault(server)
-            .add("org.eclipse.jetty.ee10.plus.webapp.EnvConfiguration",
-                "org.eclipse.jetty.ee10.plus.webapp.PlusConfiguration",
-                "org.eclipse.jetty.ee10.annotations.AnnotationConfiguration",
-                TrackedConfiguration.class.getName()
-            );
+                .add("org.eclipse.jetty.ee10.plus.webapp.EnvConfiguration",
+                        "org.eclipse.jetty.ee10.plus.webapp.PlusConfiguration",
+                        "org.eclipse.jetty.ee10.annotations.AnnotationConfiguration",
+                        TrackedConfiguration.class.getName()
+                );
 
         server.start();
         return docroots;
@@ -126,17 +135,17 @@ public class DeploymentErrorTest
     {
         if (stacklessLogging != null)
             stacklessLogging.close();
-        server.stop();
+        LifeCycle.stop(server);
     }
 
     private void copyBadApp(String sourceXml, Path docroots)
     {
         try
         {
-            File deployErrorSrc = MavenTestingUtils.getTestResourceDir("docroots/deployerror");
-            IO.copy(new File(deployErrorSrc, sourceXml), docroots.resolve("badapp.xml").toFile());
-            File badappDir = new File(deployErrorSrc, "badapp");
-            File badappDest = docroots.resolve("badapp").toFile();
+            Path deployErrorSrc = MavenTestingUtils.getTestResourcePathDir("docroots/deployerror");
+            IO.copy(deployErrorSrc.resolve(sourceXml), docroots.resolve("badapp.xml"));
+            Path badappDir = deployErrorSrc.resolve("badapp");
+            Path badappDest = docroots.resolve("badapp");
             FS.ensureDirExists(badappDest);
             IO.copyDir(badappDir, badappDest);
         }
@@ -154,10 +163,7 @@ public class DeploymentErrorTest
     @Test
     public void testInitialBadAppUnavailableTrue()
     {
-        assertThrows(NoClassDefFoundError.class, () ->
-        {
-            startServer(docroots -> copyBadApp("badapp.xml", docroots));
-        });
+        assertThrows(NoClassDefFoundError.class, () -> startServer(docroots -> copyBadApp("badapp.xml", docroots)));
 
         // The above should have prevented the server from starting.
         assertThat("server.isRunning", server.isRunning(), is(false));
@@ -173,8 +179,7 @@ public class DeploymentErrorTest
     {
         startServer(docroots -> copyBadApp("badapp-unavailable-false.xml", docroots));
 
-        List<App> apps = new ArrayList<>();
-        apps.addAll(deploymentManager.getApps());
+        List<App> apps = new ArrayList<>(deploymentManager.getApps());
         assertThat("Apps tracked", apps.size(), is(1));
         String contextPath = "/badapp-uaf";
         App app = findApp(contextPath, apps);
@@ -220,8 +225,7 @@ public class DeploymentErrorTest
         // Wait for deployment manager to do its thing
         assertThat("AppLifeCycle.FAILED event occurred", startTracking.failedLatch.await(3, TimeUnit.SECONDS), is(true));
 
-        List<App> apps = new ArrayList<>();
-        apps.addAll(deploymentManager.getApps());
+        List<App> apps = new ArrayList<>(deploymentManager.getApps());
         assertThat("Apps tracked", apps.size(), is(1));
         App app = findApp(contextPath, apps);
         ContextHandler context = app.getContextHandler();
@@ -266,8 +270,7 @@ public class DeploymentErrorTest
         // Wait for deployment manager to do its thing
         startTracking.startedLatch.await(3, TimeUnit.SECONDS);
 
-        List<App> apps = new ArrayList<>();
-        apps.addAll(deploymentManager.getApps());
+        List<App> apps = new ArrayList<>(deploymentManager.getApps());
         assertThat("Apps tracked", apps.size(), is(1));
         App app = findApp(contextPath, apps);
         ContextHandler context = app.getContextHandler();
@@ -324,7 +327,7 @@ public class DeploymentErrorTest
 
         public TrackedConfiguration()
         {
-            addDependents(WebInfConfiguration.class);
+            super(new Builder().addDependents(WebInfConfiguration.class));
         }
 
         private void incrementCount(WebAppContext context, Map<String, Integer> contextCounts)
@@ -339,7 +342,7 @@ public class DeploymentErrorTest
         }
 
         @Override
-        public void preConfigure(WebAppContext context) throws Exception
+        public void preConfigure(WebAppContext context)
         {
             incrementCount(context, preConfigureCounts);
         }
@@ -351,7 +354,7 @@ public class DeploymentErrorTest
         }
 
         @Override
-        public void postConfigure(WebAppContext context) throws Exception
+        public void postConfigure(WebAppContext context)
         {
             incrementCount(context, postConfigureCounts);
         }

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,6 +13,7 @@
 
 package org.eclipse.jetty.util;
 
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 
@@ -120,7 +121,15 @@ public interface Callback extends Invocable
             @Override
             public void failed(Throwable x)
             {
-                completable.completeExceptionally(x);
+                try
+                {
+                    completable.completeExceptionally(x);
+                }
+                catch (Throwable t)
+                {
+                    ExceptionUtil.addSuppressedIfNotAssociated(t, x);
+                    throw t;
+                }
             }
 
             @Override
@@ -164,13 +173,27 @@ public interface Callback extends Invocable
             @Override
             public void failed(Throwable x)
             {
-                failure.accept(x);
+                try
+                {
+                    failure.accept(x);
+                }
+                catch (Throwable t)
+                {
+                    ExceptionUtil.addSuppressedIfNotAssociated(t, x);
+                    throw t;
+                }
             }
 
             @Override
             public InvocationType getInvocationType()
             {
                 return invocationType;
+            }
+
+            @Override
+            public String toString()
+            {
+                return "Callback@%x{%s, %s,%s}".formatted(hashCode(), invocationType, success, failure);
             }
         };
     }
@@ -183,13 +206,7 @@ public interface Callback extends Invocable
      */
     static Callback from(Runnable completed)
     {
-        return new Completing()
-        {
-            public void completed()
-            {
-                completed.run();
-            }
-        };
+        return from(Invocable.getInvocationType(completed), completed);
     }
 
     /**
@@ -202,12 +219,24 @@ public interface Callback extends Invocable
      */
     static Callback from(InvocationType invocationType, Runnable completed)
     {
-        return new Completing(invocationType)
+        return new Completing()
         {
             @Override
             public void completed()
             {
                 completed.run();
+            }
+
+            @Override
+            public InvocationType getInvocationType()
+            {
+                return invocationType;
+            }
+
+            @Override
+            public String toString()
+            {
+                return "Callback.Completing@%x{%s,%s}".formatted(hashCode(), invocationType, completed);
             }
         };
     }
@@ -227,6 +256,39 @@ public interface Callback extends Invocable
             public void completed()
             {
                 completed.run();
+            }
+        };
+    }
+
+    /**
+     * Creates a nested callback that runs completed after
+     * completing the nested callback.
+     *
+     * @param callback The nested callback
+     * @param completed The completion to run after the nested callback is completed
+     * @return a new callback.
+     */
+    static Callback from(Callback callback, Consumer<Throwable> completed)
+    {
+        return new Callback()
+        {
+            @Override
+            public void succeeded()
+            {
+                try
+                {
+                    callback.succeeded();
+                }
+                finally
+                {
+                    completed.accept(null);
+                }
+            }
+
+            @Override
+            public void failed(Throwable x)
+            {
+                Callback.failed(callback::failed, completed, x);
             }
         };
     }
@@ -254,22 +316,19 @@ public interface Callback extends Invocable
                 }
                 catch (Throwable t)
                 {
-                    callback.failed(t);
+                    Callback.failed(callback, t);
                 }
+            }
+
+            private void completed(Throwable ignored)
+            {
+                completed.run();
             }
 
             @Override
             public void failed(Throwable x)
             {
-                try
-                {
-                    completed.run();
-                }
-                catch (Throwable t)
-                {
-                    x.addSuppressed(t);
-                }
-                callback.failed(x);
+                Callback.failed(this::completed, callback::failed, x);
             }
         };
     }
@@ -295,8 +354,8 @@ public interface Callback extends Invocable
             @Override
             public void failed(Throwable x)
             {
-                cause.addSuppressed(x);
-                callback.failed(cause);
+                ExceptionUtil.addSuppressedIfNotAssociated(cause, x);
+                Callback.failed(callback, cause);
             }
         };
     }
@@ -309,61 +368,34 @@ public interface Callback extends Invocable
      */
     static Callback from(Callback callback1, Callback callback2)
     {
-        return new Callback()
-        {
-            @Override
-            public void succeeded()
-            {
-                callback1.succeeded();
-                callback2.succeeded();
-            }
-
-            @Override
-            public void failed(Throwable x)
-            {
-                callback1.failed(x);
-                callback2.failed(x);
-            }
-        };
+        return combine(callback1, callback2);
     }
 
     /**
      * <p>A Callback implementation that calls the {@link #completed()} method when it either succeeds or fails.</p>
      */
-    class Completing implements Callback
+    interface Completing extends Callback
     {
-        private final InvocationType invocationType;
-
-        public Completing()
-        {
-            this(InvocationType.BLOCKING);
-        }
-
-        public Completing(InvocationType invocationType)
-        {
-            this.invocationType = invocationType;
-        }
+        void completed();
 
         @Override
-        public void succeeded()
+        default void succeeded()
         {
             completed();
         }
 
         @Override
-        public void failed(Throwable x)
+        default void failed(Throwable x)
         {
-            completed();
-        }
-
-        @Override
-        public InvocationType getInvocationType()
-        {
-            return invocationType;
-        }
-
-        public void completed()
-        {
+            try
+            {
+                completed();
+            }
+            catch (Throwable t)
+            {
+                ExceptionUtil.addSuppressedIfNotAssociated(t, x);
+                throw t;
+            }
         }
     }
 
@@ -371,24 +403,28 @@ public interface Callback extends Invocable
      * Nested Completing Callback that completes after
      * completing the nested callback
      */
-    class Nested extends Completing
+    class Nested implements Completing
     {
         private final Callback callback;
 
         public Nested(Callback callback)
         {
-            super(Invocable.getInvocationType(callback));
-            this.callback = callback;
-        }
-
-        public Nested(Nested nested)
-        {
-            this(nested.callback);
+            this.callback = Objects.requireNonNull(callback);
         }
 
         public Callback getCallback()
         {
             return callback;
+        }
+
+        @Override
+        public void completed()
+        {
+        }
+
+        private void completed(Throwable ignored)
+        {
+            completed();
         }
 
         @Override
@@ -407,20 +443,19 @@ public interface Callback extends Invocable
         @Override
         public void failed(Throwable x)
         {
-            try
-            {
-                callback.failed(x);
-            }
-            finally
-            {
-                completed();
-            }
+            Callback.failed(callback::failed, this::completed, x);
         }
 
         @Override
         public InvocationType getInvocationType()
         {
             return callback.getInvocationType();
+        }
+
+        @Override
+        public String toString()
+        {
+            return "%s@%x:%s".formatted(getClass().getSimpleName(), hashCode(), callback);
         }
     }
 
@@ -449,19 +484,7 @@ public interface Callback extends Invocable
             @Override
             public void failed(Throwable x)
             {
-                try
-                {
-                    cb1.failed(x);
-                }
-                catch (Throwable t)
-                {
-                    if (x != t)
-                        x.addSuppressed(t);
-                }
-                finally
-                {
-                    cb2.failed(x);
-                }
+                Callback.failed(cb1::failed, cb2::failed, x);
             }
 
             @Override
@@ -473,10 +496,24 @@ public interface Callback extends Invocable
     }
 
     /**
-     * <p>A CompletableFuture that is also a Callback.</p>
+     * <p>A {@link CompletableFuture} that is also a {@link Callback}.</p>
      */
     class Completable extends CompletableFuture<Void> implements Callback
     {
+        /**
+         * <p>Creates a new {@code Completable} to be consumed by the given
+         * {@code consumer}, then returns the newly created {@code Completable}.</p>
+         *
+         * @param consumer the code that consumes the newly created {@code Completable}
+         * @return the newly created {@code Completable}
+         */
+        public static Completable with(Consumer<Completable> consumer)
+        {
+            Completable completable = new Completable();
+            consumer.accept(completable);
+            return completable;
+        }
+
         /**
          * Creates a completable future given a callback.
          *
@@ -497,8 +534,7 @@ public interface Callback extends Invocable
                 @Override
                 public void failed(Throwable x)
                 {
-                    callback.failed(x);
-                    super.failed(x);
+                    Callback.failed(callback::failed, super::failed, x);
                 }
             };
         }
@@ -531,6 +567,89 @@ public interface Callback extends Invocable
         public InvocationType getInvocationType()
         {
             return invocation;
+        }
+
+        /**
+         * <p>Returns a new {@link Completable} that, when this {@link Completable}
+         * succeeds, is passed to the given consumer and then returned.</p>
+         * <p>If this {@link Completable} fails, the new {@link Completable} is
+         * also failed, and the consumer is not invoked.</p>
+         *
+         * @param consumer the consumer that receives the {@link Completable}
+         * @return a new {@link Completable} passed to the consumer
+         * @see #with(Consumer)
+         */
+        public Completable compose(Consumer<Completable> consumer)
+        {
+            Completable completable = new Completable();
+            whenComplete((r, x) ->
+            {
+                if (x == null)
+                    consumer.accept(completable);
+                else
+                    completable.failed(x);
+            });
+            return completable;
+        }
+    }
+
+    /**
+     * Invoke a callback failure, handling any {@link Throwable} thrown
+     * by adding the passed {@code failure} as a suppressed with
+     * {@link ExceptionUtil#addSuppressedIfNotAssociated(Throwable, Throwable)}.
+     * @param callback The callback to fail
+     * @param failure The failure
+     * @throws RuntimeException If thrown, will have the {@code failure} added as a suppressed.
+     */
+    private static void failed(Callback callback, Throwable failure)
+    {
+        try
+        {
+            callback.failed(failure);
+        }
+        catch (Throwable t)
+        {
+            ExceptionUtil.addSuppressedIfNotAssociated(t, failure);
+            throw t;
+        }
+    }
+
+    /**
+     * Invoke two consumers of a failure, handling any {@link Throwable} thrown
+     * by adding the passed {@code failure} as a suppressed with
+     * {@link ExceptionUtil#addSuppressedIfNotAssociated(Throwable, Throwable)}.
+     * @param first The first consumer of a failure
+     * @param second The first consumer of a failure
+     * @param failure The failure
+     * @throws RuntimeException If thrown, will have the {@code failure} added as a suppressed.
+     */
+    private static void failed(Consumer<Throwable> first, Consumer<Throwable> second,  Throwable failure)
+    {
+        // This is an improved version of:
+        // try
+        // {
+        //     first.accept(failure);
+        // }
+        // finally
+        // {
+        //     second.accept(failure);
+        // }
+        try
+        {
+            first.accept(failure);
+        }
+        catch (Throwable t)
+        {
+            ExceptionUtil.addSuppressedIfNotAssociated(failure, t);
+        }
+        try
+        {
+            second.accept(failure);
+        }
+        catch (Throwable t)
+        {
+            ExceptionUtil.addSuppressedIfNotAssociated(t, failure);
+            throw t;
         }
     }
 }

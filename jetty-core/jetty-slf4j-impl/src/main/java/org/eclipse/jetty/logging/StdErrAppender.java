@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,7 +14,10 @@
 package org.eclipse.jetty.logging;
 
 import java.io.PrintStream;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.Objects;
+import java.util.Set;
 import java.util.TimeZone;
 
 import org.slf4j.event.Level;
@@ -175,7 +178,7 @@ public class StdErrAppender implements JettyAppender
             }
             else
             {
-                appendCause(builder, cause, "");
+                appendCause(builder, cause, "", Collections.newSetFromMap(new IdentityHashMap<>()));
             }
         }
     }
@@ -199,9 +202,18 @@ public class StdErrAppender implements JettyAppender
         }
     }
 
-    private void appendCause(StringBuilder builder, Throwable cause, String indent)
+    private void appendCause(StringBuilder builder, Throwable cause, String indent, Set<Throwable> visited)
     {
         builder.append(EOL).append(indent);
+        if (visited.contains(cause))
+        {
+            builder.append("[CIRCULAR REFERENCE: ");
+            appendEscaped(builder, cause.toString());
+            builder.append("]");
+            return;
+        }
+        visited.add(cause);
+
         appendEscaped(builder, cause.toString());
         StackTraceElement[] elements = cause.getStackTrace();
         for (int i = 0; elements != null && i < elements.length; i++)
@@ -213,14 +225,14 @@ public class StdErrAppender implements JettyAppender
         for (Throwable suppressed : cause.getSuppressed())
         {
             builder.append(EOL).append(indent).append("Suppressed: ");
-            appendCause(builder, suppressed, "\t|" + indent);
+            appendCause(builder, suppressed, "\t|" + indent, visited);
         }
 
         Throwable by = cause.getCause();
         if (by != null && by != cause)
         {
             builder.append(EOL).append(indent).append("Caused by: ");
-            appendCause(builder, by, indent);
+            appendCause(builder, by, indent, visited);
         }
     }
 

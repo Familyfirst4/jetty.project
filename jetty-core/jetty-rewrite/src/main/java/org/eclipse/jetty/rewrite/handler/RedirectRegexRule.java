@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -18,9 +18,10 @@ import java.util.regex.Matcher;
 
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpStatus;
-import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.util.Callback;
+import org.eclipse.jetty.util.StringUtil;
+import org.eclipse.jetty.util.URIUtil;
 import org.eclipse.jetty.util.annotation.Name;
 
 /**
@@ -33,6 +34,11 @@ public class RedirectRegexRule extends RegexRule
 {
     protected String _location;
     private int _statusCode = HttpStatus.FOUND_302;
+    private boolean _addQueries = false;
+
+    public RedirectRegexRule()
+    {
+    }
 
     public RedirectRegexRule(@Name("regex") String regex, @Name("location") String location)
     {
@@ -52,11 +58,37 @@ public class RedirectRegexRule extends RegexRule
     }
 
     /**
+     * Set the location to redirect.
      * @param location the location to redirect.
      */
     public void setLocation(String location)
     {
         _location = location;
+    }
+
+    /**
+     * <p>Is the input URI query added with replacement URI query</p>
+     *
+     * @return true to add input query with replacement query.
+     */
+    public boolean isAddQueries()
+    {
+        return _addQueries;
+    }
+
+    /**
+     * <p>Set if input query should be preserved, and added together with replacement query</p>
+     *
+     * <p>
+     *     This is especially useful when used in combination with a disabled {@link #setMatchQuery(boolean)}
+     * </p>
+     *
+     * @param flag true to have input query added with replacement query, false (default) to have query
+     *    from input or output just be treated as a string, and not merged.
+     */
+    public void setAddQueries(boolean flag)
+    {
+        _addQueries = flag;
     }
 
     public int getStatusCode()
@@ -72,17 +104,38 @@ public class RedirectRegexRule extends RegexRule
     }
 
     @Override
-    protected Request.WrapperProcessor apply(Request.WrapperProcessor input, Matcher matcher) throws IOException
+    protected Handler apply(Handler input, Matcher matcher) throws IOException
     {
-        return new Request.WrapperProcessor(input)
+        return new Handler(input)
         {
             @Override
-            public void process(Request ignored, Response response, Callback callback)
+            protected boolean handle(Response response, Callback callback)
             {
                 String target = matcher.replaceAll(getLocation());
+
+                if (isAddQueries() && StringUtil.isNotBlank(input.getHttpURI().getQuery()))
+                {
+                    String inputQuery = input.getHttpURI().getQuery();
+                    String targetPath = null;
+                    String targetQuery = null;
+                    int targetQueryIdx = target.indexOf("?");
+                    if (targetQueryIdx != (-1))
+                    {
+                        targetPath = target.substring(0, targetQueryIdx);
+                        targetQuery = target.substring(targetQueryIdx + 1);
+                    }
+                    else
+                    {
+                        targetPath = target;
+                    }
+                    String resultingQuery = URIUtil.addQueries(inputQuery, targetQuery);
+                    target = targetPath + "?" + resultingQuery;
+                }
+
                 response.setStatus(_statusCode);
-                response.getHeaders().put(HttpHeader.LOCATION, Request.toRedirectURI(this, target));
+                response.getHeaders().put(HttpHeader.LOCATION, Response.toRedirectURI(this, target));
                 callback.succeeded();
+                return true;
             }
         };
     }

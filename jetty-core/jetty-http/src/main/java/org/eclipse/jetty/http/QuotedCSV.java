@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -18,8 +18,6 @@ import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 
-import org.eclipse.jetty.util.QuotedStringTokenizer;
-
 /**
  * Implements a quoted comma separated list of values
  * in accordance with RFC7230.
@@ -30,11 +28,6 @@ import org.eclipse.jetty.util.QuotedStringTokenizer;
  */
 public class QuotedCSV extends QuotedCSVParser implements Iterable<String>
 {
-    /**
-     * ABNF from RFC 2616, RFC 822, and RFC 6455 specified characters requiring quoting.
-     */
-    public static final String ABNF_REQUIRED_QUOTING = "\"'\\\n\r\t\f\b%+ ;=,";
-
     /**
      * Join a list into Quoted CSV string
      *
@@ -104,7 +97,7 @@ public class QuotedCSV extends QuotedCSVParser implements Iterable<String>
                 builder.append(", ");
             else
                 needsDelim = true;
-            QuotedStringTokenizer.quoteIfNeeded(builder, value, ABNF_REQUIRED_QUOTING);
+            LIST_TOKENIZER.quoteIfNeeded(builder, value);
         }
     }
 
@@ -125,7 +118,7 @@ public class QuotedCSV extends QuotedCSVParser implements Iterable<String>
     }
 
     @Override
-    protected void parsedValueAndParams(StringBuffer buffer)
+    protected void parsedValueAndParams(StringBuilder buffer)
     {
         _values.add(buffer.toString());
     }
@@ -149,6 +142,18 @@ public class QuotedCSV extends QuotedCSVParser implements Iterable<String>
     public Iterator<String> iterator()
     {
         return _values.iterator();
+    }
+
+    public String asString()
+    {
+        if (_values.isEmpty())
+            return null;
+        if (_values.size() == 1)
+            return _values.get(0);
+
+        StringBuilder builder = new StringBuilder();
+        join(builder, _values);
+        return builder.toString();
     }
 
     @Override

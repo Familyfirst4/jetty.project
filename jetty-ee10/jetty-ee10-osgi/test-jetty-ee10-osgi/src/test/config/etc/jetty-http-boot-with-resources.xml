@@ -1,4 +1,4 @@
-<?xml version="1.0"?><!DOCTYPE Configure PUBLIC "-//Jetty//Configure//EN" "http://www.eclipse.org/jetty/configure_9_3.dtd">
+<?xml version="1.0"?><!DOCTYPE Configure PUBLIC "-//Jetty//Configure//EN" "http://jetty.org/configure_9_3.dtd">
 
 <!-- ============================================================= -->
 <!-- Configure the Jetty Server instance with an ID "Server"       -->
@@ -32,7 +32,7 @@
         </Arg>
         <Call name="addEventListener">
           <Arg>
-            <New class="org.eclipse.jetty.ee10.osgi.boot.utils.ServerConnectorListener">
+            <New class="org.eclipse.jetty.osgi.util.ServerConnectorListener">
               <Set name="sysPropertyName">boot.resources.port</Set>
             </New>
           </Arg>

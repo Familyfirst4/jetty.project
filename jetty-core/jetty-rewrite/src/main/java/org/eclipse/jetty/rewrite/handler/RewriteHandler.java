@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -17,6 +17,8 @@ import java.util.List;
 
 import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.Request;
+import org.eclipse.jetty.server.Response;
+import org.eclipse.jetty.util.Callback;
 
 /**
  * <p>{@code RewriteHandler} rewrites incoming requests through a set of {@link Rule}s.</p>
@@ -41,16 +43,28 @@ public class RewriteHandler extends Handler.Wrapper
 
     public RewriteHandler()
     {
-        this(new RuleContainer());
+        this(null, new RuleContainer());
     }
 
     public RewriteHandler(RuleContainer rules)
     {
+        this(null, rules);
+    }
+
+    public RewriteHandler(Handler handler)
+    {
+        this(handler, new RuleContainer());
+    }
+
+    public RewriteHandler(Handler handler, RuleContainer rules)
+    {
+        super(handler);
         _rules = rules;
-        addBean(_rules);
+        installBean(_rules);
     }
 
     /**
+     * Get the {@link RuleContainer} used by this handler.
      * @return the {@link RuleContainer} used by this handler
      */
     public RuleContainer getRuleContainer()
@@ -87,6 +101,14 @@ public class RewriteHandler extends Handler.Wrapper
     }
 
     /**
+     * <p>Removes all the rules.</p>
+     */
+    public void clear()
+    {
+        _rules.clear();
+    }
+
+    /**
      * @see RuleContainer#getOriginalPathAttribute()
      */
     public String getOriginalPathAttribute()
@@ -103,19 +125,38 @@ public class RewriteHandler extends Handler.Wrapper
     }
 
     @Override
-    public Request.Processor handle(Request request) throws Exception
+    public boolean handle(Request request, Response response, Callback callback) throws Exception
     {
         if (!isStarted())
-            return null;
+            return false;
 
-        Request.WrapperProcessor input = new Request.WrapperProcessor(request);
-        Request.WrapperProcessor output = _rules.matchAndApply(input);
+        Rule.Handler input = new Rule.Handler(request);
+        Rule.Handler result = getRuleContainer().matchAndApply(input);
 
         // No rule matched, call super with the original request.
-        if (output == null)
-            return super.handle(request);
+        if (result == null)
+            return super.handle(request, response, callback);
 
-        // At least one rule matched, call super with the result of the rule applications.
-        return output.wrapProcessor(super.handle(output));
+        // At least one rule matched, link the last Rule.Handler
+        // to invoke the child Handler of this RewriteHandler.
+        new LastRuleHandler(result, getHandler());
+        return input.handle(response, callback);
+    }
+
+    private static class LastRuleHandler extends Rule.Handler
+    {
+        private final Handler _handler;
+
+        private LastRuleHandler(Rule.Handler ruleHandler, Handler handler)
+        {
+            super(ruleHandler);
+            _handler = handler;
+        }
+
+        @Override
+        protected boolean handle(Response response, Callback callback) throws Exception
+        {
+            return _handler.handle(getWrapped(), response, callback);
+        }
     }
 }

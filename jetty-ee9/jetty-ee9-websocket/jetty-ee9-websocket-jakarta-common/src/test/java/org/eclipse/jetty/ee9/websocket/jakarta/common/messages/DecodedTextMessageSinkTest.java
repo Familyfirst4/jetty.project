@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -51,7 +51,6 @@ public class DecodedTextMessageSinkTest extends AbstractMessageSinkTest
 
         FutureCallback finCallback = new FutureCallback();
         sink.accept(new Frame(OpCode.TEXT).setPayload("2018.02.13").setFin(true), finCallback);
-        coreSession.waitForDemand(1, TimeUnit.SECONDS);
 
         Date decoded = copyFuture.get(1, TimeUnit.SECONDS);
         assertThat("Decoded.contents", format(decoded, "MM-dd-yyyy"), is("02-13-2018"));
@@ -72,11 +71,8 @@ public class DecodedTextMessageSinkTest extends AbstractMessageSinkTest
         FutureCallback finCallback = new FutureCallback();
 
         sink.accept(new Frame(OpCode.TEXT).setPayload("2023").setFin(false), callback1);
-        coreSession.waitForDemand(1, TimeUnit.SECONDS);
         sink.accept(new Frame(OpCode.CONTINUATION).setPayload(".08").setFin(false), callback2);
-        coreSession.waitForDemand(1, TimeUnit.SECONDS);
         sink.accept(new Frame(OpCode.CONTINUATION).setPayload(".22").setFin(true), finCallback);
-        coreSession.waitForDemand(1, TimeUnit.SECONDS);
 
         Date decoded = copyFuture.get(1, TimeUnit.SECONDS);
         assertThat("Decoded.contents", format(decoded, "MM-dd-yyyy"), is("08-22-2023"));

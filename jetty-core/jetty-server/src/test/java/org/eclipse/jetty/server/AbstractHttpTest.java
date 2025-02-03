@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -21,6 +21,7 @@ import java.net.URISyntaxException;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 import org.eclipse.jetty.http.HttpTester;
 import org.eclipse.jetty.http.HttpVersion;
@@ -28,11 +29,15 @@ import org.eclipse.jetty.io.ArrayByteBufferPool;
 import org.eclipse.jetty.logging.StacklessLogging;
 import org.eclipse.jetty.server.internal.HttpChannelState;
 import org.eclipse.jetty.util.Callback;
+import org.eclipse.jetty.util.IO;
+import org.eclipse.jetty.util.component.LifeCycle;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 
+import static org.awaitility.Awaitility.await;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 public abstract class AbstractHttpTest
 {
@@ -41,12 +46,14 @@ public abstract class AbstractHttpTest
     protected static Server server;
     protected static ServerConnector connector;
     private StacklessLogging stacklessChannelLogging;
+    private ArrayByteBufferPool.Tracking bufferPool;
 
     @BeforeEach
     public void setUp() throws Exception
     {
         server = new Server();
-        connector = new ServerConnector(server, null, null, new ArrayByteBufferPool(64, 2048, 64 * 1024), 1, 1, new HttpConnectionFactory());
+        bufferPool = new ArrayByteBufferPool.Tracking(64, 2048, 64 * 1024);
+        connector = new ServerConnector(server, null, null, bufferPool, 1, 1, new HttpConnectionFactory());
         connector.setIdleTimeout(100000);
 
         server.addConnector(connector);
@@ -56,8 +63,15 @@ public abstract class AbstractHttpTest
     @AfterEach
     public void tearDown() throws Exception
     {
-        server.stop();
-        stacklessChannelLogging.close();
+        try
+        {
+            await().atMost(5, TimeUnit.SECONDS).untilAsserted(() -> assertThat("Server leaks: " + bufferPool.dumpLeaks(), bufferPool.getLeaks().size(), is(0)));
+        }
+        finally
+        {
+            LifeCycle.stop(server);
+            IO.close(stacklessChannelLogging);
+        }
     }
 
     protected HttpTester.Response executeRequest(HttpVersion httpVersion) throws URISyntaxException, IOException
@@ -73,9 +87,9 @@ public abstract class AbstractHttpTest
                 writer.write("\r\n");
                 writer.flush();
 
-                HttpTester.Response response = new HttpTester.Response();
                 HttpTester.Input input = HttpTester.from(socket.getInputStream());
-                HttpTester.parseResponse(input, response);
+                HttpTester.Response response = HttpTester.parseResponse(input);
+                assertNotNull(response);
 
                 if (httpVersion.is("HTTP/1.1") &&
                     response.isComplete() &&
@@ -97,7 +111,7 @@ public abstract class AbstractHttpTest
         }
     }
 
-    protected class ThrowExceptionOnDemandHandler extends Handler.Processor
+    protected class ThrowExceptionOnDemandHandler extends Handler.Abstract.NonBlocking
     {
         private final boolean throwException;
         private volatile Throwable failure;
@@ -108,11 +122,12 @@ public abstract class AbstractHttpTest
         }
 
         @Override
-        public void process(Request request, Response response, Callback callback) throws Exception
+        public boolean handle(Request request, Response response, Callback callback) throws Exception
         {
             if (throwException)
                 throw new TestCommitException();
             callback.succeeded();
+            return true;
         }
 
         protected void markFailed(Throwable x)

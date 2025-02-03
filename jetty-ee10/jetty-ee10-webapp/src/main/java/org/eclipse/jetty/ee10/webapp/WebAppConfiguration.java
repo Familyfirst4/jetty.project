@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -23,13 +23,14 @@ public class WebAppConfiguration extends AbstractConfiguration
 {
     public WebAppConfiguration()
     {
-        addDependencies(WebXmlConfiguration.class, MetaInfConfiguration.class, WebInfConfiguration.class);
-        addDependents(JettyWebXmlConfiguration.class);
-        protectAndExpose(
-            "org.eclipse.jetty.ee10.servlet.StatisticsServlet",
-            "org.eclipse.jetty.ee10.servlet.DefaultServlet",
-            "org.eclipse.jetty.ee10.servlet.NoJspServlet"
-        );
-        expose("org.eclipse.jetty.ee10.servlet.listener.");
+        super(new Builder()
+            .addDependencies(WebXmlConfiguration.class, MetaInfConfiguration.class, WebInfConfiguration.class)
+            .addDependents(JettyWebXmlConfiguration.class)
+            .protectAndExpose(
+                "org.eclipse.jetty.ee10.servlet.StatisticsServlet",
+                "org.eclipse.jetty.ee10.servlet.DefaultServlet",
+                "org.eclipse.jetty.ee10.servlet.NoJspServlet"
+            )
+            .expose("org.eclipse.jetty.ee10.servlet.listener."));
     }
 }

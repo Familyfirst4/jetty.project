@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,6 +13,7 @@
 
 package org.eclipse.jetty.client;
 
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
@@ -20,12 +21,15 @@ import java.nio.ByteBuffer;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocket;
 
-import org.eclipse.jetty.client.http.HttpClientTransportOverHTTP;
+import org.eclipse.jetty.client.transport.HttpClientTransportOverHTTP;
 import org.eclipse.jetty.http.HttpScheme;
 import org.eclipse.jetty.io.ClientConnector;
 import org.eclipse.jetty.util.ssl.SslContextFactory;
@@ -34,19 +38,22 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.instanceOf;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class Socks4ProxyTest
 {
-    private ServerSocketChannel server;
+    private ServerSocketChannel proxy;
     private HttpClient client;
 
     @BeforeEach
     public void prepare() throws Exception
     {
-        server = ServerSocketChannel.open();
-        server.bind(new InetSocketAddress("localhost", 0));
+        proxy = ServerSocketChannel.open();
+        proxy.bind(new InetSocketAddress("127.0.0.1", 0));
 
         ClientConnector connector = new ClientConnector();
         QueuedThreadPool clientThreads = new QueuedThreadPool();
@@ -62,14 +69,14 @@ public class Socks4ProxyTest
     public void dispose() throws Exception
     {
         client.stop();
-        server.close();
+        proxy.close();
     }
 
     @Test
     public void testSocks4Proxy() throws Exception
     {
-        int proxyPort = server.socket().getLocalPort();
-        client.getProxyConfiguration().getProxies().add(new Socks4Proxy("localhost", proxyPort));
+        int proxyPort = proxy.socket().getLocalPort();
+        client.getProxyConfiguration().addProxy(new Socks4Proxy("127.0.0.1", proxyPort));
 
         CountDownLatch latch = new CountDownLatch(1);
 
@@ -91,7 +98,7 @@ public class Socks4ProxyTest
                     latch.countDown();
             });
 
-        try (SocketChannel channel = server.accept())
+        try (SocketChannel channel = proxy.accept())
         {
             int socks4MessageLength = 9;
             ByteBuffer buffer = ByteBuffer.allocate(socks4MessageLength);
@@ -130,8 +137,8 @@ public class Socks4ProxyTest
     @Test
     public void testSocks4ProxyWithSplitResponse() throws Exception
     {
-        int proxyPort = server.socket().getLocalPort();
-        client.getProxyConfiguration().getProxies().add(new Socks4Proxy("localhost", proxyPort));
+        int proxyPort = proxy.socket().getLocalPort();
+        client.getProxyConfiguration().addProxy(new Socks4Proxy("127.0.0.1", proxyPort));
 
         CountDownLatch latch = new CountDownLatch(1);
 
@@ -150,7 +157,7 @@ public class Socks4ProxyTest
                     result.getFailure().printStackTrace();
             });
 
-        try (SocketChannel channel = server.accept())
+        try (SocketChannel channel = proxy.accept())
         {
             int socks4MessageLength = 9;
             ByteBuffer buffer = ByteBuffer.allocate(socks4MessageLength);
@@ -188,8 +195,7 @@ public class Socks4ProxyTest
     @Test
     public void testSocks4ProxyWithTLSServer() throws Exception
     {
-        String proxyHost = "localhost";
-        int proxyPort = server.socket().getLocalPort();
+        int proxyPort = proxy.socket().getLocalPort();
 
         String serverHost = "127.0.0.13"; // Server host different from proxy host.
         int serverPort = proxyPort + 1; // Any port will do.
@@ -207,7 +213,7 @@ public class Socks4ProxyTest
             // The hostname must be that of the server, not of the proxy.
             ssl.setHostnameVerifier((hostname, session) -> serverHost.equals(hostname));
         });
-        client.getProxyConfiguration().getProxies().add(new Socks4Proxy(proxyHost, proxyPort));
+        client.getProxyConfiguration().addProxy(new Socks4Proxy("127.0.0.1", proxyPort));
 
         CountDownLatch latch = new CountDownLatch(1);
         client.newRequest(serverHost, serverPort)
@@ -221,7 +227,7 @@ public class Socks4ProxyTest
                     result.getFailure().printStackTrace();
             });
 
-        try (SocketChannel channel = server.accept())
+        try (SocketChannel channel = proxy.accept())
         {
             int socks4MessageLength = 9;
             ByteBuffer buffer = ByteBuffer.allocate(socks4MessageLength);
@@ -267,6 +273,75 @@ public class Socks4ProxyTest
             output.flush();
 
             assertTrue(latch.await(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    public void testRequestTimeoutWhenSocksProxyDoesNotRespond() throws Exception
+    {
+        int proxyPort = proxy.socket().getLocalPort();
+        client.getProxyConfiguration().addProxy(new Socks4Proxy("127.0.0.1", proxyPort));
+
+        long timeout = 1000;
+
+        // Use an address to avoid resolution of "localhost" to multiple addresses.
+        String serverHost = "127.0.0.13";
+        int serverPort = proxyPort + 1; // Any port will do
+        Request request = client.newRequest(serverHost, serverPort)
+            .timeout(timeout, TimeUnit.MILLISECONDS);
+        CompletableFuture<ContentResponse> completable = new CompletableResponseListener(request).send();
+
+        try (SocketChannel ignored = proxy.accept())
+        {
+            // Accept the connection, but do not reply and don't close.
+
+            ExecutionException x = assertThrows(ExecutionException.class, () -> completable.get(2 * timeout, TimeUnit.MILLISECONDS));
+            assertThat(x.getCause(), instanceOf(TimeoutException.class));
+        }
+    }
+
+    @Test
+    public void testIdleTimeoutWhenSocksProxyDoesNotRespond() throws Exception
+    {
+        int proxyPort = proxy.socket().getLocalPort();
+        client.getProxyConfiguration().addProxy(new Socks4Proxy("127.0.0.1", proxyPort));
+        long idleTimeout = 1000;
+        client.setIdleTimeout(idleTimeout);
+
+        // Use an address to avoid resolution of "localhost" to multiple addresses.
+        String serverHost = "127.0.0.13";
+        int serverPort = proxyPort + 1; // Any port will do
+        Request request = client.newRequest(serverHost, serverPort);
+        CompletableFuture<ContentResponse> completable = new CompletableResponseListener(request).send();
+
+        try (SocketChannel ignored = proxy.accept())
+        {
+            // Accept the connection, but do not reply and don't close.
+
+            ExecutionException x = assertThrows(ExecutionException.class, () -> completable.get(2 * idleTimeout, TimeUnit.MILLISECONDS));
+            assertThat(x.getCause(), instanceOf(TimeoutException.class));
+        }
+    }
+
+    @Test
+    public void testSocksProxyClosesConnectionImmediately() throws Exception
+    {
+        int proxyPort = proxy.socket().getLocalPort();
+        client.getProxyConfiguration().addProxy(new Socks4Proxy("127.0.0.1", proxyPort));
+
+        // Use an address to avoid resolution of "localhost" to multiple addresses.
+        String serverHost = "127.0.0.13";
+        int serverPort = proxyPort + 1; // Any port will do
+        Request request = client.newRequest(serverHost, serverPort);
+        CompletableFuture<ContentResponse> completable = new CompletableResponseListener(request).send();
+
+        try (SocketChannel channel = proxy.accept())
+        {
+            // Immediately close the connection.
+            channel.close();
+
+            ExecutionException x = assertThrows(ExecutionException.class, () -> completable.get(5, TimeUnit.SECONDS));
+            assertThat(x.getCause(), instanceOf(IOException.class));
         }
     }
 }

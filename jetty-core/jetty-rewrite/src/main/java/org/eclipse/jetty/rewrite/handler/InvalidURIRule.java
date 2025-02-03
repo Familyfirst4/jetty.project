@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -16,7 +16,6 @@ package org.eclipse.jetty.rewrite.handler;
 import java.io.IOException;
 
 import org.eclipse.jetty.http.HttpStatus;
-import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.StringUtil;
@@ -36,6 +35,7 @@ import org.slf4j.LoggerFactory;
 public class InvalidURIRule extends Rule
 {
     private static final Logger LOG = LoggerFactory.getLogger(InvalidURIRule.class);
+    private static final int REPLACEMENT_CHAR_CODEPOINT = 65533; // UTF-8 Replacement Char as codepoint
 
     private int _code = HttpStatus.BAD_REQUEST_400;
     private String _message = "Illegal URI";
@@ -52,6 +52,7 @@ public class InvalidURIRule extends Rule
     }
 
     /**
+     * Set the response code.
      * @param code the response code
      */
     public void setCode(int code)
@@ -75,7 +76,7 @@ public class InvalidURIRule extends Rule
     }
 
     @Override
-    public Request.WrapperProcessor matchAndApply(Request.WrapperProcessor input) throws IOException
+    public Handler matchAndApply(Handler input) throws IOException
     {
         String path = input.getHttpURI().getDecodedPath();
 
@@ -91,12 +92,12 @@ public class InvalidURIRule extends Rule
         return null;
     }
 
-    private Request.WrapperProcessor apply(Request.WrapperProcessor input)
+    private Handler apply(Handler input)
     {
-        return new Request.WrapperProcessor(input)
+        return new Handler(input)
         {
             @Override
-            public void process(Request ignored, Response response, Callback callback)
+            protected boolean handle(Response response, Callback callback)
             {
                 String message = getMessage();
                 if (StringUtil.isBlank(message))
@@ -108,6 +109,7 @@ public class InvalidURIRule extends Rule
                 {
                     Response.writeError(this, response, callback, getCode(), message);
                 }
+                return true;
             }
         };
     }
@@ -118,6 +120,9 @@ public class InvalidURIRule extends Rule
 
         if (LOG.isDebugEnabled())
             LOG.debug("{} {} {} {}", Character.charCount(codepoint), codepoint, block, Character.isISOControl(codepoint));
+
+        if (codepoint == REPLACEMENT_CHAR_CODEPOINT)
+            return false;
 
         return (!Character.isISOControl(codepoint)) && block != null && !Character.UnicodeBlock.SPECIALS.equals(block);
     }

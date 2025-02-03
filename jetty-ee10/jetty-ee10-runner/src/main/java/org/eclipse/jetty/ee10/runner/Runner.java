@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,7 +13,6 @@
 
 package org.eclipse.jetty.ee10.runner;
 
-import java.io.IOException;
 import java.io.PrintStream;
 import java.net.MalformedURLException;
 import java.net.URI;
@@ -27,21 +26,20 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 
 import org.eclipse.jetty.ee10.plus.webapp.EnvConfiguration;
 import org.eclipse.jetty.ee10.plus.webapp.PlusConfiguration;
 import org.eclipse.jetty.ee10.servlet.ServletContextHandler;
-import org.eclipse.jetty.ee10.servlet.ServletHolder;
 import org.eclipse.jetty.ee10.servlet.SessionHandler;
-import org.eclipse.jetty.ee10.servlet.StatisticsServlet;
 import org.eclipse.jetty.ee10.servlet.security.ConstraintMapping;
 import org.eclipse.jetty.ee10.servlet.security.ConstraintSecurityHandler;
-import org.eclipse.jetty.ee10.servlet.security.HashLoginService;
-import org.eclipse.jetty.ee10.servlet.security.authentication.BasicAuthenticator;
 import org.eclipse.jetty.ee10.webapp.MetaInfConfiguration;
 import org.eclipse.jetty.ee10.webapp.WebAppContext;
 import org.eclipse.jetty.io.ConnectionStatistics;
-import org.eclipse.jetty.server.AbstractConnector;
+import org.eclipse.jetty.security.Constraint;
+import org.eclipse.jetty.security.HashLoginService;
+import org.eclipse.jetty.security.authentication.BasicAuthenticator;
 import org.eclipse.jetty.server.Connector;
 import org.eclipse.jetty.server.CustomRequestLog;
 import org.eclipse.jetty.server.Handler;
@@ -52,10 +50,12 @@ import org.eclipse.jetty.server.handler.ContextHandler;
 import org.eclipse.jetty.server.handler.ContextHandlerCollection;
 import org.eclipse.jetty.server.handler.DefaultHandler;
 import org.eclipse.jetty.server.handler.StatisticsHandler;
+import org.eclipse.jetty.util.FileID;
 import org.eclipse.jetty.util.RolloverFileOutputStream;
 import org.eclipse.jetty.util.StringUtil;
 import org.eclipse.jetty.util.resource.Resource;
-import org.eclipse.jetty.util.security.Constraint;
+import org.eclipse.jetty.util.resource.ResourceFactory;
+import org.eclipse.jetty.util.resource.Resources;
 import org.eclipse.jetty.xml.XmlConfiguration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -106,42 +106,28 @@ public class Runner
     {
         private List<URI> _classpath = new ArrayList<>();
 
-        public void addJars(Resource lib) throws IOException
+        public void addJars(Resource lib)
         {
-            if (lib == null || !lib.exists())
-                throw new IllegalStateException("No such lib: " + lib);
+            if (!Resources.isReadableFile(lib) || !FileID.isJavaArchive(lib.getURI()))
+                throw new IllegalStateException("Invalid lib: " + lib);
 
-            String[] list = lib.list();
-            if (list == null)
-                return;
-
-            for (String path : list)
+            for (Resource item: lib.list())
             {
-                if (".".equals(path) || "..".equals(path))
-                    continue;
-
-                try (Resource item = lib.addPath(path))
-                {
-                    if (item.isDirectory())
-                        addJars(item);
-                    else
-                    {
-                        String lowerCasePath = path.toLowerCase(Locale.ENGLISH);
-                        if (lowerCasePath.endsWith(".jar") ||
-                            lowerCasePath.endsWith(".zip"))
-                        {
-                            _classpath.add(item.getURI());
-                        }
-                    }
-                }
+                if (item.isDirectory())
+                    addJars(item);
+                else if (FileID.isLibArchive(item.getFileName()))
+                    _classpath.add(item.getURI());
             }
         }
 
         public void addPath(Resource path)
         {
-            if (path == null || !path.exists())
-                throw new IllegalStateException("No such path: " + path);
-            _classpath.add(path.getURI());
+            Objects.requireNonNull(path, "Path is null");
+            for (Resource r: path)
+            {
+                if (FileID.isLibArchive(r.getFileName()))
+                    _classpath.add(r.getURI());
+            }
         }
 
         public URI[] asArray()
@@ -200,38 +186,39 @@ public class Runner
      */
     public void configure(String[] args) throws Exception
     {
-        // handle classpath bits first so we can initialize the log mechanism.
-        for (int i = 0; i < args.length; i++)
+        try (ResourceFactory.Closeable resourceFactory = ResourceFactory.closeable())
         {
-            if ("--lib".equals(args[i]))
+            // handle classpath bits first so we can initialize the log mechanism.
+            for (int i = 0; i < args.length; i++)
             {
-                try (Resource lib = Resource.newResource(args[++i]))
+                if ("--lib".equals(args[i]))
                 {
-                    if (!lib.exists() || !lib.isDirectory())
-                        usage("No such lib directory " + lib);
-                    _classpath.addJars(lib);
+                    Resource lib = resourceFactory.newResource(args[++i]);
+                    if (Resources.isReadableDirectory(lib))
+                        _classpath.addJars(lib);
+                    else
+                        usage("Invalid directory: " + lib);
                 }
-            }
-            else if ("--jar".equals(args[i]))
-            {
-                try (Resource jar = Resource.newResource(args[++i]))
+                else if ("--jar".equals(args[i]))
                 {
-                    if (!jar.exists() || jar.isDirectory())
-                        usage("No such jar " + jar);
-                    _classpath.addPath(jar);
+                    Resource jar = resourceFactory.newResource(args[++i]);
+                    if (Resources.isReadableFile(jar) && FileID.isJavaArchive(jar.getURI()))
+                        _classpath.addPath(jar);
+                    else
+                        usage("Invalid JAR: " + jar);
+
                 }
-            }
-            else if ("--classes".equals(args[i]))
-            {
-                try (Resource classes = Resource.newResource(args[++i]))
+                else if ("--classes".equals(args[i]))
                 {
-                    if (!classes.exists() || !classes.isDirectory())
-                        usage("No such classes directory " + classes);
-                    _classpath.addPath(classes);
+                    Resource classes = resourceFactory.newResource(args[++i]);
+                    if (Resources.isReadableDirectory(classes))
+                        _classpath.addPath(classes);
+                    else
+                        usage("Invalid classes directory: " + classes);
                 }
+                else if (args[i].startsWith("--"))
+                    i++;
             }
-            else if (args[i].startsWith("--"))
-                i++;
         }
 
         initClassLoader();
@@ -330,24 +317,25 @@ public class Runner
                             _server = new Server();
                         }
 
+                        if (_server.getDefaultHandler() == null)
+                            _server.setDefaultHandler(new DefaultHandler());
+
                         //apply jetty config files if there are any
                         if (_configFiles != null)
                         {
                             for (String cfg : _configFiles)
                             {
-                                try (Resource resource = Resource.newResource(cfg))
-                                {
-                                    XmlConfiguration xmlConfiguration = new XmlConfiguration(resource);
-                                    xmlConfiguration.configure(_server);
-                                }
+                                Resource resource = ResourceFactory.of(_server).newResource(cfg);
+                                XmlConfiguration xmlConfiguration = new XmlConfiguration(resource);
+                                xmlConfiguration.configure(_server);
                             }
                         }
 
                         //check that everything got configured, and if not, make the handlers
-                        Handler.Collection handlers = _server.getDescendant(Handler.Collection.class);
+                        Handler.Sequence handlers = _server.getDescendant(Handler.Sequence.class);
                         if (handlers == null)
                         {
-                            handlers = new Handler.Collection();
+                            handlers = new Handler.Sequence();
                             _server.setHandler(handlers);
                         }
 
@@ -370,16 +358,18 @@ public class Runner
                                 statsHandler.setHandler(oldHandler);
                                 _server.setHandler(statsHandler);
 
-                                ServletContextHandler statsContext = new ServletContextHandler(_contexts, "/stats");
-                                statsContext.addServlet(new ServletHolder(new StatisticsServlet()), "/");
+                                ServletContextHandler statsContext = new ServletContextHandler("/stats");
                                 statsContext.setSessionHandler(new SessionHandler());
+                                _contexts.addHandler(statsContext);
                                 if (_statsPropFile != null)
                                 {
-                                    final HashLoginService loginService = new HashLoginService("StatsRealm", _statsPropFile);
-                                    Constraint constraint = new Constraint();
-                                    constraint.setName("Admin Only");
-                                    constraint.setRoles(new String[]{"admin"});
-                                    constraint.setAuthenticate(true);
+                                    ResourceFactory resourceFactory = ResourceFactory.of(statsContext);
+                                    Resource statsResource = resourceFactory.newResource(_statsPropFile);
+                                    final HashLoginService loginService = new HashLoginService("StatsRealm", statsResource);
+                                    Constraint constraint = new Constraint.Builder()
+                                        .name("Admin Only")
+                                        .roles("admin")
+                                        .build();
 
                                     ConstraintMapping cm = new ConstraintMapping();
                                     cm.setConstraint(constraint);
@@ -418,7 +408,7 @@ public class Runner
                             {
                                 for (Connector connector : connectors)
                                 {
-                                    ((AbstractConnector)connector).addBean(new ConnectionStatistics());
+                                    connector.addBean(new ConnectionStatistics());
                                 }
                             }
                         }
@@ -427,54 +417,54 @@ public class Runner
                     }
 
                     // Create a context
-                    try (Resource ctx = Resource.newResource(args[i]))
+                    Resource ctx = ResourceFactory.of(_server).newResource(args[i]);
+                    if (!ctx.exists())
+                        usage("Context '" + ctx + "' does not exist");
+
+                    if (contextPathSet && !(contextPath.startsWith("/")))
+                        contextPath = "/" + contextPath;
+
+                    // Configure the context
+                    if (!ctx.isDirectory() && ctx.toString().toLowerCase(Locale.ENGLISH).endsWith(".xml"))
                     {
-                        if (!ctx.exists())
-                            usage("Context '" + ctx + "' does not exist");
-
-                        if (contextPathSet && !(contextPath.startsWith("/")))
-                            contextPath = "/" + contextPath;
-
-                        // Configure the context
-                        if (!ctx.isDirectory() && ctx.toString().toLowerCase(Locale.ENGLISH).endsWith(".xml"))
-                        {
-                            // It is a context config file
-                            XmlConfiguration xmlConfiguration = new XmlConfiguration(ctx);
-                            xmlConfiguration.getIdMap().put("Server", _server);
-                            ContextHandler handler = (ContextHandler)xmlConfiguration.configure();
-                            if (contextPathSet)
-                                handler.setContextPath(contextPath);
-                            _contexts.addHandler(handler);
-                            String containerIncludeJarPattern = (String)handler.getAttribute(MetaInfConfiguration.CONTAINER_JAR_PATTERN);
-                            if (containerIncludeJarPattern == null)
-                                containerIncludeJarPattern = CONTAINER_INCLUDE_JAR_PATTERN;
-                            else
-                            {
-                                if (!containerIncludeJarPattern.contains(CONTAINER_INCLUDE_JAR_PATTERN))
-                                {
-                                    containerIncludeJarPattern = containerIncludeJarPattern + (StringUtil.isBlank(containerIncludeJarPattern) ? "" : "|") + CONTAINER_INCLUDE_JAR_PATTERN;
-                                }
-                            }
-
-                            handler.setAttribute(MetaInfConfiguration.CONTAINER_JAR_PATTERN, containerIncludeJarPattern);
-
-                            //check the configurations, if not explicitly set up, then configure all of them
-                            if (handler instanceof WebAppContext)
-                            {
-                                WebAppContext wac = (WebAppContext)handler;
-                                if (wac.getConfigurationClasses() == null || wac.getConfigurationClasses().length == 0)
-                                    wac.setConfigurationClasses(PLUS_CONFIGURATION_CLASSES);
-                            }
-                        }
+                        // It is a context config file
+                        XmlConfiguration xmlConfiguration = new XmlConfiguration(ctx);
+                        xmlConfiguration.getIdMap().put("Server", _server);
+                        ContextHandler handler = (ContextHandler)xmlConfiguration.configure();
+                        if (contextPathSet)
+                            handler.setContextPath(contextPath);
+                        _contexts.addHandler(handler);
+                        String containerIncludeJarPattern = (String)handler.getAttribute(MetaInfConfiguration.CONTAINER_JAR_PATTERN);
+                        if (containerIncludeJarPattern == null)
+                            containerIncludeJarPattern = CONTAINER_INCLUDE_JAR_PATTERN;
                         else
                         {
-                            // assume it is a WAR file
-                            WebAppContext webapp = new WebAppContext(_contexts, ctx.toString(), contextPath);
-                            webapp.setConfigurationClasses(PLUS_CONFIGURATION_CLASSES);
-                            webapp.setAttribute(MetaInfConfiguration.CONTAINER_JAR_PATTERN,
-                                CONTAINER_INCLUDE_JAR_PATTERN);
+                            if (!containerIncludeJarPattern.contains(CONTAINER_INCLUDE_JAR_PATTERN))
+                            {
+                                containerIncludeJarPattern = containerIncludeJarPattern + (StringUtil.isBlank(containerIncludeJarPattern) ? "" : "|") + CONTAINER_INCLUDE_JAR_PATTERN;
+                            }
+                        }
+
+                        handler.setAttribute(MetaInfConfiguration.CONTAINER_JAR_PATTERN, containerIncludeJarPattern);
+
+                        //check the configurations, if not explicitly set up, then configure all of them
+                        if (handler instanceof WebAppContext)
+                        {
+                            WebAppContext wac = (WebAppContext)handler;
+                            if (wac.getConfigurationClasses() == null || wac.getConfigurationClasses().length == 0)
+                                wac.setConfigurationClasses(PLUS_CONFIGURATION_CLASSES);
                         }
                     }
+                    else
+                    {
+                        // assume it is a WAR file
+                        WebAppContext webapp = new WebAppContext(ctx.toString(), contextPath);
+                        webapp.setConfigurationClasses(PLUS_CONFIGURATION_CLASSES);
+                        webapp.setAttribute(MetaInfConfiguration.CONTAINER_JAR_PATTERN,
+                            CONTAINER_INCLUDE_JAR_PATTERN);
+                        _contexts.addHandler(webapp);
+                    }
+
                     //reset
                     contextPathSet = false;
                     contextPath = DEFAULT_CONTEXT_PATH;
@@ -514,7 +504,7 @@ public class Runner
         }
     }
 
-    protected void prependHandler(Handler handler, Handler.Collection handlers)
+    protected void prependHandler(Handler handler, Handler.Sequence handlers)
     {
         if (handler == null || handlers == null)
             return;
@@ -579,7 +569,7 @@ public class Runner
     {
         System.err.println("WARNING: jetty-runner is deprecated.");
         System.err.println("         See Jetty Documentation for startup options");
-        System.err.println("         https://www.eclipse.org/jetty/documentation/");
+        System.err.println("         https://jetty.org/docs/");
 
         Runner runner = new Runner();
 

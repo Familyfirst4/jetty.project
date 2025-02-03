@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,12 +13,11 @@
 
 package org.eclipse.jetty.client;
 
-import java.util.List;
-
-import org.eclipse.jetty.client.api.Request;
-import org.eclipse.jetty.client.api.Response;
-import org.eclipse.jetty.client.api.Result;
-import org.eclipse.jetty.client.util.BufferingResponseListener;
+import org.eclipse.jetty.client.internal.HttpContentResponse;
+import org.eclipse.jetty.client.transport.HttpConversation;
+import org.eclipse.jetty.client.transport.HttpExchange;
+import org.eclipse.jetty.client.transport.HttpRequest;
+import org.eclipse.jetty.client.transport.ResponseListeners;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpHeaderValue;
 import org.eclipse.jetty.http.HttpStatus;
@@ -31,13 +30,6 @@ public class ContinueProtocolHandler implements ProtocolHandler
     public static final String NAME = "continue";
     private static final String ATTRIBUTE = ContinueProtocolHandler.class.getName() + ".100continue";
 
-    private final ResponseNotifier notifier;
-
-    public ContinueProtocolHandler()
-    {
-        this.notifier = new ResponseNotifier();
-    }
-
     @Override
     public String getName()
     {
@@ -47,10 +39,14 @@ public class ContinueProtocolHandler implements ProtocolHandler
     @Override
     public boolean accept(Request request, Response response)
     {
-        boolean is100 = response.getStatus() == HttpStatus.CONTINUE_100;
-        boolean expect100 = request.getHeaders().contains(HttpHeader.EXPECT, HttpHeaderValue.CONTINUE.asString());
         boolean handled100 = request.getAttributes().containsKey(ATTRIBUTE);
-        return (is100 || expect100) && !handled100;
+        if (handled100)
+            return false;
+        boolean is100 = response.getStatus() == HttpStatus.CONTINUE_100;
+        if (is100)
+            return true;
+        // Also handle non-100 responses, because we need to complete the request to complete the whole exchange.
+        return request.getHeaders().contains(HttpHeader.EXPECT, HttpHeaderValue.CONTINUE.asString());
     }
 
     @Override
@@ -60,8 +56,9 @@ public class ContinueProtocolHandler implements ProtocolHandler
         return new ContinueListener();
     }
 
-    protected void onContinue(Request request)
+    protected Runnable onContinue(Request request)
     {
+        return null;
     }
 
     protected class ContinueListener extends BufferingResponseListener
@@ -81,22 +78,26 @@ public class ContinueProtocolHandler implements ProtocolHandler
             conversation.updateResponseListeners(null);
 
             HttpExchange exchange = conversation.getExchanges().peekLast();
+            assert exchange != null;
+
             if (response.getStatus() == HttpStatus.CONTINUE_100)
             {
                 // All good, continue.
                 exchange.resetResponse();
-                exchange.proceed(null);
-                onContinue(request);
+                Runnable proceedAction = onContinue(request);
+                // Pass the proceed action to be executed
+                // by the sender, not here by the receiver.
+                exchange.proceed(proceedAction, null);
             }
             else
             {
                 // Server either does not support 100 Continue,
                 // or it does and wants to refuse the request content,
                 // or we got some other HTTP status code like a redirect.
-                List<Response.ResponseListener> listeners = exchange.getResponseListeners();
+                ResponseListeners listeners = exchange.getResponseListeners();
                 HttpContentResponse contentResponse = new HttpContentResponse(response, getContent(), getMediaType(), getEncoding());
-                notifier.forwardSuccess(listeners, contentResponse);
-                exchange.proceed(new HttpRequestException("Expectation failed", request));
+                listeners.emitSuccess(contentResponse);
+                exchange.proceed(null, new HttpRequestException("Expectation failed", request));
             }
         }
 
@@ -111,9 +112,9 @@ public class ContinueProtocolHandler implements ProtocolHandler
 
             HttpExchange exchange = conversation.getExchanges().peekLast();
             assert exchange.getResponse() == response;
-            List<Response.ResponseListener> listeners = exchange.getResponseListeners();
+            ResponseListeners listeners = exchange.getResponseListeners();
             HttpContentResponse contentResponse = new HttpContentResponse(response, getContent(), getMediaType(), getEncoding());
-            notifier.forwardFailureComplete(listeners, exchange.getRequest(), exchange.getRequestFailure(), contentResponse, failure);
+            listeners.emitFailureComplete(new Result(exchange.getRequest(), exchange.getRequestFailure(), contentResponse, failure));
         }
 
         @Override

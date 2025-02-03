@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -22,8 +22,11 @@ import java.util.stream.Collectors;
 
 import org.apache.maven.artifact.Artifact;
 import org.apache.maven.plugin.MojoExecutionException;
+import org.apache.maven.plugin.MojoFailureException;
 import org.apache.maven.plugins.annotations.Parameter;
+import org.eclipse.jetty.maven.ScanPattern;
 import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.Resources;
 
 /**
  * Base class for all goals that operate on unassembled webapps.
@@ -106,13 +109,20 @@ public abstract class AbstractUnassembledWebAppMojo extends AbstractWebAppMojo
     protected void configureWebApp() throws Exception
     {
         super.configureWebApp();
-        configureUnassembledWebApp();
+        try
+        {
+            configureUnassembledWebApp();
+        }
+        catch (IOException e)
+        {
+            throw new MojoFailureException("Unable to configure unassembled webapp", e);
+        }
     }
     
     /**
      * Configure a webapp that has not been assembled into a war. 
      * 
-     * @throws Exception
+     * @throws IOException if there is an IO problem
      */
     protected void configureUnassembledWebApp() throws Exception
     {   
@@ -125,25 +135,25 @@ public abstract class AbstractUnassembledWebAppMojo extends AbstractWebAppMojo
         //The first time we run, remember the original base dir
         if (originalBaseResource == null)
         {
-            if (webApp.getResourceBase() == null)
+            if (webApp.getBaseResource() == null)
             {
                 //Use the default static resource location
                 if (!webAppSourceDirectory.exists())
                     webAppSourceDirectory.mkdirs();
-                originalBaseResource = Resource.newResource(webAppSourceDirectory.getCanonicalPath());
+                originalBaseResource = webApp.getResourceFactory().newResource(webAppSourceDirectory.getCanonicalPath());
             }
             else
-                originalBaseResource = webApp.getResourceBase();
+                originalBaseResource = webApp.getBaseResource();
         }
 
         //On every subsequent re-run set it back to the original base dir before
         //we might have applied any war overlays onto it
-        
         webApp.setBaseResource(originalBaseResource);
-
-        if (webApp.getWar() == null)
-            webApp.setWar(originalBaseResource.getURI().toURL().toExternalForm());
         
+        //TODO the war does not need to be set, _except_ that QuickStartConfiguration checks for non null
+        if (webApp.getWar() == null)
+            webApp.setWar(originalBaseResource.toString());
+
         if (classesDirectory != null)
             webApp.setClasses(classesDirectory);
 
@@ -166,26 +176,29 @@ public abstract class AbstractUnassembledWebAppMojo extends AbstractWebAppMojo
             //Has an explicit web.xml file been configured to use?
             if (webXml != null)
             {
-                Resource r = Resource.newResource(webXml);
-                if (r.exists() && !r.isDirectory())
+                Resource r = webApp.getResourceFactory().newResource(webXml.toPath());
+                if (Resources.isReadableFile(r))
                 {
-                    webApp.setDescriptor(r.toString());
+                    webApp.setDescriptor(r.getURI().toASCIIString());
                 }
             }
 
             //Still don't have a web.xml file: try the resourceBase of the webapp, if it is set
-            if (webApp.getDescriptor() == null && webApp.getResourceBase() != null)
+            if (webApp.getDescriptor() == null && webApp.getBaseResource() != null)
             {
-                Resource r = webApp.getResourceBase().addPath("WEB-INF/web.xml");
-                if (r.exists() && !r.isDirectory())
+                // TODO: should never return from WEB-INF/lib/foo.jar!/WEB-INF/web.xml
+                // TODO: should also never return from a META-INF/versions/#/WEB-INF/web.xml location
+                Resource r = webApp.getBaseResource().resolve("WEB-INF/web.xml");
+                if (Resources.isReadableFile(r))
                 {
-                    webApp.setDescriptor(r.toString());
+                    webApp.setDescriptor(r.getURI().toASCIIString());
                 }
             }
 
             //Still don't have a web.xml file: finally try the configured static resource directory if there is one
             if (webApp.getDescriptor() == null && (webAppSourceDirectory != null))
             {
+                // TODO: fix, use Resource or Path
                 File f = new File(new File(webAppSourceDirectory, "WEB-INF"), "web.xml");
                 if (f.exists() && f.isFile())
                 {
@@ -196,7 +209,7 @@ public abstract class AbstractUnassembledWebAppMojo extends AbstractWebAppMojo
 
         //process any overlays and the war type artifacts, and
         //sets up the base resource collection for the webapp
-        mavenProjectHelper.getOverlayManager().applyOverlays(webApp);
+        mavenProjectHelper.getOverlayManager().applyOverlays(webApp, webApp.getBaseAppFirst());
 
         getLog().info("web.xml file = " + webApp.getDescriptor());       
         getLog().info("Webapp directory = " + webAppSourceDirectory.getCanonicalPath());
@@ -227,6 +240,10 @@ public abstract class AbstractUnassembledWebAppMojo extends AbstractWebAppMojo
     {
         //The dependency cannot be of type war
         if ("war".equalsIgnoreCase(artifact.getType()))
+            return false;
+
+        //The dependency cannot be a pom
+        if ("pom".equalsIgnoreCase(artifact.getType()))
             return false;
 
         //The dependency cannot be scope provided (those should be added to the plugin classpath)

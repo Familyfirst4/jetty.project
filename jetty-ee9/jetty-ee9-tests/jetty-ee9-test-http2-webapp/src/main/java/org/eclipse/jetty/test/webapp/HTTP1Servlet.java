@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -32,15 +32,13 @@ import org.eclipse.jetty.http.MetaData;
 import org.eclipse.jetty.http2.api.Session;
 import org.eclipse.jetty.http2.api.Stream;
 import org.eclipse.jetty.http2.client.HTTP2Client;
-import org.eclipse.jetty.http2.frames.DataFrame;
 import org.eclipse.jetty.http2.frames.HeadersFrame;
-import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.Promise;
 import org.eclipse.jetty.util.ssl.SslContextFactory;
 
 public class HTTP1Servlet extends HttpServlet
 {
-    private SslContextFactory sslContextFactory;
+    private SslContextFactory.Client sslContextFactory;
     private HTTP2Client http2Client;
 
     @Override
@@ -80,7 +78,7 @@ public class HTTP1Servlet extends HttpServlet
         String contextPath = request.getContextPath();
         ServletOutputStream output = response.getOutputStream();
         AsyncContext asyncContext = request.startAsync();
-        http2Client.connect(sslContextFactory, new InetSocketAddress(host, port), new Session.Listener.Adapter(), new Promise<Session>()
+        http2Client.connect(sslContextFactory, new InetSocketAddress(host, port), new Session.Listener(){}, new Promise<>()
         {
             @Override
             public void succeeded(Session session)
@@ -97,20 +95,37 @@ public class HTTP1Servlet extends HttpServlet
                         response.setHeader("X-Failure", "stream");
                         asyncContext.complete();
                     }
-                }, new Stream.Listener.Adapter()
+                }, new Stream.Listener()
                 {
                     @Override
-                    public void onData(Stream stream, DataFrame frame, Callback callback)
+                    public void onDataAvailable(Stream stream)
                     {
                         try
                         {
-                            ByteBuffer buffer = frame.getData();
-                            byte[] bytes = new byte[buffer.remaining()];
-                            buffer.get(bytes);
-                            output.write(bytes);
-                            callback.succeeded();
-                            if (frame.isEndStream())
-                                asyncContext.complete();
+                            // Read a chunk of the content.
+                            Stream.Data data = stream.readData();
+                            if (data == null)
+                            {
+                                // No data available now, demand to be called back.
+                                stream.demand();
+                            }
+                            else
+                            {
+                                // Process the content.
+                                ByteBuffer buffer = data.frame().getByteBuffer();
+                                byte[] bytes = new byte[buffer.remaining()];
+                                buffer.get(bytes);
+                                output.write(bytes);
+                                // Notify that the content has been consumed.
+                                data.release();
+                                if (!data.frame().isEndStream())
+                                {
+                                    // Demand to be called back.
+                                    stream.demand();
+                                }
+                                else
+                                    asyncContext.complete();
+                            }
                         }
                         catch (IOException x)
                         {

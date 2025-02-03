@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -30,7 +30,6 @@ import java.util.Set;
 import java.util.function.Predicate;
 
 import org.eclipse.jetty.util.IO;
-import org.eclipse.jetty.util.StringUtil;
 import org.eclipse.jetty.util.component.Destroyable;
 import org.eclipse.jetty.util.component.LifeCycle;
 import org.eclipse.jetty.util.thread.AutoLock;
@@ -175,6 +174,7 @@ public class ShutdownMonitor
     }
 
     /**
+     * Set true to exit the VM on shutdown.
      * @param exitVm true to exit the VM on shutdown
      */
     public void setExitVm(boolean exitVm)

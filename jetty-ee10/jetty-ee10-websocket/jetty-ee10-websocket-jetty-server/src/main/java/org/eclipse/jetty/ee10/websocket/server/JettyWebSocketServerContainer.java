@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -26,35 +26,35 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.eclipse.jetty.ee10.servlet.ServletContextHandler;
 import org.eclipse.jetty.ee10.servlet.ServletContextRequest;
-import org.eclipse.jetty.ee10.websocket.api.Session;
-import org.eclipse.jetty.ee10.websocket.api.WebSocketBehavior;
-import org.eclipse.jetty.ee10.websocket.api.WebSocketContainer;
-import org.eclipse.jetty.ee10.websocket.api.WebSocketPolicy;
-import org.eclipse.jetty.ee10.websocket.api.WebSocketSessionListener;
-import org.eclipse.jetty.ee10.websocket.common.SessionTracker;
+import org.eclipse.jetty.ee10.servlet.ServletContextResponse;
 import org.eclipse.jetty.ee10.websocket.server.config.JettyWebSocketServletContainerInitializer;
 import org.eclipse.jetty.ee10.websocket.server.internal.DelegatedServerUpgradeRequest;
 import org.eclipse.jetty.ee10.websocket.server.internal.DelegatedServerUpgradeResponse;
 import org.eclipse.jetty.ee10.websocket.server.internal.JettyServerFrameHandlerFactory;
 import org.eclipse.jetty.ee10.websocket.servlet.WebSocketUpgradeFilter;
 import org.eclipse.jetty.http.pathmap.PathSpec;
-import org.eclipse.jetty.util.Blocking;
+import org.eclipse.jetty.util.Blocker;
 import org.eclipse.jetty.util.component.ContainerLifeCycle;
 import org.eclipse.jetty.util.component.Dumpable;
 import org.eclipse.jetty.util.component.LifeCycle;
+import org.eclipse.jetty.websocket.api.Configurable;
+import org.eclipse.jetty.websocket.api.Session;
+import org.eclipse.jetty.websocket.api.WebSocketContainer;
+import org.eclipse.jetty.websocket.api.WebSocketSessionListener;
+import org.eclipse.jetty.websocket.common.SessionTracker;
 import org.eclipse.jetty.websocket.core.Configuration;
 import org.eclipse.jetty.websocket.core.WebSocketComponents;
+import org.eclipse.jetty.websocket.core.WebSocketConstants;
 import org.eclipse.jetty.websocket.core.exception.WebSocketException;
-import org.eclipse.jetty.websocket.core.internal.util.ReflectUtils;
-import org.eclipse.jetty.websocket.core.server.Handshaker;
 import org.eclipse.jetty.websocket.core.server.WebSocketCreator;
 import org.eclipse.jetty.websocket.core.server.WebSocketMappings;
 import org.eclipse.jetty.websocket.core.server.WebSocketNegotiator;
 import org.eclipse.jetty.websocket.core.server.WebSocketServerComponents;
+import org.eclipse.jetty.websocket.core.util.ReflectUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class JettyWebSocketServerContainer extends ContainerLifeCycle implements WebSocketContainer, WebSocketPolicy, LifeCycle.Listener
+public class JettyWebSocketServerContainer extends ContainerLifeCycle implements WebSocketContainer, Configurable, LifeCycle.Listener
 {
     public static final String JETTY_WEBSOCKET_CONTAINER_ATTRIBUTE = WebSocketContainer.class.getName();
 
@@ -134,10 +134,10 @@ public class JettyWebSocketServerContainer extends ContainerLifeCycle implements
         this.components = components;
         this.executor = executor;
         this.frameHandlerFactory = new JettyServerFrameHandlerFactory(this, components);
-        addBean(frameHandlerFactory);
+        installBean(frameHandlerFactory);
 
         addSessionListener(sessionTracker);
-        addBean(sessionTracker);
+        installBean(sessionTracker);
     }
 
     public void addMapping(String pathSpec, JettyWebSocketCreator creator)
@@ -152,11 +152,14 @@ public class JettyWebSocketServerContainer extends ContainerLifeCycle implements
             try
             {
                 Object webSocket = creator.createWebSocket(new DelegatedServerUpgradeRequest(req), new DelegatedServerUpgradeResponse(resp));
-                cb.succeeded();
+                if (webSocket == null)
+                    cb.succeeded();
                 return webSocket;
             }
             catch (Throwable t)
             {
+                if (LOG.isDebugEnabled())
+                    LOG.debug("Could not create WebSocket endpoint", t);
                 cb.failed(t);
                 return null;
             }
@@ -177,17 +180,22 @@ public class JettyWebSocketServerContainer extends ContainerLifeCycle implements
             }
             catch (Exception e)
             {
-                throw new org.eclipse.jetty.ee10.websocket.api.exceptions.WebSocketException("Unable to create instance of " + endpointClass.getName(), e);
+                throw new org.eclipse.jetty.websocket.api.exceptions.WebSocketException("Unable to create instance of " + endpointClass.getName(), e);
             }
         });
     }
 
     /**
      * An immediate programmatic WebSocket upgrade that does not register a mapping or create a {@link WebSocketUpgradeFilter}.
+     *
+     * <p>A return value of true means the connection was Upgraded to WebSocket or an error response is being generated.
+     * A return value of false means that it was a bad upgrade request and couldn't be upgraded to WebSocket and the
+     * caller is responsible for generating the response.</p>
+     *
      * @param creator the WebSocketCreator to use.
      * @param request the HttpServletRequest.
      * @param response the HttpServletResponse.
-     * @return true if the connection was successfully upgraded to WebSocket.
+     * @return true if the connection could be upgraded or an error was sent.
      * @throws IOException if an I/O error occurs.
      */
     public boolean upgrade(JettyWebSocketCreator creator, HttpServletRequest request, HttpServletResponse response) throws IOException
@@ -197,28 +205,40 @@ public class JettyWebSocketServerContainer extends ContainerLifeCycle implements
             try
             {
                 Object webSocket = creator.createWebSocket(new DelegatedServerUpgradeRequest(req), new DelegatedServerUpgradeResponse(resp));
-                cb.succeeded();
+                if (webSocket == null)
+                    cb.succeeded();
                 return webSocket;
             }
             catch (Throwable t)
             {
+                if (LOG.isDebugEnabled())
+                    LOG.debug("Could not create WebSocket endpoint", t);
                 cb.failed(t);
                 return null;
             }
         };
 
-        ServletContextRequest baseRequest = ServletContextRequest.getBaseRequest(request);
-        if (baseRequest == null)
-            throw new IllegalStateException("Base Request not available");
+        ServletContextRequest servletContextRequest = ServletContextRequest.getServletContextRequest(request);
+        ServletContextResponse servletContextResponse = servletContextRequest.getServletContextResponse();
 
-        WebSocketNegotiator negotiator = WebSocketNegotiator.from(coreCreator, frameHandlerFactory, customizer);
-        Handshaker handshaker = webSocketMappings.getHandshaker();
+        WebSocketNegotiator negotiator = WebSocketNegotiator.from(coreCreator, frameHandlerFactory);
 
-        try (Blocking.Callback callback = Blocking.callback())
+        // Set the wrapped req and resp as attributes on the ServletContext Request/Response, so they
+        // are accessible when websocket-core calls back the Jetty WebSocket creator.
+        servletContextRequest.setAttribute(WebSocketConstants.WEBSOCKET_WRAPPED_REQUEST_ATTRIBUTE, request);
+        servletContextRequest.setAttribute(WebSocketConstants.WEBSOCKET_WRAPPED_RESPONSE_ATTRIBUTE, response);
+
+        try (Blocker.Callback callback = Blocker.callback())
         {
-            boolean upgraded = handshaker.upgradeRequest(negotiator, baseRequest, baseRequest.getResponse(), callback, components, null);
-            callback.block();
+            boolean upgraded = webSocketMappings.upgrade(negotiator, servletContextRequest, servletContextResponse, callback, customizer);
+            if (upgraded)
+                callback.block();
             return upgraded;
+        }
+        finally
+        {
+            servletContextRequest.removeAttribute(WebSocketConstants.WEBSOCKET_WRAPPED_REQUEST_ATTRIBUTE);
+            servletContextRequest.removeAttribute(WebSocketConstants.WEBSOCKET_WRAPPED_RESPONSE_ATTRIBUTE);
         }
     }
 
@@ -263,51 +283,9 @@ public class JettyWebSocketServerContainer extends ContainerLifeCycle implements
     }
 
     @Override
-    public WebSocketBehavior getBehavior()
-    {
-        return WebSocketBehavior.SERVER;
-    }
-
-    @Override
     public Duration getIdleTimeout()
     {
         return customizer.getIdleTimeout();
-    }
-
-    @Override
-    public int getInputBufferSize()
-    {
-        return customizer.getInputBufferSize();
-    }
-
-    @Override
-    public int getOutputBufferSize()
-    {
-        return customizer.getOutputBufferSize();
-    }
-
-    @Override
-    public long getMaxBinaryMessageSize()
-    {
-        return customizer.getMaxBinaryMessageSize();
-    }
-
-    @Override
-    public long getMaxTextMessageSize()
-    {
-        return customizer.getMaxTextMessageSize();
-    }
-
-    @Override
-    public long getMaxFrameSize()
-    {
-        return customizer.getMaxFrameSize();
-    }
-
-    @Override
-    public boolean isAutoFragment()
-    {
-        return customizer.isAutoFragment();
     }
 
     @Override
@@ -317,9 +295,21 @@ public class JettyWebSocketServerContainer extends ContainerLifeCycle implements
     }
 
     @Override
+    public int getInputBufferSize()
+    {
+        return customizer.getInputBufferSize();
+    }
+
+    @Override
     public void setInputBufferSize(int size)
     {
         customizer.setInputBufferSize(size);
+    }
+
+    @Override
+    public int getOutputBufferSize()
+    {
+        return customizer.getOutputBufferSize();
     }
 
     @Override
@@ -329,9 +319,21 @@ public class JettyWebSocketServerContainer extends ContainerLifeCycle implements
     }
 
     @Override
+    public long getMaxBinaryMessageSize()
+    {
+        return customizer.getMaxBinaryMessageSize();
+    }
+
+    @Override
     public void setMaxBinaryMessageSize(long size)
     {
         customizer.setMaxBinaryMessageSize(size);
+    }
+
+    @Override
+    public long getMaxTextMessageSize()
+    {
+        return customizer.getMaxTextMessageSize();
     }
 
     @Override
@@ -341,15 +343,39 @@ public class JettyWebSocketServerContainer extends ContainerLifeCycle implements
     }
 
     @Override
+    public long getMaxFrameSize()
+    {
+        return customizer.getMaxFrameSize();
+    }
+
+    @Override
     public void setMaxFrameSize(long maxFrameSize)
     {
         customizer.setMaxFrameSize(maxFrameSize);
     }
 
     @Override
+    public boolean isAutoFragment()
+    {
+        return customizer.isAutoFragment();
+    }
+
+    @Override
     public void setAutoFragment(boolean autoFragment)
     {
         customizer.setAutoFragment(autoFragment);
+    }
+
+    @Override
+    public int getMaxOutgoingFrames()
+    {
+        return customizer.getMaxOutgoingFrames();
+    }
+
+    @Override
+    public void setMaxOutgoingFrames(int maxOutgoingFrames)
+    {
+        customizer.setMaxOutgoingFrames(maxOutgoingFrames);
     }
 
     @Override

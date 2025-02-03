@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -24,8 +24,8 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.eclipse.jetty.client.ContentResponse;
 import org.eclipse.jetty.client.HttpClient;
-import org.eclipse.jetty.client.api.ContentResponse;
 import org.eclipse.jetty.ee9.servlet.ServletContextHandler;
 import org.eclipse.jetty.ee9.servlet.ServletHolder;
 import org.eclipse.jetty.rewrite.handler.RewriteHandler;
@@ -100,7 +100,7 @@ public class BalancerServletTest
         {
             DefaultSessionIdManager sessionIdManager = new DefaultSessionIdManager(server);
             sessionIdManager.setWorkerName(nodeName);
-            server.setSessionIdManager(sessionIdManager);
+            server.addBean(sessionIdManager, true);
         }
 
         return server;
@@ -173,15 +173,14 @@ public class BalancerServletTest
         RewriteHandler rewrite = new RewriteHandler();
         rewrite.setHandler(balancer.getHandler());
         balancer.setHandler(rewrite);
-        rewrite.setRewriteRequestURI(true);
         rewrite.addRule(new VirtualHostRuleContainer());
         balancer.start();
 
-        ContentResponse response = getBalancedResponse("/test/%0A");
+        ContentResponse response = getBalancedResponse("/test/%22foo%22");
         assertThat(response.getStatus(), is(200));
-        assertThat(response.getContentAsString(), containsString("requestURI='/context/mapping/test/%0A'"));
+        assertThat(response.getContentAsString(), containsString("requestURI='/context/mapping/test/%22foo%22'"));
         assertThat(response.getContentAsString(), containsString("servletPath='/mapping'"));
-        assertThat(response.getContentAsString(), containsString("pathInfo='/test/\n'"));
+        assertThat(response.getContentAsString(), containsString("pathInfo='/test/\"foo\"'"));
     }
 
     private String readFirstLine(byte[] responseBytes) throws IOException

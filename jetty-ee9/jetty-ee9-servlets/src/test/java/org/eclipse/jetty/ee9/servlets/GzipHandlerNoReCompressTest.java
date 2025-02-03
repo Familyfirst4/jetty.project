@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -33,7 +33,7 @@ import org.eclipse.jetty.toolchain.test.MavenTestingUtils;
 import org.eclipse.jetty.toolchain.test.Sha1Sum;
 import org.eclipse.jetty.util.IO;
 import org.eclipse.jetty.util.component.LifeCycle;
-import org.eclipse.jetty.util.resource.PathResource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -91,12 +91,12 @@ public class GzipHandlerNoReCompressTest extends AbstractGzipTest
         LocalConnector localConnector = new LocalConnector(server);
         server.addConnector(localConnector);
 
-        Path contextDir = workDir.resolve("context");
+        Path contextDir = workDir.getEmptyPathDir().resolve("context");
         FS.ensureDirExists(contextDir);
 
         ServletContextHandler servletContextHandler = new ServletContextHandler();
         servletContextHandler.setContextPath("/context");
-        servletContextHandler.setBaseResource(new PathResource(contextDir));
+        servletContextHandler.setBaseResource(ResourceFactory.of(server).newResource(contextDir));
         servletContextHandler.addServlet(TestStaticMimeTypeServlet.class, "/*");
 
         gzipHandler.setHandler(servletContextHandler);

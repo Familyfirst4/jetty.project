@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,14 +13,17 @@
 
 package org.eclipse.jetty.server;
 
+import java.io.File;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.URI;
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -28,53 +31,73 @@ import java.util.concurrent.TimeUnit;
 
 import org.eclipse.jetty.http.DateGenerator;
 import org.eclipse.jetty.http.HttpField;
-import org.eclipse.jetty.http.HttpGenerator;
 import org.eclipse.jetty.http.HttpHeader;
-import org.eclipse.jetty.http.PreEncodedHttpField;
+import org.eclipse.jetty.http.MimeTypes;
+import org.eclipse.jetty.io.ArrayByteBufferPool;
+import org.eclipse.jetty.io.ByteBufferPool;
 import org.eclipse.jetty.io.Connection;
 import org.eclipse.jetty.server.handler.ContextHandler;
-import org.eclipse.jetty.server.handler.ErrorProcessor;
+import org.eclipse.jetty.server.handler.ErrorHandler;
+import org.eclipse.jetty.server.internal.ResponseHttpFields;
 import org.eclipse.jetty.util.Attributes;
+import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.DecoratedObjectFactory;
+import org.eclipse.jetty.util.ExceptionUtil;
+import org.eclipse.jetty.util.IO;
 import org.eclipse.jetty.util.Jetty;
-import org.eclipse.jetty.util.MultiException;
+import org.eclipse.jetty.util.NanoTime;
 import org.eclipse.jetty.util.Uptime;
 import org.eclipse.jetty.util.annotation.ManagedAttribute;
+import org.eclipse.jetty.util.annotation.ManagedObject;
 import org.eclipse.jetty.util.annotation.Name;
 import org.eclipse.jetty.util.component.AttributeContainerMap;
+import org.eclipse.jetty.util.component.ClassLoaderDump;
+import org.eclipse.jetty.util.component.DumpableAttributes;
 import org.eclipse.jetty.util.component.DumpableCollection;
+import org.eclipse.jetty.util.component.DumpableMap;
 import org.eclipse.jetty.util.component.Environment;
 import org.eclipse.jetty.util.component.Graceful;
 import org.eclipse.jetty.util.component.LifeCycle;
+import org.eclipse.jetty.util.resource.FileSystemPool;
 import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
 import org.eclipse.jetty.util.thread.AutoLock;
+import org.eclipse.jetty.util.thread.Invocable;
 import org.eclipse.jetty.util.thread.QueuedThreadPool;
+import org.eclipse.jetty.util.thread.ScheduledExecutorScheduler;
+import org.eclipse.jetty.util.thread.Scheduler;
 import org.eclipse.jetty.util.thread.ShutdownThread;
 import org.eclipse.jetty.util.thread.ThreadPool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+@ManagedObject
 public class Server extends Handler.Wrapper implements Attributes
 {
-    public static final String BASE_TEMP_DIR_ATTR = "org.eclipse.jetty.server.BaseTempDir";
     private static final Logger LOG = LoggerFactory.getLogger(Server.class);
     private static final String __serverInfo = "jetty/" + Server.getVersion();
 
     private final AttributeContainerMap _attributes = new AttributeContainerMap();
     private final ThreadPool _threadPool;
+    private final Scheduler _scheduler;
+    private final ByteBufferPool _bufferPool;
     private final List<Connector> _connectors = new CopyOnWriteArrayList<>();
     private final Context _serverContext = new ServerContext();
     private final AutoLock _dateLock = new AutoLock();
+    private final MimeTypes.Mutable _mimeTypes = new MimeTypes.Mutable();
     private String _serverInfo = __serverInfo;
+    private boolean _openEarly = true;
     private boolean _stopAtShutdown;
     private boolean _dumpAfterStart;
     private boolean _dumpBeforeStop;
-    private Request.Processor _errorProcessor;
+    private Handler _defaultHandler;
+    private Request.Handler _errorHandler;
     private RequestLog _requestLog;
     private boolean _dryRun;
     private volatile DateField _dateField;
     private long _stopTimeout;
     private InvocationType _invocationType = InvocationType.NON_BLOCKING;
+    private File _tempDirectory;
 
     public Server()
     {
@@ -93,8 +116,8 @@ public class Server extends Handler.Wrapper implements Attributes
         this((ThreadPool)null);
         ServerConnector connector = new ServerConnector(this);
         connector.setPort(port);
-        setConnectors(new Connector[]{connector});
-        addBean(_attributes);
+        addConnector(connector);
+        installBean(_attributes);
     }
 
     /**
@@ -110,14 +133,53 @@ public class Server extends Handler.Wrapper implements Attributes
         ServerConnector connector = new ServerConnector(this);
         connector.setHost(addr.getHostName());
         connector.setPort(addr.getPort());
-        setConnectors(new Connector[]{connector});
+        addConnector(connector);
     }
 
-    public Server(@Name("threadpool") ThreadPool pool)
+    public Server(@Name("threadPool") ThreadPool pool)
     {
-        _threadPool = pool != null ? pool : new QueuedThreadPool();
-        addBean(_threadPool);
+        this(pool, null, null);
+        installBean(new DumpableMap("System Properties", System.getProperties()));
+    }
+
+    public Server(@Name("threadPool") ThreadPool threadPool, @Name("scheduler") Scheduler scheduler, @Name("bufferPool") ByteBufferPool bufferPool)
+    {
+        _threadPool = threadPool != null ? threadPool : new QueuedThreadPool();
+        installBean(_threadPool);
+        _scheduler = scheduler != null ? scheduler : new ScheduledExecutorScheduler();
+        installBean(_scheduler);
+        _bufferPool = bufferPool != null ? bufferPool : new ArrayByteBufferPool();
+        installBean(_bufferPool);
         setServer(this);
+        installBean(FileSystemPool.INSTANCE, false);
+    }
+
+    public Handler getDefaultHandler()
+    {
+        return _defaultHandler;
+    }
+
+    /**
+     * @param defaultHandler The handler to use if no other handler is set or has handled the request. This handler should
+     *                       always accept the request, even if only to send a 404.
+     */
+    public void setDefaultHandler(Handler defaultHandler)
+    {
+        if (!isDynamic() && isStarted())
+            throw new IllegalStateException(getState());
+        if (defaultHandler != null)
+            defaultHandler.setServer(this);
+        Handler old = _defaultHandler;
+        _defaultHandler = defaultHandler;
+        updateBean(old, defaultHandler);
+    }
+
+    @Override
+    public boolean handle(Request request, Response response, Callback callback) throws Exception
+    {
+        // Handle either with normal handler or default handler
+        Handler next = getHandler();
+        return next != null && next.handle(request, response, callback) || _defaultHandler != null && _defaultHandler.handle(request, response, callback);
     }
 
     public String getServerInfo()
@@ -125,24 +187,110 @@ public class Server extends Handler.Wrapper implements Attributes
         return _serverInfo;
     }
 
+    /**
+     * <p>Convenience method to call {@link #setTempDirectory(File)} from a String representation
+     * of the temporary directory.</p>
+     * @param temp A string representation of the temporary directory.
+     * @see #setTempDirectory(File)
+     */
+    public void setTempDirectory(String temp)
+    {
+        setTempDirectory(new File(temp));
+    }
+
+    /**
+     * <p>Set the temporary directory returned by {@link Context#getTempDirectory()} for the root
+     * {@link Context} returned {@link #getContext()}. If not set explicitly here, then the root
+     * {@link Context#getTempDirectory()} will return either the directory found at
+     * {@code new File(IO.asFile(System.getProperty("jetty.base")), "work")} if it exists,
+     * else the JVMs temporary directory as {@code IO.asFile(System.getProperty("java.io.tmpdir"))}.
+     * @param temp A directory that must exist and be writable or null to get the default.
+     */
+    public void setTempDirectory(File temp)
+    {
+        if (isStarted())
+            throw new IllegalStateException(getState());
+        if (temp != null && !temp.exists())
+            throw new IllegalArgumentException("Does not exist: " + temp);
+        if (temp != null && !temp.canWrite())
+            throw new IllegalArgumentException("Cannot write: " + temp);
+        _tempDirectory = temp;
+    }
+
+    /**
+     * @return The server temporary directory if set, else null. To always obtain a non-null
+     * temporary directory use {@link Context#getTempDirectory()} on {@link #getContext()}.
+     * @see #getContext()
+     * @see Context#getTempDirectory()
+     */
+    @ManagedAttribute(value = "The server temporary directory", readonly = true)
+    public File getTempDirectory()
+    {
+        return _tempDirectory;
+    }
+
     public void setServerInfo(String serverInfo)
     {
         _serverInfo = serverInfo;
     }
 
+    /**
+     * Get the {@link Context} associated with all {@link Request}s prior to being handled by a
+     * {@link ContextHandler}. A {@code Server}'s {@link Context}:
+     * <ul>
+     *     <li>has a {@code null} {@link Context#getContextPath() context path}</li>
+     *     <li>returns the {@link ClassLoader} that loaded the {@link Server} from {@link Context#getClassLoader()}.</li>
+     *     <li>is an {@link java.util.concurrent.Executor} that delegates to the {@link Server#getThreadPool() Server ThreadPool}</li>
+     *     <li>is a {@link org.eclipse.jetty.util.Decorator} using the {@link DecoratedObjectFactory} found
+     *     as a {@link #getBean(Class) bean} of the {@link Server}</li>
+     *     <li>has the same {@link #getTempDirectory() temporary director} of the {@link Server#getTempDirectory() server}</li>
+     * </ul>
+     */
     public Context getContext()
     {
         return _serverContext;
     }
 
+    public MimeTypes.Mutable getMimeTypes()
+    {
+        return _mimeTypes;
+    }
+
     @Override
     public InvocationType getInvocationType()
     {
-        Handler handler = getHandler();
-        if (handler == null)
-            return InvocationType.NON_BLOCKING;
+        if (isDynamic())
+            return InvocationType.BLOCKING;
+
         // Return cached type to avoid a full handler tree walk.
-        return isRunning() ? _invocationType : handler.getInvocationType();
+        if (isStarted())
+            return _invocationType;
+
+        InvocationType type = InvocationType.NON_BLOCKING;
+        Handler handler = getHandler();
+        if (handler != null)
+            type = Invocable.combine(type, handler.getInvocationType());
+        handler = getDefaultHandler();
+        if (handler != null)
+            type = Invocable.combine(type, handler.getInvocationType());
+
+        return type;
+    }
+
+    public boolean isOpenEarly()
+    {
+        return _openEarly;
+    }
+
+    /**
+     * Allows to disable early opening of network sockets. Network sockets are opened early by default.
+     * @param openEarly If {@code openEarly} is {@code true} (default), network sockets are opened before
+     * starting other components. If {@code openEarly} is {@code false}, network connectors open sockets
+     * when they're started.
+     */
+    public void setOpenEarly(boolean openEarly)
+    {
+        _openEarly = openEarly;
     }
 
     public boolean isDryRun()
@@ -160,9 +308,9 @@ public class Server extends Handler.Wrapper implements Attributes
         return _requestLog;
     }
 
-    public Request.Processor getErrorProcessor()
+    public Request.Handler getErrorHandler()
     {
-        return _errorProcessor;
+        return _errorHandler;
     }
 
     public void setRequestLog(RequestLog requestLog)
@@ -171,13 +319,13 @@ public class Server extends Handler.Wrapper implements Attributes
         _requestLog = requestLog;
     }
 
-    public void setErrorProcessor(Request.Processor errorProcessor)
+    public void setErrorHandler(Request.Handler errorHandler)
     {
-        updateBean(_errorProcessor, errorProcessor);
-        _errorProcessor = errorProcessor;
+        updateBean(_errorHandler, errorHandler);
+        _errorHandler = errorHandler;
     }
 
-    @ManagedAttribute("version of this server")
+    @ManagedAttribute("The version of this server")
     public static String getVersion()
     {
         return Jetty.VERSION;
@@ -298,22 +446,35 @@ public class Server extends Handler.Wrapper implements Attributes
     /**
      * @return Returns the threadPool.
      */
-    @ManagedAttribute("the server thread pool")
+    @ManagedAttribute("The server Thread pool")
     public ThreadPool getThreadPool()
     {
         return _threadPool;
     }
 
+    @ManagedAttribute("The server Scheduler")
+    public Scheduler getScheduler()
+    {
+        return _scheduler;
+    }
+
+    @ManagedAttribute("The server ByteBuffer pool")
+    public ByteBufferPool getByteBufferPool()
+    {
+        return _bufferPool;
+    }
+
     /**
      * @return true if {@link #dumpStdErr()} is called after starting
      */
-    @ManagedAttribute("dump state to stderr after start")
+    @ManagedAttribute("Whether to dump the server to stderr after start")
     public boolean isDumpAfterStart()
     {
         return _dumpAfterStart;
     }
 
     /**
+     * Set true if {@link #dumpStdErr()} is called after starting.
      * @param dumpAfterStart true if {@link #dumpStdErr()} is called after starting
      */
     public void setDumpAfterStart(boolean dumpAfterStart)
@@ -324,13 +485,14 @@ public class Server extends Handler.Wrapper implements Attributes
     /**
      * @return true if {@link #dumpStdErr()} is called before stopping
      */
-    @ManagedAttribute("dump state to stderr before stop")
+    @ManagedAttribute("Whether to dump the server to stderr before stop")
     public boolean isDumpBeforeStop()
     {
         return _dumpBeforeStop;
     }
 
     /**
+     * Set true if {@link #dumpStdErr()} is called before stopping.
      * @param dumpBeforeStop true if {@link #dumpStdErr()} is called before stopping
      */
     public void setDumpBeforeStop(boolean dumpBeforeStop)
@@ -338,6 +500,11 @@ public class Server extends Handler.Wrapper implements Attributes
         _dumpBeforeStop = dumpBeforeStop;
     }
 
+    /**
+     * @return A {@link HttpField} instance efficiently recording the current time to a second resolution,
+     * that cannot be cleared from a {@link ResponseHttpFields} instance.
+     * @see ResponseHttpFields.PersistentPreEncodedHttpField
+     */
     public HttpField getDateField()
     {
         long now = System.currentTimeMillis();
@@ -351,7 +518,7 @@ public class Server extends Handler.Wrapper implements Attributes
                 df = _dateField;
                 if (df == null || df._seconds != seconds)
                 {
-                    HttpField field = new PreEncodedHttpField(HttpHeader.DATE, DateGenerator.formatDate(now));
+                    HttpField field = new ResponseHttpFields.PersistentPreEncodedHttpField(HttpHeader.DATE, DateGenerator.formatDate(now));
                     _dateField = new DateField(seconds, field);
                     return field;
                 }
@@ -377,8 +544,8 @@ public class Server extends Handler.Wrapper implements Attributes
             //Start a thread waiting to receive "stop" commands.
             ShutdownMonitor.getInstance().start(); // initialize
 
-            if (_errorProcessor == null)
-                setErrorProcessor(new DynamicErrorProcessor());
+            if (_errorHandler == null)
+                setErrorHandler(new DynamicErrorHandler());
 
             String gitHash = Jetty.GIT_HASH;
             String timestamp = Jetty.BUILD_TIMESTAMP;
@@ -387,15 +554,13 @@ public class Server extends Handler.Wrapper implements Attributes
             if (!Jetty.STABLE)
             {
                 LOG.warn("THIS IS NOT A STABLE RELEASE! DO NOT USE IN PRODUCTION!");
-                LOG.warn("Download a stable release from https://download.eclipse.org/jetty/");
+                LOG.warn("Download a stable release from https://jetty.org/download.html");
             }
 
-            HttpGenerator.setJettyVersion(HttpConfiguration.SERVER_VERSION);
-
-            MultiException mex = new MultiException();
+            final ExceptionUtil.MultiException multiException = new ExceptionUtil.MultiException();
 
             // Open network connector to ensure ports are available
-            if (!_dryRun)
+            if (!_dryRun && _openEarly)
             {
                 _connectors.stream().filter(NetworkConnector.class::isInstance).map(NetworkConnector.class::cast).forEach(connector ->
                 {
@@ -405,11 +570,11 @@ public class Server extends Handler.Wrapper implements Attributes
                     }
                     catch (Throwable th)
                     {
-                        mex.add(th);
+                        multiException.add(th);
                     }
                 });
                 // Throw now if verified start sequence and there was an open exception
-                mex.ifExceptionThrow();
+                multiException.ifExceptionThrow();
             }
 
             // Start the server and components, but not connectors!
@@ -418,8 +583,7 @@ public class Server extends Handler.Wrapper implements Attributes
 
             // Cache the invocation type to avoid runtime walk of handler tree
             // Handlers must check they don't change the InvocationType of a started server
-            Handler handler = getHandler();
-            _invocationType = handler == null ? InvocationType.NON_BLOCKING : handler.getInvocationType();
+            _invocationType = getInvocationType();
 
             if (_dryRun)
             {
@@ -436,13 +600,13 @@ public class Server extends Handler.Wrapper implements Attributes
                 }
                 catch (Throwable e)
                 {
-                    mex.add(e);
+                    multiException.add(e);
                     // stop any started connectors
                     _connectors.stream().filter(LifeCycle::isRunning).map(Object.class::cast).forEach(LifeCycle::stop);
                 }
             }
 
-            mex.ifExceptionThrow();
+            multiException.ifExceptionThrow();
             LOG.info(String.format("Started %s @%dms", this, Uptime.getUptime()));
         }
         catch (Throwable th)
@@ -487,22 +651,22 @@ public class Server extends Handler.Wrapper implements Attributes
         if (LOG.isDebugEnabled())
             LOG.debug("doStop {}", this);
 
-        MultiException mex = new MultiException();
+        Throwable multiException = null;
 
         if (getStopTimeout() > 0)
         {
-            long end = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(getStopTimeout());
+            long end = NanoTime.now() + TimeUnit.MILLISECONDS.toNanos(getStopTimeout());
             try
             {
                 Graceful.shutdown(this).get(getStopTimeout(), TimeUnit.MILLISECONDS);
             }
             catch (Throwable e)
             {
-                mex.add(e);
+                multiException = ExceptionUtil.combine(multiException, e);
             }
             QueuedThreadPool qtp = getBean(QueuedThreadPool.class);
             if (qtp != null)
-                qtp.setStopTimeout(Math.max(1000L, TimeUnit.NANOSECONDS.toMillis(end - System.nanoTime())));
+                qtp.setStopTimeout(Math.max(1000L, NanoTime.millisUntil(end)));
         }
 
         // Now stop the connectors (this will close existing connections)
@@ -514,7 +678,7 @@ public class Server extends Handler.Wrapper implements Attributes
             }
             catch (Throwable e)
             {
-                mex.add(e);
+                multiException = ExceptionUtil.combine(multiException, e);
             }
         }
 
@@ -525,11 +689,11 @@ public class Server extends Handler.Wrapper implements Attributes
         }
         catch (Throwable e)
         {
-            mex.add(e);
+            multiException = ExceptionUtil.combine(multiException, e);
         }
 
-        if (getErrorProcessor() instanceof DynamicErrorProcessor)
-            setErrorProcessor(null);
+        if (getErrorHandler() instanceof DynamicErrorHandler)
+            setErrorHandler(null);
 
         if (getStopAtShutdown())
             ShutdownThread.deregister(this);
@@ -538,7 +702,7 @@ public class Server extends Handler.Wrapper implements Attributes
         //remote stop commands as we are stopped already
         ShutdownMonitor.deregister(this);
 
-        mex.ifExceptionThrow();
+        ExceptionUtil.ifExceptionThrow(multiException);
     }
 
     public void join() throws InterruptedException
@@ -639,6 +803,40 @@ public class Server extends Handler.Wrapper implements Attributes
         return this;
     }
 
+    /**
+     * Get the Default CSS
+     *
+     * @return the default CSS
+     */
+    public Resource getDefaultStyleSheet()
+    {
+        return newResource("/org/eclipse/jetty/server/jetty-dir.css");
+    }
+
+    /**
+     * Get the default Favicon
+     *
+     * @return the default Favicon
+     */
+    public Resource getDefaultFavicon()
+    {
+        return newResource("/org/eclipse/jetty/server/favicon.ico");
+    }
+
+    /**
+     * Create a new Resource representing a resources that is managed by the Server.
+     *
+     * @param name the name of the resource (relative to `/org/eclipse/jetty/server/`)
+     * @return the Resource found, or null if not found.
+     */
+    private Resource newResource(String name)
+    {
+        URL url = getClass().getResource(name);
+        if (url == null)
+            throw new IllegalStateException("Missing server resource: " + name);
+        return ResourceFactory.root().newMemoryResource(url);
+    }
+
     @Override
     public String toString()
     {
@@ -648,7 +846,11 @@ public class Server extends Handler.Wrapper implements Attributes
     @Override
     public void dump(Appendable out, String indent) throws IOException
     {
-        dumpObjects(out, indent, new ClassLoaderDump(this.getClass().getClassLoader()), new DumpableCollection("environments", Environment.getAll()));
+        dumpObjects(out, indent,
+            new ClassLoaderDump(this.getClass().getClassLoader()),
+            new DumpableCollection("environments", Environment.getAll()),
+            new DumpableAttributes("attributes", _attributes),
+            FileSystemPool.INSTANCE);
     }
 
     public static void main(String... args)
@@ -669,10 +871,14 @@ public class Server extends Handler.Wrapper implements Attributes
         }
     }
 
-    private static class DynamicErrorProcessor extends ErrorProcessor {}
+    private static class DynamicErrorHandler extends ErrorHandler {}
 
-    private class ServerContext extends Attributes.Wrapper implements Context
+    class ServerContext extends Attributes.Wrapper implements Context
     {
+        private final File jettyBase = IO.asFile(System.getProperty("jetty.base"));
+        private final File workDir = jettyBase != null && jettyBase.isDirectory() && jettyBase.canWrite() ? new File(jettyBase, "work") : null;
+        private final File tempDir = workDir != null && workDir.isDirectory() && workDir.canWrite() ? workDir : IO.asFile(System.getProperty("java.io.tmpdir"));
+
         private ServerContext()
         {
             super(Server.this);
@@ -682,6 +888,12 @@ public class Server extends Handler.Wrapper implements Attributes
         public String getContextPath()
         {
             return null;
+        }
+
+        @Override
+        public MimeTypes getMimeTypes()
+        {
+            return _mimeTypes;
         }
 
         @Override
@@ -707,7 +919,7 @@ public class Server extends Handler.Wrapper implements Attributes
         {
             runnable.run();
         }
-        
+
         @Override
         public void run(Runnable runnable, Request request)
         {
@@ -721,9 +933,9 @@ public class Server extends Handler.Wrapper implements Attributes
         }
 
         @Override
-        public Request.Processor getErrorProcessor()
+        public Request.Handler getErrorHandler()
         {
-            return Server.this.getErrorProcessor();
+            return Server.this.getErrorHandler();
         }
 
         @Override
@@ -744,26 +956,23 @@ public class Server extends Handler.Wrapper implements Attributes
             if (factory != null)
                 factory.destroy(o);
         }
-    }
 
-    private class ServerEnvironment extends Attributes.Wrapper implements Environment
-    {
-        private ServerEnvironment()
+        @Override
+        public String getPathInContext(String canonicallyEncodedPath)
         {
-            super(Server.this);
+            return canonicallyEncodedPath;
         }
 
         @Override
-        public String getName()
+        public File getTempDirectory()
         {
-            return "Server";
+            return Objects.requireNonNullElse(Server.this.getTempDirectory(), tempDir);
         }
 
         @Override
-        public ClassLoader getClassLoader()
+        public String toString()
         {
-            return Server.class.getClassLoader();
+            return "ServerContext@%x".formatted(Server.this.hashCode());
         }
     }
-
 }

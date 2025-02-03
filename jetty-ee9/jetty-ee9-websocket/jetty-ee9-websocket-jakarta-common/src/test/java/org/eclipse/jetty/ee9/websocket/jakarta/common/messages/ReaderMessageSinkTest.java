@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -27,7 +27,7 @@ import org.eclipse.jetty.util.FutureCallback;
 import org.eclipse.jetty.util.IO;
 import org.eclipse.jetty.websocket.core.Frame;
 import org.eclipse.jetty.websocket.core.OpCode;
-import org.eclipse.jetty.websocket.core.internal.messages.ReaderMessageSink;
+import org.eclipse.jetty.websocket.core.messages.ReaderMessageSink;
 import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -41,11 +41,10 @@ public class ReaderMessageSinkTest extends AbstractMessageSinkTest
         CompletableFuture<StringWriter> copyFuture = new CompletableFuture<>();
         ReaderCopy copy = new ReaderCopy(copyFuture);
         MethodHandle copyHandle = getAcceptHandle(copy, Reader.class);
-        ReaderMessageSink sink = new ReaderMessageSink(session.getCoreSession(), copyHandle);
+        ReaderMessageSink sink = new ReaderMessageSink(session.getCoreSession(), copyHandle, true);
 
         FutureCallback finCallback = new FutureCallback();
         sink.accept(new Frame(OpCode.TEXT).setPayload("Hello World"), finCallback);
-        coreSession.waitForDemand(1, TimeUnit.SECONDS);
 
         StringWriter writer = copyFuture.get(1, TimeUnit.SECONDS);
         assertThat("Writer.contents", writer.getBuffer().toString(), is("Hello World"));
@@ -58,18 +57,15 @@ public class ReaderMessageSinkTest extends AbstractMessageSinkTest
         CompletableFuture<StringWriter> copyFuture = new CompletableFuture<>();
         ReaderCopy copy = new ReaderCopy(copyFuture);
         MethodHandle copyHandle = getAcceptHandle(copy, Reader.class);
-        ReaderMessageSink sink = new ReaderMessageSink(session.getCoreSession(), copyHandle);
+        ReaderMessageSink sink = new ReaderMessageSink(session.getCoreSession(), copyHandle, true);
 
         FutureCallback callback1 = new FutureCallback();
         FutureCallback callback2 = new FutureCallback();
         FutureCallback finCallback = new FutureCallback();
 
         sink.accept(new Frame(OpCode.TEXT).setPayload("Hello").setFin(false), callback1);
-        coreSession.waitForDemand(1, TimeUnit.SECONDS);
         sink.accept(new Frame(OpCode.CONTINUATION).setPayload(", ").setFin(false), callback2);
-        coreSession.waitForDemand(1, TimeUnit.SECONDS);
         sink.accept(new Frame(OpCode.CONTINUATION).setPayload("World").setFin(true), finCallback);
-        coreSession.waitForDemand(1, TimeUnit.SECONDS);
 
         StringWriter writer = copyFuture.get(1, TimeUnit.SECONDS);
         assertThat("Writer contents", writer.getBuffer().toString(), is("Hello, World"));

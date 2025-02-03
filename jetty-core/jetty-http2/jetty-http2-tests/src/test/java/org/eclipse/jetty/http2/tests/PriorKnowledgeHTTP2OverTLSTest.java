@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -17,8 +17,8 @@ import java.net.InetSocketAddress;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
+import org.eclipse.jetty.client.ContentResponse;
 import org.eclipse.jetty.client.HttpClient;
-import org.eclipse.jetty.client.api.ContentResponse;
 import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpScheme;
 import org.eclipse.jetty.http.HttpStatus;
@@ -29,7 +29,7 @@ import org.eclipse.jetty.http2.HTTP2Cipher;
 import org.eclipse.jetty.http2.api.Session;
 import org.eclipse.jetty.http2.api.Stream;
 import org.eclipse.jetty.http2.client.HTTP2Client;
-import org.eclipse.jetty.http2.client.http.HttpClientTransportOverHTTP2;
+import org.eclipse.jetty.http2.client.transport.HttpClientTransportOverHTTP2;
 import org.eclipse.jetty.http2.frames.HeadersFrame;
 import org.eclipse.jetty.http2.server.HTTP2ServerConnectionFactory;
 import org.eclipse.jetty.io.ClientConnector;
@@ -129,23 +129,24 @@ public class PriorKnowledgeHTTP2OverTLSTest
     {
         // The client knows a priori that the server speaks h2 on a particular port.
 
-        start(new Handler.Processor()
+        start(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 callback.succeeded();
+                return true;
             }
         });
 
         int port = connector.getLocalPort();
-        MetaData.Response response = http2Client.connect(http2Client.getClientConnector().getSslContextFactory(), new InetSocketAddress("localhost", port), new Session.Listener.Adapter())
+        MetaData.Response response = http2Client.connect(http2Client.getClientConnector().getSslContextFactory(), new InetSocketAddress("localhost", port), new Session.Listener() {})
             .thenCompose(session ->
             {
                 CompletableFuture<MetaData.Response> responsePromise = new CompletableFuture<>();
                 HttpURI.Mutable uri = HttpURI.build("https://localhost:" + port + "/path");
                 MetaData.Request request = new MetaData.Request("GET", uri, HttpVersion.HTTP_2, HttpFields.EMPTY);
-                return session.newStream(new HeadersFrame(request, null, true), new Stream.Listener.Adapter()
+                return session.newStream(new HeadersFrame(request, null, true), new Stream.Listener()
                 {
                     @Override
                     public void onHeaders(Stream stream, HeadersFrame frame)
@@ -168,12 +169,13 @@ public class PriorKnowledgeHTTP2OverTLSTest
     {
         // The client knows a priori that the server speaks h2 on a particular port.
 
-        start(new Handler.Processor()
+        start(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 callback.succeeded();
+                return true;
             }
         });
 

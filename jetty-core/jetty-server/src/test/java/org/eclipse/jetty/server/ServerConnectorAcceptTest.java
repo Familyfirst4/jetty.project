@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -26,6 +26,7 @@ import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.http.HttpTester;
 import org.eclipse.jetty.io.ManagedSelector;
 import org.eclipse.jetty.util.Callback;
+import org.eclipse.jetty.util.NanoTime;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -42,12 +43,13 @@ public class ServerConnectorAcceptTest
         Server server = new Server();
         ServerConnector connector = new ServerConnector(server, acceptors, 1);
         server.addConnector(connector);
-        server.setHandler(new Handler.Processor()
+        server.setHandler(new Handler.Abstract.NonBlocking()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 callback.succeeded();
+                return true;
             }
         });
         server.start();
@@ -77,7 +79,7 @@ public class ServerConnectorAcceptTest
                 {
                     assertTrue(awaitBarrier(barrier));
 
-                    long start = System.nanoTime();
+                    long start = NanoTime.now();
                     for (int i = 0; i < iterations; ++i)
                     {
                         try (Socket socket = new Socket("localhost", connector.getLocalPort()))
@@ -100,12 +102,11 @@ public class ServerConnectorAcceptTest
                             latch.countDown();
                         }
                     }
-                    long elapsed = System.nanoTime() - start;
                     System.err.printf("%d acceptors, %d threads, %d requests each, time = %d ms%n",
                         acceptors,
                         threads,
                         iterations,
-                        TimeUnit.NANOSECONDS.toMillis(elapsed));
+                        NanoTime.millisSince(start));
                 }
                 finally
                 {

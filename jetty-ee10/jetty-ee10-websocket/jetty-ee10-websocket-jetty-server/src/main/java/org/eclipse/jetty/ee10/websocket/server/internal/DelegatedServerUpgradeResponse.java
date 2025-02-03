@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,46 +14,55 @@
 package org.eclipse.jetty.ee10.websocket.server.internal;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-import org.eclipse.jetty.ee10.websocket.api.ExtensionConfig;
-import org.eclipse.jetty.ee10.websocket.common.JettyExtensionConfig;
+import jakarta.servlet.http.HttpServletResponse;
+import org.eclipse.jetty.ee10.servlet.ServletContextResponse;
 import org.eclipse.jetty.ee10.websocket.server.JettyServerUpgradeResponse;
+import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.server.Response;
-import org.eclipse.jetty.util.Blocking;
+import org.eclipse.jetty.websocket.api.ExtensionConfig;
+import org.eclipse.jetty.websocket.common.JettyExtensionConfig;
+import org.eclipse.jetty.websocket.core.WebSocketConstants;
 import org.eclipse.jetty.websocket.core.server.ServerUpgradeResponse;
 
 public class DelegatedServerUpgradeResponse implements JettyServerUpgradeResponse
 {
     private final ServerUpgradeResponse upgradeResponse;
+    private final HttpServletResponse httpServletResponse;
+    private final Map<String, List<String>> headers;
 
     public DelegatedServerUpgradeResponse(ServerUpgradeResponse response)
     {
         upgradeResponse = response;
+        ServletContextResponse servletContextResponse = Response.as(response, ServletContextResponse.class);
+        this.httpServletResponse = (HttpServletResponse)servletContextResponse.getRequest()
+            .getAttribute(WebSocketConstants.WEBSOCKET_WRAPPED_RESPONSE_ATTRIBUTE);
+        this.headers = HttpFields.asMap(upgradeResponse.getHeaders());
     }
 
     @Override
     public void addHeader(String name, String value)
     {
+        // TODO: This should go to the httpServletResponse for headers but then it won't do interception of the websocket headers
+        //  which are done through the jetty-core Response wrapping ServerUpgradeResponse done by websocket-core.
         upgradeResponse.getHeaders().add(name, value);
     }
 
     @Override
     public void setHeader(String name, String value)
     {
-        upgradeResponse.getHeaders().put(name, value);
+        headers.put(name, List.of(value));
     }
 
     @Override
     public void setHeader(String name, List<String> values)
     {
-        upgradeResponse.getHeaders().put(name, values);
+        headers.put(name, values);
     }
 
     @Override
@@ -83,9 +92,7 @@ public class DelegatedServerUpgradeResponse implements JettyServerUpgradeRespons
     @Override
     public Map<String, List<String>> getHeaders()
     {
-        Map<String, List<String>> headers = getHeaderNames().stream()
-            .collect(Collectors.toMap((name) -> name, (name) -> new ArrayList<>(getHeaders(name))));
-        return Collections.unmodifiableMap(headers);
+        return headers;
     }
 
     @Override
@@ -97,17 +104,13 @@ public class DelegatedServerUpgradeResponse implements JettyServerUpgradeRespons
     @Override
     public int getStatusCode()
     {
-        return upgradeResponse.getStatus();
+        return httpServletResponse.getStatus();
     }
 
     @Override
     public void sendForbidden(String message) throws IOException
     {
-        try (Blocking.Callback callback = Blocking.callback())
-        {
-            Response.writeError(upgradeResponse.getRequest(), upgradeResponse, callback, HttpStatus.FORBIDDEN_403, message);
-            callback.block();
-        }
+        httpServletResponse.sendError(HttpStatus.FORBIDDEN_403, message);
     }
 
     @Override
@@ -127,22 +130,18 @@ public class DelegatedServerUpgradeResponse implements JettyServerUpgradeRespons
     @Override
     public void setStatusCode(int statusCode)
     {
-        upgradeResponse.setStatus(statusCode);
+        httpServletResponse.setStatus(statusCode);
     }
 
     @Override
     public boolean isCommitted()
     {
-        return upgradeResponse.isCommitted();
+        return httpServletResponse.isCommitted();
     }
 
     @Override
     public void sendError(int statusCode, String message) throws IOException
     {
-        try (Blocking.Callback callback = Blocking.callback())
-        {
-            Response.writeError(upgradeResponse.getRequest(), upgradeResponse, callback, statusCode, message);
-            callback.block();
-        }
+        httpServletResponse.sendError(statusCode, message);
     }
 }

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -26,11 +26,11 @@ import jakarta.servlet.ServletResponse;
 import jakarta.servlet.http.HttpServletMapping;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import org.eclipse.jetty.http.BadMessageException;
+import org.eclipse.jetty.http.HttpException;
 import org.eclipse.jetty.http.HttpURI;
 import org.eclipse.jetty.http.UriCompliance;
 import org.eclipse.jetty.util.Attributes;
-import org.eclipse.jetty.util.MultiMap;
+import org.eclipse.jetty.util.Fields;
 import org.eclipse.jetty.util.URIUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -87,7 +87,7 @@ public class Dispatcher implements RequestDispatcher
 
         final DispatcherType old_type = baseRequest.getDispatcherType();
         final Attributes old_attr = baseRequest.getAttributes();
-        final MultiMap<String> old_query_params = baseRequest.getQueryParameters();
+        final Fields old_query_fields = baseRequest.getQueryFields();
         final ContextHandler.APIContext old_context = baseRequest.getContext();
         final ServletPathMapping old_mapping = baseRequest.getServletPathMapping();
         try
@@ -123,7 +123,7 @@ public class Dispatcher implements RequestDispatcher
         {
             baseRequest.setAttributes(old_attr);
             baseRequest.getResponse().included();
-            baseRequest.setQueryParameters(old_query_params);
+            baseRequest.setQueryFields(old_query_fields);
             baseRequest.resetParameters();
             baseRequest.setDispatcherType(old_type);
         }
@@ -151,7 +151,7 @@ public class Dispatcher implements RequestDispatcher
         final String old_path_in_context = baseRequest.getPathInContext();
         final ServletPathMapping old_mapping = baseRequest.getServletPathMapping();
         final ServletPathMapping source_mapping = baseRequest.findServletPathMapping();
-        final MultiMap<String> old_query_params = baseRequest.getQueryParameters();
+        final Fields old_query_params = baseRequest.getQueryFields();
         final Attributes old_attr = baseRequest.getAttributes();
         final DispatcherType old_type = baseRequest.getDispatcherType();
 
@@ -170,7 +170,7 @@ public class Dispatcher implements RequestDispatcher
                 checkUriViolations(_uri, baseRequest);
 
                 // If we have already been forwarded previously, then keep using the established
-                // original value. Otherwise, this is the first forward and we need to establish the values.
+                // original value. Otherwise, this is the first forward, and we need to establish the values.
                 // Note: the established value on the original request for pathInfo and
                 // for queryString is allowed to be null, but cannot be null for the other values.
                 // Note: the pathInfo is passed as the pathInContext since it is only used when there is
@@ -178,7 +178,7 @@ public class Dispatcher implements RequestDispatcher
                 if (old_attr.getAttribute(FORWARD_REQUEST_URI) == null)
                     baseRequest.setAttributes(new ForwardAttributes(old_attr,
                         old_uri.getPath(),
-                        old_context.getContextHandler().getContextPathEncoded(),
+                        baseRequest.getContextPath(),
                         baseRequest.getPathInContext(),
                         source_mapping,
                         old_uri.getQuery()));
@@ -188,7 +188,8 @@ public class Dispatcher implements RequestDispatcher
                     query = old_uri.getQuery();
 
                 String decodedPathInContext = URIUtil.decodePath(_pathInContext);
-                baseRequest.onDispatch(HttpURI.build(old_uri, _uri.getPath(), _uri.getParam(), query), decodedPathInContext);
+                baseRequest.setHttpURI(HttpURI.build(old_uri, _uri.getPath(), _uri.getParam(), query));
+                baseRequest.setContext(_contextHandler.getServletContext(), decodedPathInContext);
 
                 if (_uri.getQuery() != null || old_uri.getQuery() != null)
                 {
@@ -196,17 +197,17 @@ public class Dispatcher implements RequestDispatcher
                     {
                         baseRequest.mergeQueryParameters(old_uri.getQuery(), _uri.getQuery());
                     }
-                    catch (BadMessageException e)
+                    catch (Throwable e)
                     {
-                        // Only throw BME if not in Error Dispatch Mode
-                        // This allows application ErrorPageErrorHandler to handle BME messages
-                        if (dispatch != DispatcherType.ERROR)
+                        // Only throw HttpException if not in Error Dispatch Mode
+                        // This allows application ErrorPageErrorHandler to handle HttpException messages
+                        if (e instanceof HttpException && dispatch == DispatcherType.ERROR)
                         {
-                            throw e;
+                            LOG.warn("Ignoring Original Bad Request Query String: {}", old_uri, e);
                         }
                         else
                         {
-                            LOG.warn("Ignoring Original Bad Request Query String: {}", old_uri, e);
+                            throw e;
                         }
                     }
                 }
@@ -229,9 +230,10 @@ public class Dispatcher implements RequestDispatcher
         }
         finally
         {
-            baseRequest.onDispatch(old_uri, old_path_in_context);
+            baseRequest.setHttpURI(old_uri);
+            baseRequest.setContext(old_context, old_path_in_context);
             baseRequest.setServletPathMapping(old_mapping);
-            baseRequest.setQueryParameters(old_query_params);
+            baseRequest.setQueryFields(old_query_params);
             baseRequest.resetParameters();
             baseRequest.setAttributes(old_attr);
             baseRequest.setDispatcherType(old_type);
@@ -244,7 +246,7 @@ public class Dispatcher implements RequestDispatcher
         {
             HttpChannel channel = baseRequest.getHttpChannel();
             UriCompliance compliance = channel == null || channel.getHttpConfiguration() == null ? null : channel.getHttpConfiguration().getUriCompliance();
-            String illegalState = UriCompliance.checkUriCompliance(compliance, uri);
+            String illegalState = UriCompliance.checkUriCompliance(compliance, uri, org.eclipse.jetty.server.HttpChannel.from(baseRequest.getCoreRequest()).getComplianceViolationListener());
             if (illegalState != null)
                 throw new IllegalStateException(illegalState);
         }
@@ -305,14 +307,14 @@ public class Dispatcher implements RequestDispatcher
             if (key.startsWith(__INCLUDE_PREFIX))
                 return null;
 
-            return _attributes.getAttribute(key);
+            return getWrapped().getAttribute(key);
         }
 
         @Override
         public Set<String> getAttributeNameSet()
         {
             HashSet<String> set = new HashSet<>();
-            for (String name : _attributes.getAttributeNameSet())
+            for (String name : getWrapped().getAttributeNameSet())
             {
                 if (!name.startsWith(__INCLUDE_PREFIX) &&
                     !name.startsWith(__FORWARD_PREFIX))
@@ -345,13 +347,13 @@ public class Dispatcher implements RequestDispatcher
             // name is set here, it will be hidden by this class during the forward,
             // but revealed after the forward is complete just as if the reserved name
             // attribute had be set by the application before the forward.
-            return _attributes.setAttribute(key, value);
+            return getWrapped().setAttribute(key, value);
         }
 
         @Override
         public String toString()
         {
-            return "FORWARD+" + _attributes.toString();
+            return "FORWARD+" + getWrapped().toString();
         }
 
         @Override
@@ -438,14 +440,14 @@ public class Dispatcher implements RequestDispatcher
                 }
             }
 
-            return _attributes.getAttribute(key);
+            return getWrapped().getAttribute(key);
         }
 
         @Override
         public Set<String> getAttributeNameSet()
         {
             HashSet<String> set = new HashSet<>();
-            for (String name : _attributes.getAttributeNameSet())
+            for (String name : getWrapped().getAttributeNameSet())
             {
                 if (!name.startsWith(__INCLUDE_PREFIX))
                     set.add(name);
@@ -481,13 +483,13 @@ public class Dispatcher implements RequestDispatcher
         {
             // Allow any attribute to be set, even if a reserved name. If a reserved
             // name is set here, it will be revealed after the include is complete.
-            return _attributes.setAttribute(key, value);
+            return getWrapped().setAttribute(key, value);
         }
 
         @Override
         public String toString()
         {
-            return "INCLUDE+" + _attributes.toString();
+            return "INCLUDE+" + getWrapped().toString();
         }
 
         @Override

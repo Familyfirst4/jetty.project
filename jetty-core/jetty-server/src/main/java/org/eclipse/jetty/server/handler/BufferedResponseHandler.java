@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -19,17 +19,15 @@ import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpMethod;
 import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.http.MimeTypes;
-import org.eclipse.jetty.http.pathmap.PathSpecSet;
-import org.eclipse.jetty.io.ByteBufferAccumulator;
 import org.eclipse.jetty.io.ByteBufferPool;
+import org.eclipse.jetty.io.Content;
 import org.eclipse.jetty.server.ConnectionMetaData;
 import org.eclipse.jetty.server.Handler;
+import org.eclipse.jetty.server.HttpConfiguration;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.Response;
-import org.eclipse.jetty.util.BufferUtil;
 import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.IncludeExclude;
-import org.eclipse.jetty.util.IteratingNestedCallback;
 import org.eclipse.jetty.util.StringUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,25 +45,44 @@ import org.slf4j.LoggerFactory;
  * decision to buffer or not.
  * </p>
  * <p>
- * Note also that there are no memory limits to the size of the buffer, thus
- * this handler can represent an unbounded memory commitment if the content
- * generated can also be unbounded.
+ * Note also that the size of the buffer can be controlled by setting the
+ * {@link #BUFFER_SIZE_ATTRIBUTE_NAME} request attribute to an integer;
+ * in the absence of such header, the {@link HttpConfiguration#getOutputBufferSize()}
+ * config setting is used, while the maximum aggregation size can be controlled
+ * by setting the {@link #MAX_AGGREGATION_SIZE_ATTRIBUTE_NAME} request attribute to an integer,
+ * in the absence of such header, the {@link HttpConfiguration#getOutputAggregationSize()}
+ * config setting is used.
  * </p>
  */
-public class BufferedResponseHandler extends Handler.Wrapper
+public class BufferedResponseHandler extends ConditionalHandler.Abstract
 {
+    /**
+     * The name of the request attribute used to control the buffer size of a particular request.
+     */
     public static final String BUFFER_SIZE_ATTRIBUTE_NAME = BufferedResponseHandler.class.getName() + ".buffer-size";
+    /**
+     * The name of the request attribute used to control the max aggregation size of a particular request.
+     */
+    public static final String MAX_AGGREGATION_SIZE_ATTRIBUTE_NAME = BufferedResponseHandler.class.getName() + ".max-aggregation-size";
 
     private static final Logger LOG = LoggerFactory.getLogger(BufferedResponseHandler.class);
 
-    private final IncludeExclude<String> _methods = new IncludeExclude<>();
-    private final IncludeExclude<String> _paths = new IncludeExclude<>(PathSpecSet.class);
     private final IncludeExclude<String> _mimeTypes = new IncludeExclude<>();
 
     public BufferedResponseHandler()
     {
-        _methods.include(HttpMethod.GET.asString());
-        for (String type : MimeTypes.getKnownMimeTypes())
+        this(null);
+    }
+
+    public BufferedResponseHandler(Handler handler)
+    {
+        super(handler);
+
+        includeMethod(HttpMethod.GET.asString());
+
+        // Mimetypes are not a condition on the ConditionalHandler as they
+        // are also check during response generation, once the type is known.
+        for (String type : MimeTypes.DEFAULTS.getMimeMap().values())
         {
             if (type.startsWith("image/") ||
                 type.startsWith("audio/") ||
@@ -77,32 +94,23 @@ public class BufferedResponseHandler extends Handler.Wrapper
             LOG.debug("{} mime types {}", this, _mimeTypes);
     }
 
-    public IncludeExclude<String> getMethodIncludeExclude()
+    public void includeMimeType(String... mimeTypes)
     {
-        return _methods;
+        if (isStarted())
+            throw new IllegalStateException(getState());
+        _mimeTypes.include(mimeTypes);
     }
 
-    public IncludeExclude<String> getPathIncludeExclude()
+    public void excludeMimeType(String... mimeTypes)
     {
-        return _paths;
-    }
-
-    public IncludeExclude<String> getMimeIncludeExclude()
-    {
-        return _mimeTypes;
+        if (isStarted())
+            throw new IllegalStateException(getState());
+        _mimeTypes.exclude(mimeTypes);
     }
 
     protected boolean isMimeTypeBufferable(String mimetype)
     {
         return _mimeTypes.test(mimetype);
-    }
-
-    protected boolean isPathBufferable(String requestURI)
-    {
-        if (requestURI == null)
-            return true;
-
-        return _paths.test(requestURI);
     }
 
     protected boolean shouldBuffer(Response response, boolean last)
@@ -123,35 +131,17 @@ public class BufferedResponseHandler extends Handler.Wrapper
     }
 
     @Override
-    public Request.Processor handle(Request request) throws Exception
+    public boolean onConditionsMet(Request request, Response response, Callback callback) throws Exception
     {
-        Request.Processor processor = super.handle(request);
-        if (processor == null)
-            return null;
-
-        final String path = request.getPathInContext();
+        Handler next = getHandler();
+        if (next == null)
+            return false;
 
         if (LOG.isDebugEnabled())
-            LOG.debug("{} handle {} in {}", this, request, request.getContext());
-
-        // If not a supported method this URI is always excluded.
-        if (!_methods.test(request.getMethod()))
-        {
-            if (LOG.isDebugEnabled())
-                LOG.debug("{} excluded by method {}", this, request);
-            return processor;
-        }
-
-        // If not a supported path this URI is always excluded.
-        if (!isPathBufferable(path))
-        {
-            if (LOG.isDebugEnabled())
-                LOG.debug("{} excluded by path {}", this, request);
-            return processor;
-        }
+            LOG.debug("{} doHandle {} in {}", this, request, request.getContext());
 
         // If the mime type is known from the path then apply mime type filtering.
-        String mimeType = MimeTypes.getDefaultMimeByExtension(path); // TODO context specicif mimetypes : context.getMimeType(path);
+        String mimeType = request.getContext().getMimeTypes().getMimeByExtension(request.getHttpURI().getCanonicalPath());
         if (mimeType != null)
         {
             mimeType = MimeTypes.getContentTypeWithoutCharset(mimeType);
@@ -160,24 +150,27 @@ public class BufferedResponseHandler extends Handler.Wrapper
                 if (LOG.isDebugEnabled())
                     LOG.debug("{} excluded by path suffix mime type {}", this, request);
 
-                // handle normally without setting vary header
-                return processor;
+                // handle without buffering
+                return next.handle(request, response, callback);
             }
         }
 
-        // Install buffered interceptor and handle.
-        return (rq, rs, callback) ->
-        {
-            BufferedResponse bufferedResponse = new BufferedResponse(rq, rs, callback);
-            processor.process(rq, bufferedResponse, bufferedResponse);
-        };
+        BufferedResponse bufferedResponse = new BufferedResponse(request, response, callback);
+        return next.handle(request, bufferedResponse, bufferedResponse);
+    }
+
+    @Override
+    protected boolean onConditionsNotMet(Request request, Response response, Callback callback) throws Exception
+    {
+        return nextHandler(request, response, callback);
     }
 
     private class BufferedResponse extends Response.Wrapper implements Callback
     {
         private final Callback _callback;
-        private CountingByteBufferAccumulator _accumulator;
+        private Content.Sink _bufferedContentSink;
         private boolean _firstWrite = true;
+        private boolean _lastWritten;
 
         private BufferedResponse(Request request, Response response, Callback callback)
         {
@@ -190,58 +183,34 @@ public class BufferedResponseHandler extends Handler.Wrapper
         {
             if (_firstWrite)
             {
-                if (shouldBuffer(this, last))
-                {
-                    ConnectionMetaData connectionMetaData = getRequest().getConnectionMetaData();
-                    ByteBufferPool byteBufferPool = connectionMetaData.getConnector().getByteBufferPool();
-                    boolean useOutputDirectByteBuffers = connectionMetaData.getHttpConfiguration().isUseOutputDirectByteBuffers();
-                    _accumulator = new CountingByteBufferAccumulator(byteBufferPool, useOutputDirectByteBuffers, getBufferSize());
-                }
                 _firstWrite = false;
+                if (shouldBuffer(this, last))
+                    _bufferedContentSink = createBufferedSink();
             }
-
-            if (_accumulator != null)
-            {
-                ByteBuffer current = byteBuffer != null ? byteBuffer : BufferUtil.EMPTY_BUFFER;
-                IteratingNestedCallback writer = new IteratingNestedCallback(callback)
-                {
-                    private boolean complete;
-
-                    @Override
-                    protected Action process()
-                    {
-                        if (complete)
-                            return Action.SUCCEEDED;
-                        boolean write = _accumulator.copyBuffer(current);
-                        complete = last && !current.hasRemaining();
-                        if (write || complete)
-                        {
-                            BufferedResponse.super.write(complete, _accumulator.takeByteBuffer(), this);
-                            return Action.SCHEDULED;
-                        }
-                        return Action.SUCCEEDED;
-                    }
-                };
-                writer.iterate();
-            }
-            else
-            {
-                super.write(last, byteBuffer, callback);
-            }
+            _lastWritten |= last;
+            Content.Sink destSink = _bufferedContentSink != null ? _bufferedContentSink : getWrapped();
+            destSink.write(last, byteBuffer, callback);
         }
 
-        private int getBufferSize()
+        private Content.Sink createBufferedSink()
         {
-            Object attribute = getRequest().getAttribute(BufferedResponseHandler.BUFFER_SIZE_ATTRIBUTE_NAME);
-            return attribute instanceof Integer ? (int)attribute : Integer.MAX_VALUE;
+            Request request = getRequest();
+            ConnectionMetaData connectionMetaData = request.getConnectionMetaData();
+            ByteBufferPool bufferPool = connectionMetaData.getConnector().getByteBufferPool();
+            HttpConfiguration httpConfiguration = connectionMetaData.getHttpConfiguration();
+            Object attribute = request.getAttribute(BufferedResponseHandler.BUFFER_SIZE_ATTRIBUTE_NAME);
+            int bufferSize = attribute instanceof Integer ? (int)attribute : httpConfiguration.getOutputBufferSize();
+            attribute = request.getAttribute(BufferedResponseHandler.MAX_AGGREGATION_SIZE_ATTRIBUTE_NAME);
+            int maxAggregationSize = attribute instanceof Integer ? (int)attribute : httpConfiguration.getOutputAggregationSize();
+            boolean direct = httpConfiguration.isUseOutputDirectByteBuffers();
+            return Content.Sink.asBuffered(getWrapped(), bufferPool, direct, maxAggregationSize, bufferSize);
         }
 
         @Override
         public void succeeded()
         {
-            // TODO pass all accumulated buffers as an array instead of allocating & copying into a single one.
-            if (_accumulator != null)
-                super.write(true, _accumulator.takeByteBuffer(), Callback.from(_callback, _accumulator::close));
+            if (_bufferedContentSink != null && !_lastWritten)
+                _bufferedContentSink.write(true, null, _callback);
             else
                 _callback.succeeded();
         }
@@ -249,63 +218,9 @@ public class BufferedResponseHandler extends Handler.Wrapper
         @Override
         public void failed(Throwable x)
         {
-            if (_accumulator != null)
-                _accumulator.close();
-            else
-                // TODO: this callback should always be failed!
-                _callback.failed(x);
-        }
-    }
-
-    private static class CountingByteBufferAccumulator implements AutoCloseable
-    {
-        private final ByteBufferAccumulator _accumulator;
-        private final int _maxSize;
-        private int _accumulatedCount;
-
-        private CountingByteBufferAccumulator(ByteBufferPool bufferPool, boolean direct, int maxSize)
-        {
-            if (maxSize <= 0)
-                throw new IllegalArgumentException("maxSize must be > 0, was: " + maxSize);
-            _maxSize = maxSize;
-            _accumulator = new ByteBufferAccumulator(bufferPool, direct);
-        }
-
-        private boolean copyBuffer(ByteBuffer buffer)
-        {
-            int remainingCapacity = space();
-            if (buffer.remaining() >= remainingCapacity)
-            {
-                _accumulatedCount += remainingCapacity;
-                int end = buffer.position() + remainingCapacity;
-                _accumulator.copyBuffer(buffer.duplicate().limit(end));
-                buffer.position(end);
-                return true;
-            }
-            else
-            {
-                _accumulatedCount += buffer.remaining();
-                _accumulator.copyBuffer(buffer);
-                return false;
-            }
-        }
-
-        private int space()
-        {
-            return _maxSize - _accumulatedCount;
-        }
-
-        private ByteBuffer takeByteBuffer()
-        {
-            _accumulatedCount = 0;
-            return _accumulator.takeByteBuffer();
-        }
-
-        @Override
-        public void close()
-        {
-            _accumulatedCount = 0;
-            _accumulator.close();
+            if (_bufferedContentSink != null && !_lastWritten)
+                _bufferedContentSink.write(true, null, Callback.NOOP);
+            _callback.failed(x);
         }
     }
 }

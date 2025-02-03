@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -18,6 +18,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 
 import org.eclipse.jetty.server.HttpConfiguration;
 import org.eclipse.jetty.server.LocalConnector;
@@ -28,7 +29,6 @@ import org.eclipse.jetty.toolchain.test.jupiter.WorkDirExtension;
 import org.hamcrest.Matchers;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
@@ -36,34 +36,34 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-@Disabled
 @ExtendWith(WorkDirExtension.class)
 public class DefaultServletRangesTest
 {
     public static final String DATA = "01234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWZYZ!@#$%^&*()_+/.,[]";
-    public WorkDir testdir;
+
+    public WorkDir workDir;
+    public Path testdir;
 
     private Server server;
     private LocalConnector connector;
-    private ServletContextHandler context;
 
     @BeforeEach
     public void init() throws Exception
     {
+        testdir = workDir.getEmptyPathDir();
         server = new Server();
 
         connector = new LocalConnector(server);
         connector.getConnectionFactory(HttpConfiguration.ConnectionFactory.class).getHttpConfiguration().setSendServerVersion(false);
 
-        context = new ServletContextHandler();
+        ServletContextHandler context = new ServletContextHandler();
         context.setContextPath("/context");
         context.setWelcomeFiles(new String[]{"index.html", "index.jsp", "index.htm"});
 
         server.setHandler(context);
         server.addConnector(connector);
 
-        testdir.ensureEmpty();
-        File resBase = testdir.getPathFile("docroot").toFile();
+        File resBase = testdir.resolve("docroot").toFile();
         FS.ensureDirExists(resBase);
         File data = new File(resBase, "data.txt");
         createFile(data, DATA);
@@ -142,7 +142,7 @@ public class DefaultServletRangesTest
                 "Connection: close\r\n" +
                 "Range: bytes=0-9,20-29,40-49\r\n" +
                 "\r\n");
-        int start = response.indexOf("--jetty");
+        int start = response.indexOf("--");
         String body = response.substring(start);
         String boundary = body.substring(0, body.indexOf("\r\n"));
         assertResponseContains("206 Partial", response);
@@ -186,9 +186,9 @@ public class DefaultServletRangesTest
             "GET /context/data.txt HTTP/1.1\r\n" +
                 "Host: localhost\r\n" +
                 "Connection: close\r\n" +
-                "Range: bytes=" + stringBuilder.toString() + "0-2\r\n" +
+                "Range: bytes=" + stringBuilder + "0-2\r\n" +
                 "\r\n");
-        int start = response.indexOf("--jetty");
+        int start = response.indexOf("--");
         String body = response.substring(start);
         String boundary = body.substring(0, body.indexOf("\r\n"));
         assertResponseContains("206 Partial", response);

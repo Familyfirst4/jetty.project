@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -20,7 +20,7 @@ public interface ConstraintAware
 {
     List<ConstraintMapping> getConstraintMappings();
 
-    Set<String> getRoles();
+    Set<String> getKnownRoles();
 
     /**
      * Set Constraint Mappings and roles.
@@ -45,7 +45,7 @@ public interface ConstraintAware
      *
      * @param role the role
      */
-    void addRole(String role);
+    void addKnownRole(String role);
 
     /**
      * See Servlet Spec 31, sec 13.8.4, pg 145

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -47,7 +47,7 @@ public class SlowClientWithPipelinedRequestTest
             @Override
             public Connection newConnection(Connector connector, EndPoint endPoint)
             {
-                return configure(new HttpConnection(getHttpConfiguration(), connector, endPoint, isRecordHttpComplianceViolations())
+                return configure(new HttpConnection(getHttpConfiguration(), connector, endPoint)
                 {
                     @Override
                     public void onFillable()
@@ -79,12 +79,12 @@ public class SlowClientWithPipelinedRequestTest
     public void testSlowClientWithPipelinedRequest() throws Exception
     {
         final int contentLength = 512 * 1024;
-        startServer(new Handler.Processor()
+        startServer(new Handler.Abstract.NonBlocking()
         {
             @Override
-            public void process(Request request, Response response, Callback callback) throws Exception
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
             {
-                if ("/content".equals(request.getPathInContext()))
+                if ("/content".equals(Request.getPathInContext(request)))
                 {
                     // TODO is this still a valid test?
                     // We simulate what the DefaultServlet does, bypassing the blocking
@@ -101,6 +101,7 @@ public class SlowClientWithPipelinedRequestTest
                 {
                     callback.succeeded();
                 }
+                return true;
             }
         });
 

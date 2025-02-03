@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -16,19 +16,19 @@ package org.eclipse.jetty.ee9.maven.plugin;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 
 import org.eclipse.jetty.ee9.webapp.Configuration;
 import org.eclipse.jetty.ee9.webapp.MetaInfConfiguration;
 import org.eclipse.jetty.ee9.webapp.WebAppContext;
+import org.eclipse.jetty.util.FileID;
 import org.eclipse.jetty.util.resource.Resource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * MavenWebInfConfiguration
+ * MavenMetaInfConfiguration
  *
- * WebInfConfiguration to take account of overlaid wars expressed as project dependencies and
+ * MetaInfConfiguration to take account of overlaid wars expressed as project dependencies and
  * potential configured via the maven-war-plugin.
  */
 public class MavenMetaInfConfiguration extends MetaInfConfiguration
@@ -62,12 +62,12 @@ public class MavenMetaInfConfiguration extends MetaInfConfiguration
         {
             files.forEach(file ->
             {
-                if (file.getName().toLowerCase(Locale.ENGLISH).endsWith(".jar") || file.isDirectory())
+                if (FileID.isJavaArchive(file.getName()) || file.isDirectory())
                 {
                     try
                     {
                         LOG.debug(" add  resource to resources to examine {}", file);
-                        list.add(Resource.newResource(file.toURI()));
+                        list.add(context.getResourceFactory().newResource(file.toURI()));
                     }
                     catch (Exception e)
                     {
@@ -101,7 +101,9 @@ public class MavenMetaInfConfiguration extends MetaInfConfiguration
                 {
                     try
                     {
-                        list.add(Resource.newResource(file.toURI()));
+                        if (LOG.isDebugEnabled())
+                            LOG.debug("Adding {}", file.toURI());
+                        list.add(context.getResourceFactory().newResource(file.toURI()));
                     }
                     catch (Exception e)
                     {

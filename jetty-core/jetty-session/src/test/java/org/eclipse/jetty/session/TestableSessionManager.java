@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -19,7 +19,9 @@ import java.util.Map;
 
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.Server;
-import org.eclipse.jetty.session.Session.APISession;
+import org.eclipse.jetty.server.Session;
+import org.eclipse.jetty.server.Session.API;
+import org.eclipse.jetty.util.StringUtil;
 
 /**
  * TestSessionHandler
@@ -67,12 +69,12 @@ public class TestableSessionManager extends AbstractSessionManager
     }
 
     @Override
-    public APISession newSessionAPIWrapper(Session session)
+    public API newSessionAPIWrapper(ManagedSession session)
     {
-        return new APISession()
+        return new API()
         {
             @Override
-            public Session getCoreSession()
+            public ManagedSession getSession()
             {
                 return session;
             }
@@ -85,88 +87,105 @@ public class TestableSessionManager extends AbstractSessionManager
     }
 
     @Override
-    public Session getSession(Request request)
+    public ManagedSession getManagedSession(Request request)
     {
         return null;
     }
 
     @Override
-    public void callSessionIdListeners(Session session, String oldId)
+    public void onSessionIdChanged(Session session, String oldId)
     {
+        super.onSessionIdChanged(session, oldId);
         _sessionIdListenersCalled.add(session.getId());
     }
 
     @Override
-    public void callSessionCreatedListeners(Session session)
+    public void onSessionCreated(Session session)
     {
+        super.onSessionCreated(session);
         _sessionCreatedListenersCalled.add(session.getId());
     }
 
     @Override
-    public void callSessionDestroyedListeners(Session session)
+    public void onSessionDestroyed(Session session)
     {
+        super.onSessionDestroyed(session);
         _sessionDestroyedListenersCalled.add(session.getId());
     }
 
     @Override
-    public void callSessionAttributeListeners(Session session, String name, Object old, Object value)
+    public void onSessionAttributeUpdate(Session session, String name, Object old, Object value)
     {
+        if (old != null)
+            callUnboundBindingListener(session, name, old);
+        if (value != null)
+            callBoundBindingListener(session, name, value);
+
         _sessionAttributeListenersCalled.add(session.getId());
     }
 
-    @Override
-    public void callUnboundBindingListener(Session session, String name, Object value)
+    protected void callUnboundBindingListener(Session session, String name, Object value)
     {
         _sessionUnboundListenersCalled.add(session.getId());
     }
 
-    @Override
-    public void callBoundBindingListener(Session session, String name, Object value)
+    protected void callBoundBindingListener(Session session, String name, Object value)
     {
         _sessionBoundListenersCalled.add(session.getId());
     }
 
     @Override
-    public void callSessionActivationListener(Session session, String name, Object value)
+    public void onSessionActivation(Session session)
+    {
+        for (String name : session.getAttributeNameSet())
+            callSessionActivationListener(session, name, session.getAttribute(name));
+    }
+
+    @Override
+    public void onSessionPassivation(Session session)
+    {
+        for (String name : session.getAttributeNameSet())
+            callSessionPassivationListener(session, name, session.getAttribute(name));
+    }
+
+    protected void callSessionActivationListener(Session session, String name, Object value)
     {
         _sessionActivationListenersCalled.add(session.getId());
     }
 
-    @Override
-    public void callSessionPassivationListener(Session session, String name, Object value)
+    protected void callSessionPassivationListener(Session session, String name, Object value)
     {
         _sessionPassivationListenersCalled.add(session.getId());
     }
 
     protected void configureCookies()
     {
-        String tmp = _cookieConfig.get(__SessionCookieProperty);
-        if (tmp != null)
-            setSessionCookie(tmp);
+        String cookieName = _cookieConfig.get(__SessionCookieProperty);
+        if (StringUtil.isNotBlank(cookieName))
+            setSessionCookie(cookieName);
 
-        tmp = _cookieConfig.get(__SessionIdPathParameterNameProperty);
-        if (tmp != null)
-            setSessionIdPathParameterName(tmp);
+        String paramName = _cookieConfig.get(__SessionIdPathParameterNameProperty);
+        if (StringUtil.isNotBlank(paramName))
+            setSessionIdPathParameterName(paramName);
 
-        // set up the max session cookie age if it isn't already
-        if (getMaxCookieAge() == -1)
-        {
-            tmp = _cookieConfig.get(__MaxAgeProperty);
-            if (tmp != null)
-                setMaxCookieAge(Integer.parseInt(tmp.trim()));
-        }
+        // set up the max session cookie age
+        String maxAge = _cookieConfig.get(__MaxAgeProperty);
+        if (StringUtil.isNotBlank(maxAge))
+            setMaxCookieAge(Integer.parseInt(maxAge));
 
-        // set up the session domain if it isn't already
-        if (getSessionDomain() == null)
-            setSessionDomain(_cookieConfig.get(__SessionDomainProperty));
+        // set up the session domain
+        String domain = _cookieConfig.get(__SessionDomainProperty);
+        if (StringUtil.isNotBlank(domain))
+            setSessionDomain(domain);
 
-        // set up the sessionPath if it isn't already
-        if (getSessionPath() == null)
-            setSessionPath(_cookieConfig.get(__SessionPathProperty));
+        // set up the sessionPath
+        String path = _cookieConfig.get(__SessionPathProperty);
+        if (StringUtil.isNotBlank(path))
+            setSessionPath(path);
 
-        tmp = _cookieConfig.get(__CheckRemoteSessionEncoding);
-        if (tmp != null)
-            setCheckingRemoteSessionIdEncoding(Boolean.parseBoolean(tmp));
+        String checkEncoding = _cookieConfig.get(__CheckRemoteSessionEncodingProperty);
+        if (StringUtil.isNotBlank(checkEncoding))
+            setCheckingRemoteSessionIdEncoding(Boolean.parseBoolean(checkEncoding));
     }
     
     public Map<String, String> getCookieConfig()

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -16,13 +16,16 @@ package org.eclipse.jetty.server.handler;
 import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.HttpChannelTest;
 import org.eclipse.jetty.server.Request;
+import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.util.Callback;
 import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.nullValue;
+import static org.hamcrest.Matchers.sameInstance;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
@@ -35,9 +38,9 @@ public class HandlerTest
     public void testWrapperSetServer()
     {
         Server s = new Server();
-        Handler.Wrapper a = new Handler.Wrapper();
-        Handler.Wrapper b = new Handler.Wrapper();
-        Handler.Wrapper c = new Handler.Wrapper();
+        Handler.Singleton a = new Handler.Wrapper();
+        Handler.Singleton b = new Handler.Wrapper();
+        Handler.Singleton c = new Handler.Wrapper();
         a.setHandler(b);
         b.setHandler(c);
 
@@ -50,9 +53,9 @@ public class HandlerTest
     public void testWrapperServerSet()
     {
         Server s = new Server();
-        Handler.Wrapper a = new Handler.Wrapper();
-        Handler.Wrapper b = new Handler.Wrapper();
-        Handler.Wrapper c = new Handler.Wrapper();
+        Handler.Singleton a = new Handler.Wrapper();
+        Handler.Singleton b = new Handler.Wrapper();
+        Handler.Singleton c = new Handler.Wrapper();
         a.setServer(s);
         b.setHandler(c);
         a.setHandler(b);
@@ -64,7 +67,7 @@ public class HandlerTest
     @Test
     public void testWrapperThisLoop()
     {
-        Handler.Wrapper a = new Handler.Wrapper();
+        Handler.Singleton a = new Handler.Wrapper();
 
         IllegalStateException e = assertThrows(IllegalStateException.class, () -> a.setHandler(a));
         assertThat(e.getMessage(), containsString("loop"));
@@ -73,8 +76,8 @@ public class HandlerTest
     @Test
     public void testWrapperSimpleLoop()
     {
-        Handler.Wrapper a = new Handler.Wrapper();
-        Handler.Wrapper b = new Handler.Wrapper();
+        Handler.Singleton a = new Handler.Wrapper();
+        Handler.Singleton b = new Handler.Wrapper();
 
         a.setHandler(b);
 
@@ -85,9 +88,9 @@ public class HandlerTest
     @Test
     public void testWrapperDeepLoop()
     {
-        Handler.Wrapper a = new Handler.Wrapper();
-        Handler.Wrapper b = new Handler.Wrapper();
-        Handler.Wrapper c = new Handler.Wrapper();
+        Handler.Singleton a = new Handler.Wrapper();
+        Handler.Singleton b = new Handler.Wrapper();
+        Handler.Singleton c = new Handler.Wrapper();
 
         a.setHandler(b);
         b.setHandler(c);
@@ -99,9 +102,9 @@ public class HandlerTest
     @Test
     public void testWrapperChainLoop()
     {
-        Handler.Wrapper a = new Handler.Wrapper();
-        Handler.Wrapper b = new Handler.Wrapper();
-        Handler.Wrapper c = new Handler.Wrapper();
+        Handler.Singleton a = new Handler.Wrapper();
+        Handler.Singleton b = new Handler.Wrapper();
+        Handler.Singleton c = new Handler.Wrapper();
 
         a.setHandler(b);
         c.setHandler(a);
@@ -114,13 +117,13 @@ public class HandlerTest
     public void testHandlerCollectionSetServer()
     {
         Server s = new Server();
-        Handler.Collection a = new Handler.Collection();
-        Handler.Collection b = new Handler.Collection();
-        Handler.Collection b1 = new Handler.Collection();
-        Handler.Collection b2 = new Handler.Collection();
-        Handler.Collection c = new Handler.Collection();
-        Handler.Collection c1 = new Handler.Collection();
-        Handler.Collection c2 = new Handler.Collection();
+        Handler.Sequence a = new Handler.Sequence();
+        Handler.Sequence b = new Handler.Sequence();
+        Handler.Sequence b1 = new Handler.Sequence();
+        Handler.Sequence b2 = new Handler.Sequence();
+        Handler.Sequence c = new Handler.Sequence();
+        Handler.Sequence c1 = new Handler.Sequence();
+        Handler.Sequence c2 = new Handler.Sequence();
 
         a.addHandler(b);
         a.addHandler(c);
@@ -140,13 +143,13 @@ public class HandlerTest
     public void testHandlerCollectionServerSet()
     {
         Server s = new Server();
-        Handler.Collection a = new Handler.Collection();
-        Handler.Collection b = new Handler.Collection();
-        Handler.Collection b1 = new Handler.Collection();
-        Handler.Collection b2 = new Handler.Collection();
-        Handler.Collection c = new Handler.Collection();
-        Handler.Collection c1 = new Handler.Collection();
-        Handler.Collection c2 = new Handler.Collection();
+        Handler.Sequence a = new Handler.Sequence();
+        Handler.Sequence b = new Handler.Sequence();
+        Handler.Sequence b1 = new Handler.Sequence();
+        Handler.Sequence b2 = new Handler.Sequence();
+        Handler.Sequence c = new Handler.Sequence();
+        Handler.Sequence c1 = new Handler.Sequence();
+        Handler.Sequence c2 = new Handler.Sequence();
 
         a.setServer(s);
         a.addHandler(b);
@@ -165,7 +168,7 @@ public class HandlerTest
     @Test
     public void testHandlerCollectionThisLoop()
     {
-        Handler.Collection a = new Handler.Collection();
+        Handler.Sequence a = new Handler.Sequence();
 
         IllegalStateException e = assertThrows(IllegalStateException.class, () -> a.addHandler(a));
         assertThat(e.getMessage(), containsString("loop"));
@@ -174,13 +177,13 @@ public class HandlerTest
     @Test
     public void testHandlerCollectionDeepLoop()
     {
-        Handler.Collection a = new Handler.Collection();
-        Handler.Collection b = new Handler.Collection();
-        Handler.Collection b1 = new Handler.Collection();
-        Handler.Collection b2 = new Handler.Collection();
-        Handler.Collection c = new Handler.Collection();
-        Handler.Collection c1 = new Handler.Collection();
-        Handler.Collection c2 = new Handler.Collection();
+        Handler.Sequence a = new Handler.Sequence();
+        Handler.Sequence b = new Handler.Sequence();
+        Handler.Sequence b1 = new Handler.Sequence();
+        Handler.Sequence b2 = new Handler.Sequence();
+        Handler.Sequence c = new Handler.Sequence();
+        Handler.Sequence c1 = new Handler.Sequence();
+        Handler.Sequence c2 = new Handler.Sequence();
 
         a.addHandler(b);
         a.addHandler(c);
@@ -194,13 +197,13 @@ public class HandlerTest
     @Test
     public void testHandlerCollectionChainLoop()
     {
-        Handler.Collection a = new Handler.Collection();
-        Handler.Collection b = new Handler.Collection();
-        Handler.Collection b1 = new Handler.Collection();
-        Handler.Collection b2 = new Handler.Collection();
-        Handler.Collection c = new Handler.Collection();
-        Handler.Collection c1 = new Handler.Collection();
-        Handler.Collection c2 = new Handler.Collection();
+        Handler.Sequence a = new Handler.Sequence();
+        Handler.Sequence b = new Handler.Sequence();
+        Handler.Sequence b1 = new Handler.Sequence();
+        Handler.Sequence b2 = new Handler.Sequence();
+        Handler.Sequence c = new Handler.Sequence();
+        Handler.Sequence c1 = new Handler.Sequence();
+        Handler.Sequence c2 = new Handler.Sequence();
 
         a.addHandler(c);
         b.setHandlers(b1, b2);
@@ -214,8 +217,8 @@ public class HandlerTest
     @Test
     public void testInsertWrapperTail()
     {
-        Handler.Wrapper a = new Handler.Wrapper();
-        Handler.Wrapper b = new Handler.Wrapper();
+        Handler.Singleton a = new Handler.Wrapper();
+        Handler.Singleton b = new Handler.Wrapper();
 
         a.insertHandler(b);
         assertThat(a.getHandler(), equalTo(b));
@@ -225,9 +228,9 @@ public class HandlerTest
     @Test
     public void testInsertWrapper()
     {
-        Handler.Wrapper a = new Handler.Wrapper();
-        Handler.Wrapper b = new Handler.Wrapper();
-        Handler.Wrapper c = new Handler.Wrapper();
+        Handler.Singleton a = new Handler.Wrapper();
+        Handler.Singleton b = new Handler.Wrapper();
+        Handler.Singleton c = new Handler.Wrapper();
 
         a.insertHandler(c);
         a.insertHandler(b);
@@ -239,10 +242,10 @@ public class HandlerTest
     @Test
     public void testInsertWrapperChain()
     {
-        Handler.Wrapper a = new Handler.Wrapper();
-        Handler.Wrapper b = new Handler.Wrapper();
-        Handler.Wrapper c = new Handler.Wrapper();
-        Handler.Wrapper d = new Handler.Wrapper();
+        Handler.Singleton a = new Handler.Wrapper();
+        Handler.Singleton b = new Handler.Wrapper();
+        Handler.Singleton c = new Handler.Wrapper();
+        Handler.Singleton d = new Handler.Wrapper();
 
         a.insertHandler(d);
         b.insertHandler(c);
@@ -256,23 +259,69 @@ public class HandlerTest
     @Test
     public void testInsertWrapperBadChain()
     {
-        Handler.Wrapper a = new Handler.Wrapper();
-        Handler.Wrapper b = new Handler.Wrapper();
-        Handler.Wrapper c = new Handler.Wrapper();
-        Handler.Wrapper d = new Handler.Wrapper();
+        Handler.Singleton a = new Handler.Wrapper();
+        Handler.Singleton b = new Handler.Wrapper();
+        Handler.Singleton c = new Handler.Wrapper();
+        Handler.Singleton d = new Handler.Wrapper();
 
         a.insertHandler(d);
         b.insertHandler(c);
         c.setHandler(new Handler.Abstract()
         {
             @Override
-            public Request.Processor handle(Request request)
+            public boolean handle(Request request, Response response, Callback callback)
             {
-                return null;
+                return false;
             }
         });
 
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> a.insertHandler(b));
         assertThat(e.getMessage(), containsString("bad tail"));
+    }
+
+    @Test
+    public void testSetServerPropagation()
+    {
+        Handler.Singleton wrapper = new Handler.Wrapper();
+        Handler.Sequence collection = new Handler.Sequence();
+        Handler handler = new Handler.Abstract()
+        {
+            @Override
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
+            {
+                return false;
+            }
+        };
+
+        collection.addHandler(wrapper);
+        wrapper.setHandler(handler);
+
+        Server server = new Server();
+        collection.setServer(server);
+
+        assertThat(handler.getServer(), sameInstance(server));
+    }
+
+    @Test
+    public void testSetHandlerServerPropagation()
+    {
+        Handler.Singleton wrapper = new Handler.Wrapper();
+        Handler.Sequence collection = new Handler.Sequence();
+        Handler handler = new Handler.Abstract()
+        {
+            @Override
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
+            {
+                return false;
+            }
+        };
+
+        Server server = new Server();
+        collection.setServer(server);
+
+        collection.addHandler(wrapper);
+        wrapper.setHandler(handler);
+
+        assertThat(handler.getServer(), sameInstance(server));
     }
 }

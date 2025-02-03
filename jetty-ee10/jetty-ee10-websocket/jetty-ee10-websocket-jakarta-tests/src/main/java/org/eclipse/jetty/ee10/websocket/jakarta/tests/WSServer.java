@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -100,7 +100,7 @@ public class WSServer extends LocalServer implements LocalFuzzer.Provider
             context = new WebAppContext();
             context.setContextPath("/" + contextName);
             context.setInitParameter("org.eclipse.jetty.ee10.servlet.Default.dirAllowed", "false");
-            context.setBaseResource(contextDir);
+            context.setBaseResourceAsPath(contextDir);
             context.setAttribute("org.eclipse.jetty.websocket.jakarta", Boolean.TRUE);
             context.addConfiguration(new JakartaWebSocketConfiguration());
         }
@@ -127,9 +127,10 @@ public class WSServer extends LocalServer implements LocalFuzzer.Provider
 
         public void copyWebInf(String testResourceName) throws IOException
         {
-            File testWebXml = MavenTestingUtils.getTestResourceFile(testResourceName);
+            Path testWebXml = MavenTestingUtils.getTestResourcePath(testResourceName);
             Path webXml = webInf.resolve("web.xml");
-            IO.copy(testWebXml, webXml.toFile());
+            Files.deleteIfExists(webXml);
+            IO.copy(testWebXml, webXml);
         }
 
         public void copyClass(Class<?> clazz) throws Exception
@@ -141,7 +142,7 @@ public class WSServer extends LocalServer implements LocalFuzzer.Provider
             Path destFile = classesDir.resolve(endpointPath);
             FS.ensureDirExists(destFile.getParent());
             File srcFile = new File(classUrl.toURI());
-            IO.copy(srcFile, destFile.toFile());
+            IO.copy(srcFile.toPath(), destFile);
         }
 
         public void copyLib(Class<?> clazz, String jarFileName) throws URISyntaxException, IOException
@@ -160,7 +161,7 @@ public class WSServer extends LocalServer implements LocalFuzzer.Provider
             else
             {
                 LOG.info("Copying " + sourceCodeSourceFile + " to " + jarFile);
-                IO.copy(sourceCodeSourceFile, jarFile.toFile());
+                IO.copy(sourceCodeSourceFile.toPath(), jarFile);
             }
         }
 

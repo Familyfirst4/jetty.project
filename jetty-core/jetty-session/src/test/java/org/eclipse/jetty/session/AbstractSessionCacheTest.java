@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -19,6 +19,7 @@ import java.util.concurrent.TimeUnit;
 
 import org.eclipse.jetty.logging.StacklessLogging;
 import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.server.Session;
 import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -134,6 +135,7 @@ public abstract class AbstractSessionCacheTest
         //prefill the datastore with a session that will be treated as unreadable
         UnreadableSessionDataStore store = new UnreadableSessionDataStore(1, new SessionData("1234", "/test", "0.0.0.0", System.currentTimeMillis(), 0, 0, -1));
         cache.setSessionDataStore(store);
+        cache.setRemoveUnloadableSessions(true);
         sessionManager.setSessionCache(cache);
         server.addBean(sessionManager);
         sessionManager.setServer(server);
@@ -143,7 +145,7 @@ public abstract class AbstractSessionCacheTest
         {
             //check that session 1234 cannot be read, ie returns null AND
             //that it is deleted in the datastore
-            Session session = sessionManager.getSession("1234");
+            Session session = sessionManager.getManagedSession("1234");
             assertNull(session);
             assertFalse(store.exists("1234"));
         }
@@ -212,7 +214,7 @@ public abstract class AbstractSessionCacheTest
 
         assertFalse(cache.contains("1234"));
 
-        Session session = cache.get("1234");
+        ManagedSession session = cache.get("1234");
         assertEquals(1, session.getRequests());
         assertNotNull(session);
         assertEquals("1234", session.getId());
@@ -246,7 +248,7 @@ public abstract class AbstractSessionCacheTest
 
         //call commit: session has not changed, should not be written
         store._numSaves.set(0); //clear save counter
-        Session session = createUnExpiredSession(cache, store, "1234", 100); //simulate previously saved);
+        ManagedSession session = createUnExpiredSession(cache, store, "1234", 100); //simulate previously saved);
         cache.add("1234", session);
         commitAndCheckSaveState(cache, store, session, false, true, false, true, 0, 0);
 
@@ -318,7 +320,7 @@ public abstract class AbstractSessionCacheTest
         //to be committed:
 
         //call commit: session has not changed, should not be written
-        Session session = createUnExpiredSession(cache, store, "1234", 100);
+        ManagedSession session = createUnExpiredSession(cache, store, "1234", 100);
         cache.add("1234", session);
         commitAndCheckSaveState(cache, store, session, false, true, false, true, 0, 0);
         //call release: session has not changed, but metadata has, should be written
@@ -449,7 +451,7 @@ public abstract class AbstractSessionCacheTest
         assertTrue(cache.exists("1234"));
 
         //test one that exists in the cache also
-        Session session = cache.newSession(data);
+        ManagedSession session = cache.newSession(data);
         cache.add("1234", session);
         assertTrue(cache.exists("1234"));
     }
@@ -476,7 +478,7 @@ public abstract class AbstractSessionCacheTest
         server.start();
 
         //test remove non-existent session
-        Session session = cache.delete("1234");
+        ManagedSession session = cache.delete("1234");
         assertNull(session);
 
         //test remove of existing session in store only
@@ -525,7 +527,7 @@ public abstract class AbstractSessionCacheTest
         long now = System.currentTimeMillis();
         SessionData data = store.newSessionData("1234", now - 20, now - 10, now - 20, TimeUnit.MINUTES.toMillis(10));
         data.setExpiry(now + TimeUnit.DAYS.toMillis(1));
-        Session session = cache.newSession(data);
+        ManagedSession session = cache.newSession(data);
         cache.add("1234", session);
         cache.release(session);
         assertTrue(cache.exists("1234"));
@@ -617,7 +619,7 @@ public abstract class AbstractSessionCacheTest
         //put a session in the cache and store
         long now = System.currentTimeMillis();
         SessionData data = store.newSessionData("1234", now - 20, now - 10, now - 20, TimeUnit.MINUTES.toMillis(10));
-        Session session = cache.newSession(data);
+        ManagedSession session = cache.newSession(data);
         cache.add("1234", session);
         session.setAttribute("aaa", "111"); //add an attribute to be called with passivate/activate
         cache.release(session);
@@ -658,7 +660,7 @@ public abstract class AbstractSessionCacheTest
         //Make a session in the store and cache and check that it is invalidated on shutdown
         long now = System.currentTimeMillis();
         SessionData data = store.newSessionData("8888", now - 20, now - 10, now - 20, TimeUnit.MINUTES.toMillis(10));
-        Session session = cache.newSession(data);
+        ManagedSession session = cache.newSession(data);
         cache.add("8888", session);
         session.setAttribute("aaa", "111");
         cache.release(session);
@@ -669,7 +671,7 @@ public abstract class AbstractSessionCacheTest
         checkSessionAfterShutdown("8888", store, cache, sessionManager);
     }
 
-    public void commitAndCheckSaveState(SessionCache cache, TestableSessionDataStore store, Session session,
+    public void commitAndCheckSaveState(SessionCache cache, TestableSessionDataStore store, ManagedSession session,
                                         boolean expectedBeforeDirty, boolean expectedBeforeMetaDirty,
                                         boolean expectedAfterDirty, boolean expectedAfterMetaDirty,
                                         int expectedBeforeNumSaves, int expectedAfterNumSaves)
@@ -684,7 +686,7 @@ public abstract class AbstractSessionCacheTest
         assertEquals(expectedAfterNumSaves, store._numSaves.get());
     }
 
-    public Session createUnExpiredSession(SessionCache cache, SessionDataStore store, String id, int lastSave)
+    public ManagedSession createUnExpiredSession(SessionCache cache, SessionDataStore store, String id, int lastSave)
     {
         long now = System.currentTimeMillis();
         SessionData data = store.newSessionData(id, now - 20, now - 10, now - 20, TimeUnit.MINUTES.toMillis(10));

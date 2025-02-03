@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -26,9 +26,11 @@ import java.util.List;
 
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.toolchain.test.MavenTestingUtils;
+import org.eclipse.jetty.util.ClassMatcher;
 import org.eclipse.jetty.util.IO;
-import org.eclipse.jetty.util.resource.PathResource;
+import org.eclipse.jetty.util.component.LifeCycle;
 import org.eclipse.jetty.util.resource.Resource;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -46,27 +48,37 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 public class WebAppClassLoaderTest
 {
-    private Path testWebappDir;
+    private Path _testWebappDir;
     private WebAppContext _context;
     protected WebAppClassLoader _loader;
+    private Server _server;
 
     @BeforeEach
     public void init() throws Exception
     {
-        this.testWebappDir = MavenTestingUtils.getProjectDirPath("src/test/webapp");
-        Resource webapp = new PathResource(testWebappDir);
+        _server = new Server();
 
+        _testWebappDir = MavenTestingUtils.getProjectDirPath("src/test/webapp");
         _context = new WebAppContext();
-        _context.setBaseResource(webapp.getPath());
+        Resource webapp = _context.getResourceFactory().newResource(_testWebappDir);
+        _context.setBaseResource(webapp);
         _context.setContextPath("/test");
         _context.setExtraClasspath("src/test/resources/ext/*");
 
         _loader = new WebAppClassLoader(_context);
-        _loader.addJars(webapp.addPath("WEB-INF/lib"));
-        _loader.addClassPath(webapp.addPath("WEB-INF/classes"));
+        _loader.addJars(webapp.resolve("WEB-INF/lib"));
+        _loader.addClassPath(webapp.resolve("WEB-INF/classes"));
         _loader.setName("test");
 
-        _context.setServer(new Server());
+        _server.setHandler(_context);
+        _server.start();
+    }
+
+    @AfterEach
+    public void afterEach()
+    {
+        IO.close(_loader);
+        LifeCycle.stop(_server);
     }
 
     public void assertCanLoadClass(String clazz) throws ClassNotFoundException
@@ -198,11 +210,11 @@ public class WebAppClassLoaderTest
     @Test
     public void testExposedClassDeprecated() throws Exception
     {
-        String[] oldSC = _context.getServerClasses();
+        String[] oldSC = _context.getHiddenClasses();
         String[] newSC = new String[oldSC.length + 1];
         newSC[0] = "-org.eclipse.jetty.ee10.webapp.Configuration";
         System.arraycopy(oldSC, 0, newSC, 1, oldSC.length);
-        _context.setServerClassMatcher(new ClassMatcher(newSC));
+        _context.setHiddenClassMatcher(new ClassMatcher(newSC));
 
         assertCanLoadClass("org.acme.webapp.ClassInJarA");
         assertCanLoadClass("org.acme.webapp.ClassInJarB");
@@ -215,7 +227,7 @@ public class WebAppClassLoaderTest
     @Test
     public void testExposedClass() throws Exception
     {
-        _context.getServerClassMatcher().exclude("org.eclipse.jetty.ee10.webapp.Configuration");
+        _context.getHiddenClassMatcher().exclude("org.eclipse.jetty.ee10.webapp.Configuration");
 
         assertCanLoadClass("org.acme.webapp.ClassInJarA");
         assertCanLoadClass("org.acme.webapp.ClassInJarB");
@@ -228,18 +240,18 @@ public class WebAppClassLoaderTest
     @Test
     public void testSystemServerClassDeprecated() throws Exception
     {
-        String[] oldServC = _context.getServerClasses();
+        String[] oldServC = _context.getHiddenClasses();
         String[] newServC = new String[oldServC.length + 1];
         newServC[0] = "org.eclipse.jetty.ee10.webapp.Configuration";
         System.arraycopy(oldServC, 0, newServC, 1, oldServC.length);
 
-        _context.setServerClassMatcher(new ClassMatcher(newServC));
+        _context.setHiddenClassMatcher(new ClassMatcher(newServC));
 
-        String[] oldSysC = _context.getSystemClasses();
+        String[] oldSysC = _context.getProtectedClasses();
         String[] newSysC = new String[oldSysC.length + 1];
         newSysC[0] = "org.eclipse.jetty.ee10.webapp.";
         System.arraycopy(oldSysC, 0, newSysC, 1, oldSysC.length);
-        _context.setSystemClassMatcher(new ClassMatcher(newSysC));
+        _context.setProtectedClassMatcher(new ClassMatcher(newSysC));
 
         assertCanLoadClass("org.acme.webapp.ClassInJarA");
         assertCanLoadClass("org.acme.webapp.ClassInJarB");
@@ -247,28 +259,28 @@ public class WebAppClassLoaderTest
         assertCantLoadClass("org.eclipse.jetty.ee10.webapp.Configuration");
         assertCantLoadClass("org.eclipse.jetty.ee10.webapp.JarScanner");
 
-        oldSysC = _context.getSystemClasses();
+        oldSysC = _context.getProtectedClasses();
         newSysC = new String[oldSysC.length + 1];
         newSysC[0] = "org.acme.webapp.ClassInJarA";
         System.arraycopy(oldSysC, 0, newSysC, 1, oldSysC.length);
-        _context.setSystemClassMatcher(new ClassMatcher(newSysC));
+        _context.setProtectedClassMatcher(new ClassMatcher(newSysC));
 
         assertCanLoadResource("org/acme/webapp/ClassInJarA.class");
-        _context.setSystemClassMatcher(new ClassMatcher(oldSysC));
+        _context.setProtectedClassMatcher(new ClassMatcher(oldSysC));
 
-        oldServC = _context.getServerClasses();
+        oldServC = _context.getHiddenClasses();
         newServC = new String[oldServC.length + 1];
         newServC[0] = "org.acme.webapp.ClassInJarA";
         System.arraycopy(oldServC, 0, newServC, 1, oldServC.length);
-        _context.setServerClassMatcher(new ClassMatcher(newServC));
+        _context.setHiddenClassMatcher(new ClassMatcher(newServC));
         assertCanLoadResource("org/acme/webapp/ClassInJarA.class");
     }
 
     @Test
     public void testSystemServerClass() throws Exception
     {
-        _context.getServerClassMatcher().add("org.eclipse.jetty.ee10.webapp.Configuration");
-        _context.getSystemClassMatcher().add("org.eclipse.jetty.ee10.webapp.");
+        _context.getHiddenClassMatcher().add("org.eclipse.jetty.ee10.webapp.Configuration");
+        _context.getProtectedClassMatcher().add("org.eclipse.jetty.ee10.webapp.");
 
         assertCanLoadClass("org.acme.webapp.ClassInJarA");
         assertCanLoadClass("org.acme.webapp.ClassInJarB");
@@ -276,11 +288,11 @@ public class WebAppClassLoaderTest
         assertCantLoadClass("org.eclipse.jetty.ee10.webapp.Configuration");
         assertCantLoadClass("org.eclipse.jetty.ee10.webapp.JarScanner");
 
-        _context.getSystemClassMatcher().add("org.acme.webapp.ClassInJarA");
+        _context.getProtectedClassMatcher().add("org.acme.webapp.ClassInJarA");
         assertCanLoadResource("org/acme/webapp/ClassInJarA.class");
-        _context.getSystemClassMatcher().remove("org.acme.webapp.ClassInJarA");
+        _context.getProtectedClassMatcher().remove("org.acme.webapp.ClassInJarA");
 
-        _context.getServerClassMatcher().add("org.acme.webapp.ClassInJarA");
+        _context.getHiddenClassMatcher().add("org.acme.webapp.ClassInJarA");
         assertCanLoadResource("org/acme/webapp/ClassInJarA.class");
     }
 
@@ -294,8 +306,8 @@ public class WebAppClassLoaderTest
         List<URL> resources;
 
         // Expected Locations
-        URL webappWebInfLibAcme = new URI("jar:" + testWebappDir.resolve("WEB-INF/lib/acme.jar").toUri().toASCIIString() + "!/org/acme/resource.txt").toURL();
-        URL webappWebInfClasses = testWebappDir.resolve("WEB-INF/classes/org/acme/resource.txt").toUri().toURL();
+        URL webappWebInfLibAcme = new URI("jar:" + _testWebappDir.resolve("WEB-INF/lib/acme.jar").toUri().toASCIIString() + "!/org/acme/resource.txt").toURL();
+        URL webappWebInfClasses = _testWebappDir.resolve("WEB-INF/classes/org/acme/resource.txt").toUri().toURL();
         // (from parent classloader)
         URL targetTestClasses = this.getClass().getClassLoader().getResource("org/acme/resource.txt");
 
@@ -303,7 +315,6 @@ public class WebAppClassLoaderTest
 
         resources = Collections.list(_loader.getResources("org/acme/resource.txt"));
 
-        expected.clear();
         expected.add(webappWebInfLibAcme);
         expected.add(webappWebInfClasses);
         expected.add(targetTestClasses);
@@ -327,11 +338,11 @@ public class WebAppClassLoaderTest
 //        assertEquals(0,resources.get(1).toString().indexOf("jar:file:"));
 //        assertEquals(-1,resources.get(2).toString().indexOf("test-classes"));
 
-        String[] oldServC = _context.getServerClasses();
+        String[] oldServC = _context.getHiddenClasses();
         String[] newServC = new String[oldServC.length + 1];
         newServC[0] = "org.acme.";
         System.arraycopy(oldServC, 0, newServC, 1, oldServC.length);
-        _context.setServerClassMatcher(new ClassMatcher(newServC));
+        _context.setHiddenClassMatcher(new ClassMatcher(newServC));
 
         _context.setParentLoaderPriority(true);
         // dump(_context);
@@ -348,12 +359,12 @@ public class WebAppClassLoaderTest
 //        assertEquals(0,resources.get(0).toString().indexOf("jar:file:"));
 //        assertEquals(0,resources.get(1).toString().indexOf("file:"));
 
-        _context.setServerClassMatcher(new ClassMatcher(oldServC));
-        String[] oldSysC = _context.getSystemClasses();
+        _context.setHiddenClassMatcher(new ClassMatcher(oldServC));
+        String[] oldSysC = _context.getProtectedClasses();
         String[] newSysC = new String[oldSysC.length + 1];
         newSysC[0] = "org.acme.";
         System.arraycopy(oldSysC, 0, newSysC, 1, oldSysC.length);
-        _context.setSystemClassMatcher(new ClassMatcher(newSysC));
+        _context.setProtectedClassMatcher(new ClassMatcher(newSysC));
 
         _context.setParentLoaderPriority(true);
         // dump(_context);

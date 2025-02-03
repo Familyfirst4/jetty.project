@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,12 +13,11 @@
 
 package org.eclipse.jetty.server.handler.gzip;
 
-import java.util.EnumSet;
+import java.util.ListIterator;
 import java.util.Set;
-import java.util.regex.Pattern;
 import java.util.zip.Deflater;
 
-import org.eclipse.jetty.http.CompressedContentFormat;
+import org.eclipse.jetty.http.EtagUtils;
 import org.eclipse.jetty.http.HttpField;
 import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpHeader;
@@ -28,8 +27,10 @@ import org.eclipse.jetty.http.PreEncodedHttpField;
 import org.eclipse.jetty.http.pathmap.PathSpecSet;
 import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.Request;
+import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.util.AsciiLowerCaseSet;
+import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.IncludeExclude;
 import org.eclipse.jetty.util.StringUtil;
 import org.eclipse.jetty.util.compression.DeflaterPool;
@@ -39,15 +40,12 @@ import org.slf4j.LoggerFactory;
 
 public class GzipHandler extends Handler.Wrapper implements GzipFactory
 {
-    public static final EnumSet<HttpHeader> ETAG_HEADERS = EnumSet.of(HttpHeader.IF_MATCH, HttpHeader.IF_NONE_MATCH);
     public static final String GZIP_HANDLER_ETAGS = "o.e.j.s.h.gzip.GzipHandler.etag";
     public static final String GZIP = "gzip";
     public static final String DEFLATE = "deflate";
     public static final int DEFAULT_MIN_GZIP_SIZE = 32;
     public static final int BREAK_EVEN_GZIP_SIZE = 23;
     private static final Logger LOG = LoggerFactory.getLogger(GzipHandler.class);
-    private static final HttpField X_CE_GZIP = new PreEncodedHttpField("X-Content-Encoding", "gzip");
-    private static final Pattern COMMA_GZIP = Pattern.compile(".*, *gzip");
 
     private InflaterPool _inflaterPool;
     private DeflaterPool _deflaterPool;
@@ -59,16 +57,26 @@ public class GzipHandler extends Handler.Wrapper implements GzipFactory
     private final IncludeExclude<String> _inflatePaths = new IncludeExclude<>(PathSpecSet.class);
     private final IncludeExclude<String> _paths = new IncludeExclude<>(PathSpecSet.class);
     private final IncludeExclude<String> _mimeTypes = new IncludeExclude<>(AsciiLowerCaseSet.class);
-    private HttpField _vary = GzipResponse.VARY_ACCEPT_ENCODING;
+    private HttpField _vary = new PreEncodedHttpField(HttpHeader.VARY, HttpHeader.ACCEPT_ENCODING.asString());
 
     /**
      * Instantiates a new GzipHandler.
      */
     public GzipHandler()
     {
+        this(null);
+    }
+
+    /**
+     * Instantiates a new GzipHandler.
+     * @param handler the handler to wrap
+     */
+    public GzipHandler(Handler handler)
+    {
+        super(handler);
         _methods.include(HttpMethod.GET.asString());
         _methods.include(HttpMethod.POST.asString());
-        for (String type : MimeTypes.getKnownMimeTypes())
+        for (String type : MimeTypes.DEFAULTS.getMimeMap().values())
         {
             if ("image/svg+xml".equals(type))
                 _paths.exclude("*.svgz");
@@ -77,13 +85,27 @@ public class GzipHandler extends Handler.Wrapper implements GzipFactory
                 type.startsWith("video/"))
                 _mimeTypes.exclude(type);
         }
+
         _mimeTypes.exclude("application/compress");
+        _paths.exclude("*.z");
         _mimeTypes.exclude("application/zip");
+        _paths.exclude("*.zip");
+        _mimeTypes.exclude("application/x-gtar");
+        _paths.exclude("*.tgz");
+        _mimeTypes.exclude("application/java-archive");
+        _paths.exclude("*.jar");
         _mimeTypes.exclude("application/gzip");
-        _mimeTypes.exclude("application/bzip2");
+        _paths.exclude("*.gz", "*.gzip");
+        _mimeTypes.exclude("application/x-bzip2");
+        _paths.exclude("*.bz2", "*.bzip", "*.bz");
         _mimeTypes.exclude("application/brotli");
+        _paths.exclude("*.br", "*.brotli");
         _mimeTypes.exclude("application/x-xz");
+        _paths.exclude("*.xz");
         _mimeTypes.exclude("application/x-rar-compressed");
+        _paths.exclude("*.rar");
+        _mimeTypes.exclude("application/zstd");
+        _paths.exclude("*.zst", "*.zstd");
 
         // It is possible to use SSE with GzipHandler but you will need to set _synFlush to true which will impact performance.
         _mimeTypes.exclude("text/event-stream");
@@ -372,14 +394,16 @@ public class GzipHandler extends Handler.Wrapper implements GzipFactory
     {
         if (contentLength >= 0 && contentLength < _minGzipSize)
         {
-            LOG.debug("{} excluded minGzipSize {}", this, request);
+            if (LOG.isDebugEnabled())
+                LOG.debug("{} excluded minGzipSize {}", this, request);
             return null;
         }
 
         // check the accept encoding header
         if (!request.getHeaders().contains(HttpHeader.ACCEPT_ENCODING, "gzip"))
         {
-            LOG.debug("{} excluded not gzip accept {}", this, request);
+            if (LOG.isDebugEnabled())
+                LOG.debug("{} excluded not gzip accept {}", this, request);
             return null;
         }
 
@@ -494,11 +518,6 @@ public class GzipHandler extends Handler.Wrapper implements GzipFactory
         return _minGzipSize;
     }
 
-    protected HttpField getVaryField()
-    {
-        return _vary;
-    }
-
     /**
      * Get the size (in bytes) of the {@link java.util.zip.Inflater} buffer used to inflate
      * compressed requests.
@@ -521,126 +540,93 @@ public class GzipHandler extends Handler.Wrapper implements GzipFactory
     }
 
     @Override
-    public Request.Processor handle(Request request) throws Exception
+    public boolean handle(Request request, Response response, Callback callback) throws Exception
     {
-        final String path = request.getPathInContext();
-
         if (LOG.isDebugEnabled())
             LOG.debug("{} handle {}", this, request);
 
-        // TODO: support more than GZIP.
-        // Handle request inflation
-        HttpFields httpFields = request.getHeaders();
-        boolean inflated = _inflateBufferSize > 0 && httpFields.contains(HttpHeader.CONTENT_ENCODING, "gzip") && isPathInflatable(path);
+        Handler next = getHandler();
+        if (next == null)
+            return false;
 
-        // TODO: do we need this?
         // Are we already being gzipped?
-        GzipRequest gzipRequest = Request.as(request, GzipRequest.class);
-        boolean alreadyGzipped = gzipRequest != null;
+        if (Request.as(request, GzipRequest.class) != null)
+            return next.handle(request, response, callback);
 
-        // TODO: skip wrapping the response if it is already committed.
+        String pathInContext = Request.getPathInContext(request);
+        boolean tryInflate = getInflateBufferSize() >= 0 && isPathInflatable(pathInContext);
+        boolean tryDeflate = _methods.test(request.getMethod()) && isPathDeflatable(pathInContext) && isMimeTypeDeflatable(request.getContext().getMimeTypes(), pathInContext);
 
-        // TODO: Move down. can we return super.handle(request) without these changes?
-        // Update headers for etags and inflation
-        HttpFields.Mutable newFields = null;
-        if (inflated || httpFields.contains(ETAG_HEADERS))
+        // Can we skip looking at the request and wrapping request or response?
+        if (!tryInflate && !tryDeflate)
+            // No need for a Vary header, as we will never deflate
+            return next.handle(request, response, callback);
+
+        // Look for inflate and deflate headers
+        HttpFields fields = request.getHeaders();
+        boolean inflatable = false;
+        boolean deflatable = false;
+        boolean etagMatches = false;
+        boolean seenContentEncoding = false;
+        for (ListIterator<HttpField> i = fields.listIterator(fields.size()); i.hasPrevious();)
         {
-            newFields = HttpFields.build(httpFields.size() + 1);
-            for (HttpField field : httpFields)
+            HttpField field = i.previous();
+            HttpHeader header = field.getHeader();
+            if (header == null)
+                continue;
+            switch (header)
             {
-                if (field.getHeader() == null)
+                case CONTENT_ENCODING ->
                 {
-                    newFields.add(field);
-                    continue;
+                    inflatable |= !seenContentEncoding && field.containsLast("gzip");
+                    seenContentEncoding = true;
                 }
-
-                switch (field.getHeader())
-                {
-                    case IF_MATCH:
-                    case IF_NONE_MATCH:
-                    {
-                        String etags = field.getValue();
-                        String etagsNoSuffix = CompressedContentFormat.GZIP.stripSuffixes(etags);
-                        if (etagsNoSuffix.equals(etags))
-                            newFields.add(field);
-                        else
-                        {
-                            newFields.add(new HttpField(field.getHeader(), etagsNoSuffix));
-                            request.setAttribute(GZIP_HANDLER_ETAGS, etags);
-                        }
-                        break;
-                    }
-                    case CONTENT_LENGTH:
-                        newFields.add(inflated ? new HttpField("X-Content-Length", field.getValue()) : field);
-                        break;
-
-                    case CONTENT_ENCODING:
-                        if (inflated)
-                        {
-                            if (field.getValue().equalsIgnoreCase("gzip"))
-                                newFields.add(X_CE_GZIP);
-                            else if (COMMA_GZIP.matcher(field.getValue()).matches())
-                            {
-                                String v = field.getValue();
-                                v = v.substring(0, v.lastIndexOf(','));
-                                newFields.add(X_CE_GZIP);
-                                newFields.add(new HttpField(HttpHeader.CONTENT_ENCODING, v));
-                            }
-                        }
-                        else
-                        {
-                            newFields.add(field);
-                        }
-                        break;
-
-                    default:
-                        newFields.add(field);
-                }
+                case ACCEPT_ENCODING -> deflatable = field.contains("gzip");
+                case IF_MATCH, IF_NONE_MATCH -> etagMatches |= field.getValue().contains(EtagUtils.ETAG_SEPARATOR);
             }
         }
 
-        // Don't gzip if already gzipped;
-        if (alreadyGzipped)
+        // We need to wrap the request IFF we are inflating or have seen etags with compression separators
+        if (inflatable && tryInflate || etagMatches)
         {
-            LOG.debug("{} already intercepting {}", this, request);
-            HeaderWrappingRequest wrappedRequest = new HeaderWrappingRequest(request, newFields);
-            return wrappedRequest.wrapProcessor(super.handle(wrappedRequest));
+            // Wrap the request to update the fields and do any inflation
+            request = new GzipRequest(request, inflatable && tryInflate ? getInflateBufferSize() : -1);
         }
 
-        // If not a supported method - no Vary because no matter what client, this URI is always excluded
-        if (!_methods.test(request.getMethod()))
+        if (tryDeflate && _vary != null)
         {
-            LOG.debug("{} excluded by method {}", this, request);
-            HeaderWrappingRequest wrappedRequest = new HeaderWrappingRequest(request, newFields);
-            return wrappedRequest.wrapProcessor(super.handle(wrappedRequest));
+            // The response may vary based on the presence or lack of Accept-Encoding.
+            response.getHeaders().ensureField(_vary);
         }
 
-        // If not a supported URI- no Vary because no matter what client, this URI is always excluded
-        // Use pathInfo because this is be
-        if (!isPathGzipable(path))
+        // Wrap the response and callback IFF we can be deflated and will try to deflate
+        if (deflatable && tryDeflate)
         {
-            LOG.debug("{} excluded by path {}", this, request);
-            HeaderWrappingRequest wrappedRequest = new HeaderWrappingRequest(request, newFields);
-            return wrappedRequest.wrapProcessor(super.handle(wrappedRequest));
+            GzipResponseAndCallback gzipResponseAndCallback = new GzipResponseAndCallback(this, request, response, callback);
+            response = gzipResponseAndCallback;
+            callback = gzipResponseAndCallback;
         }
 
-        // TODO: get mimetype from context.
-        // Exclude non compressible mime-types known from URI extension. - no Vary because no matter what client, this URI is always excluded
-        String mimeType = MimeTypes.getDefaultMimeByExtension(path);
+        // Call handle() with the possibly wrapped request, response and callback
+        if (next.handle(request, response, callback))
+            return true;
+
+        // If the request was not accepted, destroy any gzipRequest wrapper
+        if (request instanceof GzipRequest gzipRequest)
+            gzipRequest.destroy();
+        return false;
+    }
+
+    protected boolean isMimeTypeDeflatable(MimeTypes mimeTypes, String requestURI)
+    {
+        // Exclude non-compressible mime-types known from URI extension
+        String mimeType = mimeTypes.getMimeByExtension(requestURI);
         if (mimeType != null)
         {
-            mimeType = HttpField.valueParameters(mimeType, null);
-            if (!isMimeTypeGzipable(mimeType))
-            {
-                LOG.debug("{} excluded by path suffix mime type {}", this, request);
-                // handle normally without setting vary header
-                HeaderWrappingRequest wrappedRequest = new HeaderWrappingRequest(request, newFields);
-                return wrappedRequest.wrapProcessor(super.handle(wrappedRequest));
-            }
+            mimeType = HttpField.getValueParameters(mimeType, null);
+            return isMimeTypeDeflatable(mimeType);
         }
-
-        gzipRequest = new GzipRequest(request, this, inflated, newFields);
-        return gzipRequest.wrapProcessor(super.handle(gzipRequest));
+        return true;
     }
 
     /**
@@ -650,7 +636,7 @@ public class GzipHandler extends Handler.Wrapper implements GzipFactory
      * @return true if allowed, false otherwise
      */
     @Override
-    public boolean isMimeTypeGzipable(String mimetype)
+    public boolean isMimeTypeDeflatable(String mimetype)
     {
         return _mimeTypes.test(mimetype);
     }
@@ -661,7 +647,7 @@ public class GzipHandler extends Handler.Wrapper implements GzipFactory
      * @param requestURI the request uri
      * @return whether compressing is allowed for the given the path
      */
-    protected boolean isPathGzipable(String requestURI)
+    protected boolean isPathDeflatable(String requestURI)
     {
         if (requestURI == null)
             return true;
@@ -672,15 +658,15 @@ public class GzipHandler extends Handler.Wrapper implements GzipFactory
     /**
      * Test if the provided Request URI is allowed to be inflated based on the Path Specs filters.
      *
-     * @param requestURI the request uri
+     * @param pathInContext the request path in context
      * @return whether decompressing is allowed for the given the path.
      */
-    protected boolean isPathInflatable(String requestURI)
+    protected boolean isPathInflatable(String pathInContext)
     {
-        if (requestURI == null)
+        if (pathInContext == null)
             return true;
 
-        return _inflatePaths.test(requestURI);
+        return _inflatePaths.test(pathInContext);
     }
 
     /**

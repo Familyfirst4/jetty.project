@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -22,20 +22,19 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 import jakarta.security.auth.message.config.AuthConfigFactory;
-import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.eclipse.jetty.ee10.servlet.ServletContextHandler;
-import org.eclipse.jetty.ee10.servlet.security.AbstractLoginService;
 import org.eclipse.jetty.ee10.servlet.security.ConstraintMapping;
 import org.eclipse.jetty.ee10.servlet.security.ConstraintSecurityHandler;
-import org.eclipse.jetty.ee10.servlet.security.RolePrincipal;
-import org.eclipse.jetty.ee10.servlet.security.UserPrincipal;
+import org.eclipse.jetty.security.AbstractLoginService;
+import org.eclipse.jetty.security.Constraint;
+import org.eclipse.jetty.security.RolePrincipal;
+import org.eclipse.jetty.security.UserPrincipal;
 import org.eclipse.jetty.server.LocalConnector;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.handler.ContextHandlerCollection;
-import org.eclipse.jetty.util.security.Constraint;
 import org.eclipse.jetty.util.security.Credential;
 import org.eclipse.jetty.util.security.Password;
 import org.hamcrest.Matchers;
@@ -136,12 +135,13 @@ public class JaspiTest
         JaspiAuthenticatorFactory jaspiAuthFactory = new JaspiAuthenticatorFactory();
 
         ConstraintSecurityHandler security = new ConstraintSecurityHandler();
-        context.setHandler(security);
+        context.setSecurityHandler(security);
         security.setAuthenticatorFactory(jaspiAuthFactory);
-        // security.setAuthenticator(new BasicAuthenticator());
 
-        Constraint constraint = new Constraint("All", "users");
-        constraint.setAuthenticate(true);
+        Constraint constraint = new Constraint.Builder()
+            .name("All")
+            .roles("users")
+            .build();
         ConstraintMapping mapping = new ConstraintMapping();
         mapping.setPathSpec("/jaspi/*");
         mapping.setConstraint(constraint);
@@ -152,7 +152,7 @@ public class JaspiTest
         other.setContextPath("/other");
         other.addServlet(new TestServlet(), "/");
         ConstraintSecurityHandler securityOther = new ConstraintSecurityHandler();
-        other.setHandler(securityOther);
+        other.setSecurityHandler(securityOther);
         securityOther.setAuthenticatorFactory(jaspiAuthFactory);
         securityOther.addConstraintMapping(mapping);
 
@@ -177,7 +177,7 @@ public class JaspiTest
     {
         String response = _connector.getResponse("GET /ctx/jaspi/test HTTP/1.0\n\n");
         assertThat(response, startsWith("HTTP/1.1 401 Unauthorized"));
-        assertThat(response, Matchers.containsString("WWW-Authenticate: basic realm=\"TestRealm\""));
+        assertThat(response, Matchers.containsString("WWW-Authenticate: Basic realm=\"TestRealm\""));
     }
 
     @Test
@@ -186,7 +186,7 @@ public class JaspiTest
         String response = _connector.getResponse("GET /ctx/jaspi/test HTTP/1.0\n" + "Authorization: Basic " +
                 Base64.getEncoder().encodeToString("user:wrong".getBytes(ISO_8859_1)) + "\n\n");
         assertThat(response, startsWith("HTTP/1.1 401 Unauthorized"));
-        assertThat(response, Matchers.containsString("WWW-Authenticate: basic realm=\"TestRealm\""));
+        assertThat(response, Matchers.containsString("WWW-Authenticate: Basic realm=\"TestRealm\""));
     }
 
     @Test
@@ -200,21 +200,25 @@ public class JaspiTest
     @Test
     public void testOtherNoAuth() throws Exception
     {
-        String response = _connector.getResponse("GET /other/test HTTP/1.0\n\n");
+        String response = _connector.getResponse("GET /other/jaspi/test HTTP/1.0\n\n");
         assertThat(response, startsWith("HTTP/1.1 403 Forbidden"));
     }
 
     @Test
     public void testOtherAuth() throws Exception
     {
-        String response = _connector.getResponse("GET /other/test HTTP/1.0\n" + "X-Forwarded-User: user\n\n");
+        String response = _connector.getResponse("""
+            GET /other/jaspi/test HTTP/1.0
+            X-Forwarded-User: user
+
+            """);
         assertThat(response, startsWith("HTTP/1.1 200 OK"));
     }
 
-    public class TestServlet extends HttpServlet
+    public static class TestServlet extends HttpServlet
     {
         @Override
-        protected void service(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException
+        protected void service(HttpServletRequest req, HttpServletResponse resp) throws IOException
         {
             resp.setStatus(200);
             resp.setContentType("text/plain");

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -17,16 +17,17 @@ import javax.naming.Context;
 import javax.naming.InitialContext;
 import javax.naming.NameNotFoundException;
 
-import org.eclipse.jetty.ee10.plus.annotation.InjectionCollection;
-import org.eclipse.jetty.ee10.plus.annotation.LifeCycleCallbackCollection;
 import org.eclipse.jetty.ee10.plus.jndi.Transaction;
+import org.eclipse.jetty.ee10.servlet.ServletContextHandler;
 import org.eclipse.jetty.ee10.webapp.AbstractConfiguration;
 import org.eclipse.jetty.ee10.webapp.FragmentConfiguration;
 import org.eclipse.jetty.ee10.webapp.JettyWebXmlConfiguration;
 import org.eclipse.jetty.ee10.webapp.MetaInfConfiguration;
 import org.eclipse.jetty.ee10.webapp.WebAppContext;
 import org.eclipse.jetty.ee10.webapp.WebXmlConfiguration;
-import org.eclipse.jetty.jndi.NamingContext;
+import org.eclipse.jetty.plus.annotation.InjectionCollection;
+import org.eclipse.jetty.plus.annotation.LifeCycleCallbackCollection;
+import org.eclipse.jetty.util.NanoTime;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -36,24 +37,18 @@ import org.slf4j.LoggerFactory;
 public class PlusConfiguration extends AbstractConfiguration
 {
     private static final Logger LOG = LoggerFactory.getLogger(PlusConfiguration.class);
-
-    private Integer _key;
+    private static final String LOCK_JNDI_KEY = "org.eclipse.jetty.ee10.plus.webapp.PlusConfiguration.jndiKey";
 
     public PlusConfiguration()
     {
-        addDependencies(EnvConfiguration.class, WebXmlConfiguration.class, MetaInfConfiguration.class, FragmentConfiguration.class);
-        addDependents(JettyWebXmlConfiguration.class);
+        super(new Builder()
+            .addDependencies(EnvConfiguration.class, WebXmlConfiguration.class, MetaInfConfiguration.class, FragmentConfiguration.class)
+            .addDependents(JettyWebXmlConfiguration.class));
     }
 
     @Override
     public void preConfigure(WebAppContext context)
         throws Exception
-    {
-        context.getObjectFactory().addDecorator(new PlusDecorator(context));
-    }
-
-    @Override
-    public void cloneConfigure(WebAppContext template, WebAppContext context) throws Exception
     {
         context.getObjectFactory().addDecorator(new PlusDecorator(context));
     }
@@ -79,7 +74,6 @@ public class PlusConfiguration extends AbstractConfiguration
         throws Exception
     {
         unlockCompEnv(context);
-        _key = null;
         context.setAttribute(InjectionCollection.INJECTION_COLLECTION, null);
         context.setAttribute(LifeCycleCallbackCollection.LIFECYCLE_CALLBACK_COLLECTION, null);
     }
@@ -89,11 +83,18 @@ public class PlusConfiguration extends AbstractConfiguration
     {
         try
         {
-            Transaction.bindToENC();
+            Transaction.bindTransactionToENC(ServletContextHandler.ENVIRONMENT.getName());
         }
         catch (NameNotFoundException e)
         {
-            LOG.debug("No Transaction manager found - if your webapp requires one, please configure one.");
+            try
+            {
+                org.eclipse.jetty.plus.jndi.Transaction.bindTransactionToENC(ServletContextHandler.ENVIRONMENT.getName());
+            }
+            catch (NameNotFoundException x)
+            {
+                LOG.debug("No Transaction manager found - if your webapp requires one, please configure one.");
+            }
         }
     }
 
@@ -104,10 +105,11 @@ public class PlusConfiguration extends AbstractConfiguration
         Thread.currentThread().setContextClassLoader(wac.getClassLoader());
         try
         {
-            _key = (int)(this.hashCode() ^ System.nanoTime());
+            Integer key = (int)(this.hashCode() ^ NanoTime.now());
             Context context = new InitialContext();
             Context compCtx = (Context)context.lookup("java:comp");
-            compCtx.addToEnvironment(NamingContext.LOCK_PROPERTY, _key);
+            wac.setAttribute(LOCK_JNDI_KEY, key);
+            compCtx.addToEnvironment("org.eclipse.jetty.jndi.lock", key);
         }
         finally
         {
@@ -118,7 +120,8 @@ public class PlusConfiguration extends AbstractConfiguration
     protected void unlockCompEnv(WebAppContext wac)
         throws Exception
     {
-        if (_key != null)
+        Object o = wac.removeAttribute(LOCK_JNDI_KEY);
+        if (o instanceof Integer key)
         {
             ClassLoader oldLoader = Thread.currentThread().getContextClassLoader();
             Thread.currentThread().setContextClassLoader(wac.getClassLoader());
@@ -127,7 +130,7 @@ public class PlusConfiguration extends AbstractConfiguration
             {
                 Context context = new InitialContext();
                 Context compCtx = (Context)context.lookup("java:comp");
-                compCtx.addToEnvironment("org.eclipse.jetty.jndi.unlock", _key);
+                compCtx.addToEnvironment("org.eclipse.jetty.jndi.unlock", key);
             }
             finally
             {

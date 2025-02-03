@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -19,7 +19,7 @@ import java.time.Duration;
 import java.util.Map;
 import java.util.Objects;
 
-import org.eclipse.jetty.client.api.Connection;
+import org.eclipse.jetty.client.transport.HttpDestination;
 import org.eclipse.jetty.io.ClientConnector;
 import org.eclipse.jetty.util.Promise;
 import org.eclipse.jetty.util.annotation.ManagedAttribute;
@@ -33,7 +33,7 @@ public abstract class AbstractConnectorHttpClientTransport extends AbstractHttpC
     protected AbstractConnectorHttpClientTransport(ClientConnector connector)
     {
         this.connector = Objects.requireNonNull(connector);
-        addBean(connector);
+        installBean(connector);
     }
 
     public ClientConnector getClientConnector()
@@ -70,7 +70,8 @@ public abstract class AbstractConnectorHttpClientTransport extends AbstractHttpC
         @SuppressWarnings("unchecked")
         Promise<Connection> promise = (Promise<Connection>)context.get(HTTP_CONNECTION_PROMISE_CONTEXT_KEY);
         context.put(ClientConnector.CONNECTION_PROMISE_CONTEXT_KEY, Promise.from(ioConnection -> {}, promise::failed));
-        connector.connect(address, context);
+        context.put(ClientConnector.CLIENT_CONNECTOR_CONTEXT_KEY, connector);
+        destination.getOrigin().getTransport().connect(address, context);
     }
 
     @Override

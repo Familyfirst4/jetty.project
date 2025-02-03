@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -20,19 +20,17 @@ import java.nio.ByteBuffer;
 import java.nio.channels.SocketChannel;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Exchanger;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
@@ -44,9 +42,10 @@ import org.eclipse.jetty.http.HttpURI;
 import org.eclipse.jetty.http.HttpVersion;
 import org.eclipse.jetty.http.MetaData;
 import org.eclipse.jetty.http2.BufferingFlowControlStrategy;
+import org.eclipse.jetty.http2.ErrorCode;
 import org.eclipse.jetty.http2.FlowControlStrategy;
-import org.eclipse.jetty.http2.ISession;
-import org.eclipse.jetty.http2.IStream;
+import org.eclipse.jetty.http2.HTTP2Session;
+import org.eclipse.jetty.http2.HTTP2Stream;
 import org.eclipse.jetty.http2.api.Session;
 import org.eclipse.jetty.http2.api.Stream;
 import org.eclipse.jetty.http2.api.server.ServerSessionListener;
@@ -57,10 +56,8 @@ import org.eclipse.jetty.http2.frames.PrefaceFrame;
 import org.eclipse.jetty.http2.frames.ResetFrame;
 import org.eclipse.jetty.http2.frames.SettingsFrame;
 import org.eclipse.jetty.http2.frames.WindowUpdateFrame;
-import org.eclipse.jetty.http2.internal.ErrorCode;
+import org.eclipse.jetty.http2.generator.Generator;
 import org.eclipse.jetty.http2.internal.HTTP2Flusher;
-import org.eclipse.jetty.http2.internal.HTTP2Session;
-import org.eclipse.jetty.http2.internal.generator.Generator;
 import org.eclipse.jetty.http2.server.AbstractHTTP2ServerConnectionFactory;
 import org.eclipse.jetty.http2.server.HTTP2ServerConnectionFactory;
 import org.eclipse.jetty.io.AbstractEndPoint;
@@ -74,18 +71,18 @@ import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
-import org.eclipse.jetty.server.internal.HttpChannelState;
 import org.eclipse.jetty.util.BufferUtil;
 import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.FutureCallback;
 import org.eclipse.jetty.util.FuturePromise;
+import org.eclipse.jetty.util.NanoTime;
 import org.eclipse.jetty.util.thread.QueuedThreadPool;
 import org.hamcrest.Matchers;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import static org.awaitility.Awaitility.await;
-import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.greaterThan;
+import static org.hamcrest.Matchers.is;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -96,13 +93,13 @@ public class StreamResetTest extends AbstractTest
     @Test
     public void testStreamSendingResetIsRemoved() throws Exception
     {
-        start(new ServerSessionListener.Adapter());
+        start(new ServerSessionListener() {});
 
-        Session client = newClientSession(new Session.Listener.Adapter());
+        Session client = newClientSession(new Session.Listener() {});
         MetaData.Request request = newRequest("GET", HttpFields.EMPTY);
         HeadersFrame requestFrame = new HeadersFrame(request, null, false);
         FuturePromise<Stream> promise = new FuturePromise<>();
-        client.newStream(requestFrame, promise, new Stream.Listener.Adapter());
+        client.newStream(requestFrame, promise, null);
         Stream stream = promise.get(5, TimeUnit.SECONDS);
         ResetFrame resetFrame = new ResetFrame(stream.getId(), ErrorCode.CANCEL_STREAM_ERROR.code);
         FutureCallback resetCallback = new FutureCallback();
@@ -117,30 +114,31 @@ public class StreamResetTest extends AbstractTest
     {
         final AtomicReference<Stream> streamRef = new AtomicReference<>();
         final CountDownLatch resetLatch = new CountDownLatch(1);
-        start(new ServerSessionListener.Adapter()
+        start(new ServerSessionListener()
         {
             @Override
             public Stream.Listener onNewStream(Stream stream, HeadersFrame frame)
             {
-                return new Stream.Listener.Adapter()
+                return new Stream.Listener()
                 {
                     @Override
-                    public void onReset(Stream stream, ResetFrame frame)
+                    public void onReset(Stream stream, ResetFrame frame, Callback callback)
                     {
                         assertNotNull(stream);
                         assertTrue(stream.isReset());
                         streamRef.set(stream);
                         resetLatch.countDown();
+                        callback.succeeded();
                     }
                 };
             }
         });
 
-        Session client = newClientSession(new Session.Listener.Adapter());
+        Session client = newClientSession(new Session.Listener() {});
         MetaData.Request request = newRequest("GET", HttpFields.EMPTY);
         HeadersFrame requestFrame = new HeadersFrame(request, null, false);
         FuturePromise<Stream> promise = new FuturePromise<>();
-        client.newStream(requestFrame, promise, new Stream.Listener.Adapter());
+        client.newStream(requestFrame, promise, null);
         Stream stream = promise.get(5, TimeUnit.SECONDS);
         ResetFrame resetFrame = new ResetFrame(stream.getId(), ErrorCode.CANCEL_STREAM_ERROR.code);
         stream.reset(resetFrame, Callback.NOOP);
@@ -160,37 +158,31 @@ public class StreamResetTest extends AbstractTest
     {
         final CountDownLatch serverResetLatch = new CountDownLatch(1);
         final CountDownLatch serverDataLatch = new CountDownLatch(1);
-        start(new ServerSessionListener.Adapter()
+        start(new ServerSessionListener()
         {
             @Override
             public Stream.Listener onNewStream(Stream stream, HeadersFrame requestFrame)
             {
-                MetaData.Response response = new MetaData.Response(HttpVersion.HTTP_2, 200, HttpFields.EMPTY);
+                MetaData.Response response = new MetaData.Response(200, null, HttpVersion.HTTP_2, HttpFields.EMPTY);
                 HeadersFrame responseFrame = new HeadersFrame(stream.getId(), response, null, false);
-                Callback.Completable completable = new Callback.Completable();
-                stream.headers(responseFrame, completable);
-                return new Stream.Listener.Adapter()
+                CompletableFuture<Stream> completable = stream.headers(responseFrame);
+                stream.demand();
+                return new Stream.Listener()
                 {
                     @Override
-                    public void onData(Stream stream, DataFrame frame, Callback callback)
+                    public void onDataAvailable(Stream stream)
                     {
-                        callback.succeeded();
-                        completable.thenRun(() ->
-                            stream.data(new DataFrame(stream.getId(), ByteBuffer.allocate(16), true), new Callback()
-                            {
-                                @Override
-                                public void succeeded()
-                                {
-                                    serverDataLatch.countDown();
-                                }
-                            }));
+                        Stream.Data data = stream.readData();
+                        data.release();
+                        completable.thenCompose(s -> s.data(new DataFrame(s.getId(), ByteBuffer.allocate(16), true)))
+                            .thenRun(serverDataLatch::countDown);
                     }
 
                     @Override
-                    public void onReset(Stream s, ResetFrame frame)
+                    public void onReset(Stream s, ResetFrame frame, Callback callback)
                     {
                         // Simulate that there is pending data to send.
-                        IStream stream = (IStream)s;
+                        HTTP2Stream stream = (HTTP2Stream)s;
                         List<Frame> frames = List.of(new DataFrame(s.getId(), ByteBuffer.allocate(16), true));
                         stream.getSession().frames(stream, frames, new Callback()
                         {
@@ -200,29 +192,32 @@ public class StreamResetTest extends AbstractTest
                                 serverResetLatch.countDown();
                             }
                         });
+                        callback.succeeded();
                     }
                 };
             }
         });
 
-        Session client = newClientSession(new Session.Listener.Adapter());
+        Session client = newClientSession(new Session.Listener() {});
         MetaData.Request request1 = newRequest("GET", HttpFields.EMPTY);
         HeadersFrame requestFrame1 = new HeadersFrame(request1, null, false);
         FuturePromise<Stream> promise1 = new FuturePromise<>();
         final CountDownLatch stream1HeadersLatch = new CountDownLatch(1);
         final CountDownLatch stream1DataLatch = new CountDownLatch(1);
-        client.newStream(requestFrame1, promise1, new Stream.Listener.Adapter()
+        client.newStream(requestFrame1, promise1, new Stream.Listener()
         {
             @Override
             public void onHeaders(Stream stream, HeadersFrame frame)
             {
                 stream1HeadersLatch.countDown();
+                stream.demand();
             }
 
             @Override
-            public void onData(Stream stream, DataFrame frame, Callback callback)
+            public void onDataAvailable(Stream stream)
             {
-                callback.succeeded();
+                Stream.Data data = stream.readData();
+                data.release();
                 stream1DataLatch.countDown();
             }
         });
@@ -233,12 +228,13 @@ public class StreamResetTest extends AbstractTest
         HeadersFrame requestFrame2 = new HeadersFrame(request2, null, false);
         FuturePromise<Stream> promise2 = new FuturePromise<>();
         final CountDownLatch stream2DataLatch = new CountDownLatch(1);
-        client.newStream(requestFrame2, promise2, new Stream.Listener.Adapter()
+        client.newStream(requestFrame2, promise2, new Stream.Listener()
         {
             @Override
-            public void onData(Stream stream, DataFrame frame, Callback callback)
+            public void onDataAvailable(Stream stream)
             {
-                callback.succeeded();
+                Stream.Data data = stream.readData();
+                data.release();
                 stream2DataLatch.countDown();
             }
         });
@@ -263,17 +259,17 @@ public class StreamResetTest extends AbstractTest
         CountDownLatch commitLatch = new CountDownLatch(1);
         CountDownLatch resetLatch = new CountDownLatch(1);
         CountDownLatch dataLatch = new CountDownLatch(1);
-        start(new Handler.Processor()
+        start(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback) throws Exception
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
             {
                 Charset charset = StandardCharsets.UTF_8;
                 byte[] data = "AFTER RESET".getBytes(charset);
 
                 response.setStatus(200);
                 response.getHeaders().put(HttpHeader.CONTENT_TYPE, "text/plain;charset=" + charset.name());
-                response.getHeaders().putLongField(HttpHeader.CONTENT_LENGTH, data.length * 10L);
+                response.getHeaders().put(HttpHeader.CONTENT_LENGTH, data.length * 10L);
                 Content.Sink.write(response, false, null);
                 // Wait for the commit callback to complete.
                 commitLatch.countDown();
@@ -308,13 +304,14 @@ public class StreamResetTest extends AbstractTest
                 {
                     dataLatch.countDown();
                 }
+                return true;
             }
         });
 
-        Session client = newClientSession(new Session.Listener.Adapter());
+        Session client = newClientSession(new Session.Listener() {});
         MetaData.Request request = newRequest("GET", HttpFields.EMPTY);
         HeadersFrame frame = new HeadersFrame(request, null, true);
-        client.newStream(frame, new FuturePromise<>(), new Stream.Listener.Adapter()
+        client.newStream(frame, new FuturePromise<>(), new Stream.Listener()
         {
             @Override
             public void onHeaders(Stream stream, HeadersFrame frame)
@@ -322,9 +319,8 @@ public class StreamResetTest extends AbstractTest
                 try
                 {
                     commitLatch.await(5, TimeUnit.SECONDS);
-                    Callback.Completable completable = new Callback.Completable();
-                    stream.reset(new ResetFrame(stream.getId(), ErrorCode.CANCEL_STREAM_ERROR.code), completable);
-                    completable.thenRun(resetLatch::countDown);
+                    stream.reset(new ResetFrame(stream.getId(), ErrorCode.CANCEL_STREAM_ERROR.code))
+                        .thenRun(resetLatch::countDown);
                 }
                 catch (InterruptedException x)
                 {
@@ -336,29 +332,23 @@ public class StreamResetTest extends AbstractTest
         assertTrue(dataLatch.await(5, TimeUnit.SECONDS));
     }
 
-    // TODO: This test writes after a failure and highlights some problem in the implementation
-    //  of the handling of errors. For example, the request._error field is set by the failure,
-    //  but checked during the succeed of the callback (so cannot turn a failure into a success)
-    //  and also highlights that the implementation should be more precise at severing the link
-    //  between channel and request, possibly where the request only has one field, the channel.
     @Test
-    @Disabled
     public void testAsyncWriteAfterStreamReceivingReset() throws Exception
     {
         CountDownLatch commitLatch = new CountDownLatch(1);
         CountDownLatch resetLatch = new CountDownLatch(1);
         CountDownLatch dataLatch = new CountDownLatch(1);
-        start(new Handler.Processor()
+        start(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback) throws Exception
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
             {
                 Charset charset = StandardCharsets.UTF_8;
                 ByteBuffer data = charset.encode("AFTER RESET");
 
                 response.setStatus(200);
                 response.getHeaders().put(HttpHeader.CONTENT_TYPE, "text/plain;charset=" + charset.name());
-                response.getHeaders().putLongField(HttpHeader.CONTENT_LENGTH, data.remaining());
+                response.getHeaders().put(HttpHeader.CONTENT_LENGTH, data.remaining());
                 Content.Sink.write(response, false, null);
 
                 commitLatch.countDown();
@@ -395,13 +385,14 @@ public class StreamResetTest extends AbstractTest
                         x.printStackTrace();
                     }
                 }).start();
+                return true;
             }
         });
 
-        Session client = newClientSession(new Session.Listener.Adapter());
+        Session client = newClientSession(new Session.Listener() {});
         MetaData.Request request = newRequest("GET", HttpFields.EMPTY);
         HeadersFrame frame = new HeadersFrame(request, null, true);
-        client.newStream(frame, new FuturePromise<>(), new Stream.Listener.Adapter()
+        client.newStream(frame, new FuturePromise<>(), new Stream.Listener()
         {
             @Override
             public void onHeaders(Stream stream, HeadersFrame frame)
@@ -409,9 +400,8 @@ public class StreamResetTest extends AbstractTest
                 try
                 {
                     commitLatch.await(5, TimeUnit.SECONDS);
-                    Callback.Completable completable = new Callback.Completable();
-                    stream.reset(new ResetFrame(stream.getId(), ErrorCode.CANCEL_STREAM_ERROR.code), completable);
-                    completable.thenRun(resetLatch::countDown);
+                    stream.reset(new ResetFrame(stream.getId(), ErrorCode.CANCEL_STREAM_ERROR.code))
+                        .thenRun(resetLatch::countDown);
                 }
                 catch (InterruptedException x)
                 {
@@ -426,38 +416,47 @@ public class StreamResetTest extends AbstractTest
     @Test
     public void testClientResetConsumesQueuedData() throws Exception
     {
-        CountDownLatch dataLatch = new CountDownLatch(1);
-        start(new Handler.Processor()
+        AtomicReference<HTTP2Stream> serverStreamRef = new AtomicReference<>();
+        start(new ServerSessionListener()
         {
             @Override
-            public void process(Request request, Response response, Callback callback) throws Exception
+            public Stream.Listener onNewStream(Stream stream, HeadersFrame frame)
             {
-                // Wait for the data to be sent.
-                assertTrue(dataLatch.await(5, TimeUnit.SECONDS));
-                callback.succeeded();
+                stream.demand();
+                return new Stream.Listener()
+                {
+                    @Override
+                    public void onDataAvailable(Stream stream)
+                    {
+                        // Do not read the data.
+                        serverStreamRef.set((HTTP2Stream)stream);
+                    }
+                };
             }
         });
 
-        Session client = newClientSession(new Session.Listener.Adapter());
+        Session client = newClientSession(new Session.Listener() {});
         MetaData.Request request = newRequest("GET", HttpFields.EMPTY);
         HeadersFrame frame = new HeadersFrame(request, null, false);
-        FuturePromise<Stream> promise = new FuturePromise<>();
-        client.newStream(frame, promise, new Stream.Listener.Adapter());
-        Stream stream = promise.get(5, TimeUnit.SECONDS);
+        Stream stream = client.newStream(frame, null).get(5, TimeUnit.SECONDS);
         ByteBuffer data = ByteBuffer.allocate(FlowControlStrategy.DEFAULT_WINDOW_SIZE);
-        stream.data(new DataFrame(stream.getId(), data, false), Callback.from(dataLatch::countDown));
-        // The server does not read the data, so the flow control window should be zero.
-        assertTrue(dataLatch.await(5, TimeUnit.SECONDS));
-        assertEquals(0, ((ISession)client).updateSendWindow(0));
+        stream.data(new DataFrame(stream.getId(), data, false), Callback.NOOP);
+
+        // Wait for the server to receive all the data.
+        await().atMost(5, TimeUnit.SECONDS).until(() -> serverStreamRef.get() != null);
+        HTTP2Stream serverStream = serverStreamRef.get();
+        await().atMost(5, TimeUnit.SECONDS).until(() -> serverStream.getDataLength() == FlowControlStrategy.DEFAULT_WINDOW_SIZE);
+
+        // The server does not read the data, so the client flow control window should be zero.
+        assertEquals(0, ((HTTP2Session)client).updateSendWindow(0));
 
         // Now reset the stream.
         stream.reset(new ResetFrame(stream.getId(), ErrorCode.CANCEL_STREAM_ERROR.code), Callback.NOOP);
 
         // Wait for the server to receive the reset and process
         // it, and for the client to process the window updates.
-        Thread.sleep(1000);
-
-        assertThat(((ISession)client).updateSendWindow(0), Matchers.greaterThan(0));
+        await().atMost(10, TimeUnit.SECONDS)
+            .until(() -> ((HTTP2Session)client).updateSendWindow(0), Matchers.greaterThan(0));
     }
 
     @Test
@@ -476,10 +475,10 @@ public class StreamResetTest extends AbstractTest
         AtomicReference<CountDownLatch> requestOnServer = new AtomicReference<>();
         AtomicBoolean blocker = new AtomicBoolean(true);
         Object lock = new Object();
-        server.setHandler(new Handler.Processor()
+        server.setHandler(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback) throws Exception
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
             {
                 requestOnServer.get().countDown();
 
@@ -493,6 +492,7 @@ public class StreamResetTest extends AbstractTest
                 }
 
                 Content.copy(request, response, callback);
+                return true;
             }
         });
         server.start();
@@ -500,7 +500,7 @@ public class StreamResetTest extends AbstractTest
         prepareClient();
         httpClient.start();
 
-        Session client = newClientSession(new Session.Listener.Adapter());
+        Session client = newClientSession(new Session.Listener() {});
 
         // Send requests until one is queued on the server but not dispatched.
         AtomicReference<CountDownLatch> latch = new AtomicReference<>();
@@ -514,7 +514,7 @@ public class StreamResetTest extends AbstractTest
             MetaData.Request request = newRequest("GET", "/" + count, HttpFields.EMPTY);
             HeadersFrame frame = new HeadersFrame(request, null, false);
             FuturePromise<Stream> promise = new FuturePromise<>();
-            client.newStream(frame, promise, new Stream.Listener.Adapter()
+            client.newStream(frame, promise, new Stream.Listener()
             {
                 @Override
                 public void onHeaders(Stream stream, HeadersFrame frame)
@@ -522,14 +522,18 @@ public class StreamResetTest extends AbstractTest
                     MetaData.Response response = (MetaData.Response)frame.getMetaData();
                     if (response.getStatus() == HttpStatus.OK_200)
                         latch.get().countDown();
+                    stream.demand();
                 }
 
                 @Override
-                public void onData(Stream stream, DataFrame frame, Callback callback)
+                public void onDataAvailable(Stream stream)
                 {
-                    callback.succeeded();
-                    if (frame.isEndStream())
+                    Stream.Data data = stream.readData();
+                    data.release();
+                    if (data.frame().isEndStream())
                         latch.get().countDown();
+                    else
+                        stream.demand();
                 }
             });
             Stream stream = promise.get(5, TimeUnit.SECONDS);
@@ -547,9 +551,9 @@ public class StreamResetTest extends AbstractTest
         HeadersFrame frame = new HeadersFrame(request, null, false);
         FuturePromise<Stream> promise = new FuturePromise<>();
         // This request will get no event from the server since it's reset by the client.
-        client.newStream(frame, promise, new Stream.Listener.Adapter());
+        client.newStream(frame, promise, null);
         Stream stream = promise.get(5, TimeUnit.SECONDS);
-        ByteBuffer data = ByteBuffer.allocate(((ISession)client).updateSendWindow(0));
+        ByteBuffer data = ByteBuffer.allocate(((HTTP2Session)client).updateSendWindow(0));
         stream.data(new DataFrame(stream.getId(), data, false), new Callback()
         {
             @Override
@@ -560,7 +564,7 @@ public class StreamResetTest extends AbstractTest
         });
 
         // Wait for WINDOW_UPDATEs to be processed by the client.
-        await().atMost(1000, TimeUnit.SECONDS).until(() -> ((ISession)client).updateSendWindow(0), Matchers.greaterThan(0));
+        await().atMost(5, TimeUnit.SECONDS).until(() -> ((HTTP2Session)client).updateSendWindow(0), Matchers.greaterThan(0));
 
         latch.set(new CountDownLatch(2 * streams.size()));
         // Notify all blocked threads to wakeup.
@@ -578,25 +582,26 @@ public class StreamResetTest extends AbstractTest
     @Test
     public void testServerExceptionConsumesQueuedData() throws Exception
     {
-        try (StacklessLogging ignored = new StacklessLogging(HttpChannelState.class))
+        try (StacklessLogging ignored = new StacklessLogging(Response.class))
         {
-            start(new Handler.Processor()
+            long delay = 1000;
+            start(new Handler.Abstract()
             {
                 @Override
-                public void process(Request request, Response response, Callback callback) throws Exception
+                public boolean handle(Request request, Response response, Callback callback) throws Exception
                 {
                     // Wait to let the data sent by the client to be queued.
-                    Thread.sleep(1000);
+                    Thread.sleep(delay);
                     throw new IllegalStateException("explicitly_thrown_by_test");
                 }
             });
 
-            Session client = newClientSession(new Session.Listener.Adapter());
+            Session client = newClientSession(new Session.Listener() {});
 
             MetaData.Request request = newRequest("GET", HttpFields.EMPTY);
             HeadersFrame frame = new HeadersFrame(request, null, false);
             FuturePromise<Stream> promise = new FuturePromise<>();
-            client.newStream(frame, promise, new Stream.Listener.Adapter());
+            client.newStream(frame, promise, null);
             Stream stream = promise.get(5, TimeUnit.SECONDS);
             ByteBuffer data = ByteBuffer.allocate(FlowControlStrategy.DEFAULT_WINDOW_SIZE);
             CountDownLatch dataLatch = new CountDownLatch(1);
@@ -610,13 +615,12 @@ public class StreamResetTest extends AbstractTest
             });
             // The server does not read the data, so the flow control window should be zero.
             assertTrue(dataLatch.await(5, TimeUnit.SECONDS));
-            assertEquals(0, ((ISession)client).updateSendWindow(0));
+            assertEquals(0, ((HTTP2Session)client).updateSendWindow(0));
 
             // Wait for the server process the exception, and
             // for the client to process the window updates.
-            Thread.sleep(2000);
-
-            assertThat(((ISession)client).updateSendWindow(0), Matchers.greaterThan(0));
+            await().atMost(2 * delay, TimeUnit.MILLISECONDS)
+                .until(() -> ((HTTP2Session)client).updateSendWindow(0), Matchers.greaterThan(0));
         }
     }
 
@@ -625,10 +629,10 @@ public class StreamResetTest extends AbstractTest
     {
         int windowSize = FlowControlStrategy.DEFAULT_WINDOW_SIZE;
         CountDownLatch writeLatch = new CountDownLatch(1);
-        start(new Handler.Processor()
+        start(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 new Thread(() ->
                 {
@@ -647,34 +651,27 @@ public class StreamResetTest extends AbstractTest
                         x.printStackTrace();
                     }
                 }).start();
+                return true;
             }
         });
 
-        Deque<Callback> dataQueue = new ArrayDeque<>();
-        AtomicLong received = new AtomicLong();
-        CountDownLatch latch = new CountDownLatch(1);
-        Session client = newClientSession(new Session.Listener.Adapter());
+        Session client = newClientSession(new Session.Listener() {});
         MetaData.Request request = newRequest("GET", HttpFields.EMPTY);
         HeadersFrame frame = new HeadersFrame(request, null, true);
-        FuturePromise<Stream> promise = new FuturePromise<>();
-        client.newStream(frame, promise, new Stream.Listener.Adapter()
+        Stream stream = client.newStream(frame, new Stream.Listener()
         {
             @Override
-            public void onData(Stream stream, DataFrame frame, Callback callback)
+            public void onDataAvailable(Stream stream)
             {
-                dataQueue.offer(callback);
-                // Do not consume the data yet.
-                if (received.addAndGet(frame.getData().remaining()) == windowSize)
-                    latch.countDown();
+                // Do not read to stall the flow control window.
             }
-        });
-        Stream stream = promise.get(5, TimeUnit.SECONDS);
-        assertTrue(latch.await(5, TimeUnit.SECONDS));
+        }).get(5, TimeUnit.SECONDS);
+
+        // Wait until the flow control stalls.
+        await().atMost(5, TimeUnit.SECONDS).until(() -> ((HTTP2Stream)stream).getDataLength(), is((long)windowSize));
 
         // Reset and consume.
         stream.reset(new ResetFrame(stream.getId(), ErrorCode.CANCEL_STREAM_ERROR.code), Callback.NOOP);
-        dataQueue.forEach(Callback::succeeded);
-
         assertTrue(writeLatch.await(5, TimeUnit.SECONDS));
     }
 
@@ -683,10 +680,10 @@ public class StreamResetTest extends AbstractTest
     {
         int windowSize = FlowControlStrategy.DEFAULT_WINDOW_SIZE;
         CountDownLatch writeLatch = new CountDownLatch(1);
-        start(new Handler.Processor()
+        start(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 try
                 {
@@ -696,26 +693,24 @@ public class StreamResetTest extends AbstractTest
                 {
                     writeLatch.countDown();
                 }
+                return true;
             }
         });
 
-        AtomicLong received = new AtomicLong();
-        CountDownLatch latch = new CountDownLatch(1);
-        Session client = newClientSession(new Session.Listener.Adapter());
+        Session client = newClientSession(new Session.Listener() {});
         MetaData.Request request = newRequest("GET", HttpFields.EMPTY);
         HeadersFrame frame = new HeadersFrame(request, null, true);
-        FuturePromise<Stream> promise = new FuturePromise<>();
-        client.newStream(frame, promise, new Stream.Listener.Adapter()
+        Stream stream = client.newStream(frame, new Stream.Listener()
         {
             @Override
-            public void onData(Stream stream, DataFrame frame, Callback callback)
+            public void onDataAvailable(Stream stream)
             {
-                if (received.addAndGet(frame.getData().remaining()) == windowSize)
-                    latch.countDown();
+                // Do not read to stall the flow control window.
             }
-        });
-        Stream stream = promise.get(5, TimeUnit.SECONDS);
-        assertTrue(latch.await(5, TimeUnit.SECONDS));
+        }).get(5, TimeUnit.SECONDS);
+
+        // Wait until the flow control stalls.
+        await().atMost(5, TimeUnit.SECONDS).until(() -> ((HTTP2Stream)stream).getDataLength(), is((long)windowSize));
 
         // Reset.
         stream.reset(new ResetFrame(stream.getId(), ErrorCode.CANCEL_STREAM_ERROR.code), Callback.NOOP);
@@ -737,44 +732,37 @@ public class StreamResetTest extends AbstractTest
     {
         int windowSize = FlowControlStrategy.DEFAULT_WINDOW_SIZE;
         CountDownLatch writeLatch = new CountDownLatch(1);
-        start(new Handler.Processor()
+        start(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 response.write(true, ByteBuffer.wrap(new byte[10 * windowSize]), Callback.from(callback::succeeded, x ->
                 {
                     writeLatch.countDown();
                     callback.succeeded();
                 }));
+                return true;
             }
         });
 
-        Deque<Callback> dataQueue = new ArrayDeque<>();
-        AtomicLong received = new AtomicLong();
-        CountDownLatch latch = new CountDownLatch(1);
-        Session client = newClientSession(new Session.Listener.Adapter());
+        Session client = newClientSession(new Session.Listener() {});
         MetaData.Request request = newRequest("GET", HttpFields.EMPTY);
         HeadersFrame frame = new HeadersFrame(request, null, true);
-        FuturePromise<Stream> promise = new FuturePromise<>();
-        client.newStream(frame, promise, new Stream.Listener.Adapter()
+        Stream stream = client.newStream(frame, new Stream.Listener()
         {
             @Override
-            public void onData(Stream stream, DataFrame frame, Callback callback)
+            public void onDataAvailable(Stream stream)
             {
-                dataQueue.offer(callback);
-                // Do not consume the data yet.
-                if (received.addAndGet(frame.getData().remaining()) == windowSize)
-                    latch.countDown();
+                // Do not read to stall the flow control window.
             }
-        });
-        Stream stream = promise.get(5, TimeUnit.SECONDS);
-        assertTrue(latch.await(5, TimeUnit.SECONDS));
+        }).get(5, TimeUnit.SECONDS);
+
+        // Wait until the flow control stalls.
+        await().atMost(5, TimeUnit.SECONDS).until(() -> ((HTTP2Stream)stream).getDataLength(), is((long)windowSize));
 
         // Reset and consume.
         stream.reset(new ResetFrame(stream.getId(), ErrorCode.CANCEL_STREAM_ERROR.code), Callback.NOOP);
-        dataQueue.forEach(Callback::succeeded);
-
         assertTrue(writeLatch.await(5, TimeUnit.SECONDS));
     }
 
@@ -784,10 +772,10 @@ public class StreamResetTest extends AbstractTest
         CountDownLatch requestLatch = new CountDownLatch(1);
         CountDownLatch readLatch = new CountDownLatch(1);
         CountDownLatch failureLatch = new CountDownLatch(1);
-        start(new Handler.Processor()
+        start(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback) throws Exception
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
             {
                 try
                 {
@@ -801,15 +789,16 @@ public class StreamResetTest extends AbstractTest
                 {
                     failureLatch.countDown();
                 }
+                return true;
             }
         });
 
-        Session client = newClientSession(new Session.Listener.Adapter());
+        Session client = newClientSession(new Session.Listener() {});
 
         MetaData.Request request = newRequest("GET", HttpFields.EMPTY);
         HeadersFrame frame = new HeadersFrame(request, null, false);
         FuturePromise<Stream> promise = new FuturePromise<>();
-        client.newStream(frame, promise, new Stream.Listener.Adapter());
+        client.newStream(frame, promise, null);
         Stream stream = promise.get(5, TimeUnit.SECONDS);
         ByteBuffer content = ByteBuffer.wrap(new byte[1024]);
         stream.data(new DataFrame(stream.getId(), content, true), Callback.NOOP);
@@ -833,10 +822,10 @@ public class StreamResetTest extends AbstractTest
         CountDownLatch flusherLatch = new CountDownLatch(1);
         CountDownLatch writeLatch1 = new CountDownLatch(1);
         CountDownLatch writeLatch2 = new CountDownLatch(1);
-        start(new Handler.Processor()
+        start(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 flusherRef.set(((AbstractEndPoint)request.getConnectionMetaData().getConnection().getEndPoint()).getWriteFlusher());
                 flusherLatch.countDown();
@@ -860,33 +849,34 @@ public class StreamResetTest extends AbstractTest
                         writeLatch2.countDown();
                     }
                 }
+                return true;
             }
         });
 
-        ByteBufferPool byteBufferPool = http2Client.getByteBufferPool();
+        ByteBufferPool bufferPool = http2Client.getByteBufferPool();
         try (SocketChannel socket = SocketChannel.open())
         {
             String host = "localhost";
             int port = connector.getLocalPort();
             socket.connect(new InetSocketAddress(host, port));
 
-            Generator generator = new Generator(byteBufferPool);
-            ByteBufferPool.Lease lease = new ByteBufferPool.Lease(byteBufferPool);
-            generator.control(lease, new PrefaceFrame());
+            Generator generator = new Generator(bufferPool);
+            ByteBufferPool.Accumulator accumulator = new ByteBufferPool.Accumulator();
+            generator.control(accumulator, new PrefaceFrame());
             Map<Integer, Integer> clientSettings = new HashMap<>();
             // Max stream HTTP/2 flow control window.
             clientSettings.put(SettingsFrame.INITIAL_WINDOW_SIZE, Integer.MAX_VALUE);
-            generator.control(lease, new SettingsFrame(clientSettings, false));
+            generator.control(accumulator, new SettingsFrame(clientSettings, false));
             // Max session HTTP/2 flow control window.
-            generator.control(lease, new WindowUpdateFrame(0, Integer.MAX_VALUE - FlowControlStrategy.DEFAULT_WINDOW_SIZE));
+            generator.control(accumulator, new WindowUpdateFrame(0, Integer.MAX_VALUE - FlowControlStrategy.DEFAULT_WINDOW_SIZE));
 
             HttpURI uri = HttpURI.from("http", host, port, "/");
             MetaData.Request request = new MetaData.Request(HttpMethod.GET.asString(), uri, HttpVersion.HTTP_2, HttpFields.EMPTY);
             int streamId = 3;
             HeadersFrame headersFrame = new HeadersFrame(streamId, request, null, true);
-            generator.control(lease, headersFrame);
+            generator.control(accumulator, headersFrame);
 
-            List<ByteBuffer> buffers = lease.getByteBuffers();
+            List<ByteBuffer> buffers = accumulator.getByteBuffers();
             socket.write(buffers.toArray(new ByteBuffer[0]));
 
             // Wait until the server is TCP congested.
@@ -894,10 +884,11 @@ public class StreamResetTest extends AbstractTest
             WriteFlusher flusher = flusherRef.get();
             waitUntilTCPCongested(flusher);
 
-            lease.recycle();
-            generator.control(lease, new ResetFrame(streamId, ErrorCode.CANCEL_STREAM_ERROR.code));
-            buffers = lease.getByteBuffers();
+            accumulator.release();
+            generator.control(accumulator, new ResetFrame(streamId, ErrorCode.CANCEL_STREAM_ERROR.code));
+            buffers = accumulator.getByteBuffers();
             socket.write(buffers.toArray(new ByteBuffer[0]));
+            accumulator.release();
 
             assertTrue(writeLatch1.await(5, TimeUnit.SECONDS));
             assertTrue(writeLatch2.await(5, TimeUnit.SECONDS));
@@ -911,18 +902,19 @@ public class StreamResetTest extends AbstractTest
         CountDownLatch requestLatch1 = new CountDownLatch(1);
         CountDownLatch requestLatch2 = new CountDownLatch(1);
         CountDownLatch writeLatch1 = new CountDownLatch(1);
-        start(new Handler.Processor()
+        start(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback) throws Exception
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
             {
-                String target = request.getPathInContext();
+                String target = Request.getPathInContext(request);
                 if (target.equals("/1"))
                     service1(request, response, callback);
                 else if (target.equals("/2"))
                     service2(response, callback);
                 else
                     throw new IllegalArgumentException();
+                return true;
             }
 
             private void service1(Request request, Response response, Callback callback) throws Exception
@@ -953,29 +945,29 @@ public class StreamResetTest extends AbstractTest
             }
         });
 
-        ByteBufferPool byteBufferPool = http2Client.getByteBufferPool();
+        ByteBufferPool bufferPool = http2Client.getByteBufferPool();
         try (SocketChannel socket = SocketChannel.open())
         {
             String host = "localhost";
             int port = connector.getLocalPort();
             socket.connect(new InetSocketAddress(host, port));
 
-            Generator generator = new Generator(byteBufferPool);
-            ByteBufferPool.Lease lease = new ByteBufferPool.Lease(byteBufferPool);
-            generator.control(lease, new PrefaceFrame());
+            Generator generator = new Generator(bufferPool);
+            ByteBufferPool.Accumulator accumulator = new ByteBufferPool.Accumulator();
+            generator.control(accumulator, new PrefaceFrame());
             Map<Integer, Integer> clientSettings = new HashMap<>();
             // Max stream HTTP/2 flow control window.
             clientSettings.put(SettingsFrame.INITIAL_WINDOW_SIZE, Integer.MAX_VALUE);
-            generator.control(lease, new SettingsFrame(clientSettings, false));
+            generator.control(accumulator, new SettingsFrame(clientSettings, false));
             // Max session HTTP/2 flow control window.
-            generator.control(lease, new WindowUpdateFrame(0, Integer.MAX_VALUE - FlowControlStrategy.DEFAULT_WINDOW_SIZE));
+            generator.control(accumulator, new WindowUpdateFrame(0, Integer.MAX_VALUE - FlowControlStrategy.DEFAULT_WINDOW_SIZE));
 
             HttpURI uri = HttpURI.from("http", host, port, "/1");
             MetaData.Request request = new MetaData.Request(HttpMethod.GET.asString(), uri, HttpVersion.HTTP_2, HttpFields.EMPTY);
             HeadersFrame headersFrame = new HeadersFrame(3, request, null, true);
-            generator.control(lease, headersFrame);
+            generator.control(accumulator, headersFrame);
 
-            List<ByteBuffer> buffers = lease.getByteBuffers();
+            List<ByteBuffer> buffers = accumulator.getByteBuffers();
             socket.write(buffers.toArray(new ByteBuffer[0]));
 
             waitUntilTCPCongested(exchanger.exchange(null));
@@ -985,16 +977,17 @@ public class StreamResetTest extends AbstractTest
             request = new MetaData.Request(HttpMethod.GET.asString(), uri, HttpVersion.HTTP_2, HttpFields.EMPTY);
             int streamId = 5;
             headersFrame = new HeadersFrame(streamId, request, null, true);
-            generator.control(lease, headersFrame);
-            buffers = lease.getByteBuffers();
+            generator.control(accumulator, headersFrame);
+            buffers = accumulator.getByteBuffers();
             socket.write(buffers.toArray(new ByteBuffer[0]));
             assertTrue(requestLatch1.await(5, TimeUnit.SECONDS));
 
             // Now reset the second request, which has not started writing yet.
-            lease.recycle();
-            generator.control(lease, new ResetFrame(streamId, ErrorCode.CANCEL_STREAM_ERROR.code));
-            buffers = lease.getByteBuffers();
+            accumulator.release();
+            generator.control(accumulator, new ResetFrame(streamId, ErrorCode.CANCEL_STREAM_ERROR.code));
+            buffers = accumulator.getByteBuffers();
             socket.write(buffers.toArray(new ByteBuffer[0]));
+            accumulator.release();
             // Wait to be sure that the server processed the reset.
             Thread.sleep(1000);
             // Let the request write, it should not block.
@@ -1016,42 +1009,41 @@ public class StreamResetTest extends AbstractTest
             http2.setFlowControlStrategyFactory(() -> new BufferingFlowControlStrategy(ratio)
             {
                 @Override
-                protected void sendWindowUpdate(IStream stream, ISession session, WindowUpdateFrame frame)
+                protected void sendWindowUpdate(Session session, Stream stream, List<WindowUpdateFrame> frames)
                 {
                     // Before sending the window update, reset from the client side.
                     if (stream != null)
                         streamRef.get().reset(new ResetFrame(stream.getId(), ErrorCode.CANCEL_STREAM_ERROR.code), Callback.NOOP);
-                    super.sendWindowUpdate(stream, session, frame);
+                    super.sendWindowUpdate(session, stream, frames);
                 }
             });
         };
-        start(new ServerSessionListener.Adapter()
+        start(new ServerSessionListener()
         {
             @Override
             public Stream.Listener onNewStream(Stream stream, HeadersFrame frame)
             {
-                MetaData.Response response = new MetaData.Response(HttpVersion.HTTP_2, 200, HttpFields.EMPTY);
+                MetaData.Response response = new MetaData.Response(200, null, HttpVersion.HTTP_2, HttpFields.EMPTY);
                 HeadersFrame responseFrame = new HeadersFrame(stream.getId(), response, null, false);
-                Callback.Completable completable = new Callback.Completable();
-                stream.headers(responseFrame, completable);
-                // Consume the request content as it arrives.
-                return new Stream.Listener.Adapter();
+                stream.headers(responseFrame, Callback.NOOP);
+                return null;
             }
         }, http2Factory);
 
         CountDownLatch failureLatch = new CountDownLatch(1);
-        Session client = newClientSession(new Session.Listener.Adapter()
+        Session client = newClientSession(new Session.Listener()
         {
             @Override
-            public void onFailure(Session session, Throwable failure)
+            public void onFailure(Session session, Throwable failure, Callback callback)
             {
                 failureLatch.countDown();
+                callback.succeeded();
             }
         });
         MetaData.Request request = newRequest("GET", HttpFields.EMPTY);
         HeadersFrame requestFrame = new HeadersFrame(request, null, false);
         FuturePromise<Stream> promise = new FuturePromise<>();
-        client.newStream(requestFrame, promise, new Stream.Listener.Adapter());
+        client.newStream(requestFrame, promise, null);
         Stream stream = promise.get(5, TimeUnit.SECONDS);
         streamRef.set(stream);
         // Send enough bytes to trigger the server to send a window update.
@@ -1061,13 +1053,82 @@ public class StreamResetTest extends AbstractTest
         assertFalse(failureLatch.await(1, TimeUnit.SECONDS));
     }
 
+    @Test
+    public void testStreamResetDrainsData() throws Exception
+    {
+        AtomicReference<HTTP2Stream> serverStreamRef = new AtomicReference<>();
+        start(new ServerSessionListener()
+        {
+            @Override
+            public Stream.Listener onNewStream(Stream stream, HeadersFrame frame)
+            {
+                serverStreamRef.set((HTTP2Stream)stream);
+                stream.demand();
+                return new Stream.Listener()
+                {
+                    @Override
+                    public void onDataAvailable(Stream stream)
+                    {
+                        // Do not read DATA frames.
+                        stream.reset(new ResetFrame(stream.getId(), ErrorCode.CANCEL_STREAM_ERROR.code));
+                    }
+                };
+            }
+        });
+
+        CountDownLatch resetLatch = new CountDownLatch(1);
+        Session client = newClientSession(new Session.Listener() {});
+        MetaData.Request request = newRequest("GET", HttpFields.EMPTY);
+        HeadersFrame requestFrame = new HeadersFrame(request, null, false);
+        Stream stream = client.newStream(requestFrame, new Stream.Listener()
+        {
+            @Override
+            public void onReset(Stream stream, ResetFrame frame, Callback callback)
+            {
+                resetLatch.countDown();
+            }
+        }).get(5, TimeUnit.SECONDS);
+        stream.data(new DataFrame(stream.getId(), ByteBuffer.allocate(1024), true));
+
+        assertTrue(resetLatch.await(5, TimeUnit.SECONDS));
+
+        // After the reset, the server stream should be drained.
+        assertEquals(0, serverStreamRef.get().getDataLength());
+    }
+
+    @Test
+    public void testDataAfterLastFrameResets() throws Exception
+    {
+        start(new ServerSessionListener() {});
+
+        CountDownLatch resetLatch = new CountDownLatch(1);
+        Session client = newClientSession(new Session.Listener() {});
+        MetaData.Request request = newRequest("GET", HttpFields.EMPTY);
+        HeadersFrame requestFrame = new HeadersFrame(request, null, true);
+        Stream stream = client.newStream(requestFrame, new Stream.Listener()
+        {
+            @Override
+            public void onReset(Stream stream, ResetFrame frame, Callback callback)
+            {
+                resetLatch.countDown();
+            }
+        }).get(5, TimeUnit.SECONDS);
+
+        // The HEADERS frame had endStream=true, send a DATA frame with endStream=true, expect RST_STREAM.
+        stream.data(new DataFrame(stream.getId(), ByteBuffer.allocate(FlowControlStrategy.DEFAULT_WINDOW_SIZE), true));
+
+        assertTrue(resetLatch.await(5, TimeUnit.SECONDS));
+
+        // The client session window should be open.
+        await().atMost(5, TimeUnit.SECONDS).until(() -> ((HTTP2Session)stream.getSession()).updateSendWindow(0), greaterThan(0));
+    }
+
     private void waitUntilTCPCongested(WriteFlusher flusher) throws TimeoutException, InterruptedException
     {
-        long start = System.nanoTime();
+        long start = NanoTime.now();
         while (!flusher.isPending())
         {
-            long elapsed = System.nanoTime() - start;
-            if (TimeUnit.NANOSECONDS.toSeconds(elapsed) > 15)
+            if (NanoTime.secondsSince(start) > 15)
                 throw new TimeoutException();
             Thread.sleep(100);
         }

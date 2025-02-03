@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -21,21 +21,25 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 
 import jakarta.servlet.AsyncContext;
 import jakarta.servlet.DispatcherType;
+import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletRequestWrapper;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpServletResponseWrapper;
 import org.eclipse.jetty.http.HttpHeader;
+import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.http.HttpTester;
 import org.eclipse.jetty.http.MimeTypes;
 import org.eclipse.jetty.logging.StacklessLogging;
 import org.eclipse.jetty.server.Context;
 import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.LocalConnector;
+import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.handler.ContextHandlerCollection;
-import org.eclipse.jetty.server.handler.DefaultHandler;
+import org.eclipse.jetty.util.Callback;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -47,6 +51,7 @@ import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.notNullValue;
+import static org.hamcrest.Matchers.sameInstance;
 
 public class ContextHandlerTest
 {
@@ -61,11 +66,8 @@ public class ContextHandlerTest
         _connector = new LocalConnector(_server);
         _server.addConnector(_connector);
 
-        Handler.Collection handlers = new Handler.Collection();
-        _server.setHandler(handlers);
-
         _contextHandler = new ContextHandler();
-        handlers.setHandlers(_contextHandler.getCoreContextHandler());
+        _server.setHandler(_contextHandler);
     }
 
     @AfterEach
@@ -77,17 +79,7 @@ public class ContextHandlerTest
     @Test
     public void testSimple() throws Exception
     {
-        _contextHandler.setHandler(new AbstractHandler()
-        {
-            @Override
-            public void handle(String target, Request baseRequest, HttpServletRequest request, HttpServletResponse response) throws IOException
-            {
-                baseRequest.setHandled(true);
-                response.setStatus(200);
-                response.setContentType("text/plain");
-                response.getOutputStream().print("Hello\n");
-            }
-        });
+        _contextHandler.setHandler(new HelloHandler());
         _server.start();
 
         String rawResponse = _connector.getResponse("""
@@ -98,6 +90,72 @@ public class ContextHandlerTest
         HttpTester.Response response = HttpTester.parseResponse(rawResponse);
 
         assertThat(response.getStatus(), is(200));
+        assertThat(response.getField(HttpHeader.CONTENT_LENGTH).getIntValue(), greaterThan(0));
+        assertThat(response.getContent(), containsString("Hello"));
+    }
+
+    @Test
+    public void testStopStart() throws Exception
+    {
+        _contextHandler.setHandler(new HelloHandler());
+        _server.start();
+
+        HttpTester.Response response = HttpTester.parseResponse(_connector.getResponse("""
+            GET / HTTP/1.0
+            
+            """));
+
+        assertThat(response.getStatus(), is(200));
+        assertThat(response.getField(HttpHeader.CONTENT_LENGTH).getIntValue(), greaterThan(0));
+        assertThat(response.getContent(), containsString("Hello"));
+
+        _contextHandler.stop();
+        _contextHandler.setContextPath("/ctx");
+        _contextHandler.start();
+
+        response = HttpTester.parseResponse(_connector.getResponse("""
+            GET /ctx/ HTTP/1.0
+            
+            """));
+
+        assertThat(response.getStatus(), is(200));
+        assertThat(response.getField(HttpHeader.CONTENT_LENGTH).getIntValue(), greaterThan(0));
+        assertThat(response.getContent(), containsString("Hello"));
+    }
+
+    @Test
+    public void testNullPath() throws Exception
+    {
+        _contextHandler.setHandler(new HelloHandler());
+        _server.start();
+
+        HttpTester.Response response = HttpTester.parseResponse(_connector.getResponse("""
+            GET http://localhost:8080 HTTP/1.0
+            
+            """));
+
+        assertThat(response.getStatus(), is(200));
+        assertThat(response.getField(HttpHeader.CONTENT_LENGTH).getIntValue(), greaterThan(0));
+        assertThat(response.getContent(), containsString("Hello"));
+
+        _contextHandler.stop();
+        _contextHandler.setContextPath("/ctx");
+        _contextHandler.start();
+
+        response = HttpTester.parseResponse(_connector.getResponse("""
+            GET /ctx HTTP/1.0
+            
+            """));
+        assertThat(response.getStatus(), is(HttpStatus.MOVED_PERMANENTLY_301));
+        assertThat(response.getField(HttpHeader.LOCATION).getValue(), is("/ctx/"));
+
+        _contextHandler.setAllowNullPathInfo(true);
+
+        response = HttpTester.parseResponse(_connector.getResponse("""
+            GET /ctx HTTP/1.0
+            
+            """));
+        assertThat(response.getStatus(), is(HttpStatus.OK_200));
         assertThat(response.getField(HttpHeader.CONTENT_LENGTH).getIntValue(), greaterThan(0));
         assertThat(response.getContent(), containsString("Hello"));
     }
@@ -120,6 +178,54 @@ public class ContextHandlerTest
         assertThat(response.getField(HttpHeader.CONTENT_LENGTH).getIntValue(), greaterThan(0));
         assertThat(response.getContent(), containsString("contextPath=/context"));
         assertThat(response.getContent(), containsString("pathInfo=/path/info"));
+    }
+
+    @Test
+    public void testPersistentHeaders() throws Exception
+    {
+        _contextHandler.setContextPath("/context");
+        _contextHandler.setHandler(new AbstractHandler()
+        {
+            @Override
+            public void handle(String target, Request baseRequest, HttpServletRequest request, HttpServletResponse response) throws IOException, ServletException
+            {
+                Assertions.assertThrows(UnsupportedOperationException.class, () -> response.setHeader("Server", null));
+                Assertions.assertThrows(UnsupportedOperationException.class, () -> response.setHeader("Date", null));
+                String server = response.getHeader(HttpHeader.SERVER.asString());
+                String date = response.getHeader(HttpHeader.DATE.asString());
+                response.setHeader("Server", "testing123");
+                response.setDateHeader("Date", 1);
+
+                // Can set them to new values
+                assertThat(response.getHeader(HttpHeader.SERVER.asString()), is("testing123"));
+                assertThat(response.getHeader(HttpHeader.DATE.asString()), containsString("01 Jan 1970"));
+
+                // reset reverts to original values
+                response.reset();
+                assertThat(response.getHeader(HttpHeader.SERVER.asString()), is(server));
+                assertThat(response.getHeader(HttpHeader.DATE.asString()), is(date));
+
+                // But we can still modify them, and the modified values will be sent
+                response.setHeader("Server", "testing123");
+                response.setDateHeader("Date", 1);
+
+                baseRequest.setHandled(true);
+                response.getWriter().println("OK");
+            }
+        });
+        _server.start();
+
+        String rawResponse = _connector.getResponse("""
+            GET /context/test HTTP/1.0
+            
+            """);
+
+        HttpTester.Response response = HttpTester.parseResponse(rawResponse);
+
+        assertThat(response.getStatus(), is(200));
+        assertThat(response.getField(HttpHeader.CONTENT_LENGTH).getIntValue(), greaterThan(0));
+        assertThat(response.getField(HttpHeader.SERVER).getValue(), is("testing123"));
+        assertThat(response.getField(HttpHeader.DATE).getValue(), containsString("01 Jan 1970"));
     }
 
     @Test
@@ -176,7 +282,7 @@ public class ContextHandlerTest
                     coreRequest.connectionMetaData.persistent=%b
                     
                     """.formatted(
-                        coreRequest.getPathInContext(),
+                        org.eclipse.jetty.server.Request.getPathInContext(coreRequest),
                         baseRequest.hashCode(),
                         coreRequest.getId(),
                         coreRequest.getConnectionMetaData().getId(),
@@ -701,17 +807,60 @@ public class ContextHandlerTest
         assertThat(response.getContent(), containsString("Hello"));
 
         assertThat(history, contains(
-            // Enter once for handle(request)
-            "Core enter http://0.0.0.0/",
-            "EE9 enter /",
-            "EE9 exit /",
-            "Core exit http://0.0.0.0/",
-            // Enter again for process(request, response, callback)
+            // Enter for handle(request, response, callback)
             "Core enter http://0.0.0.0/",
             "EE9 enter /",
             "Handling",
             "EE9 exit /",
             "Core exit http://0.0.0.0/"));
+    }
+
+    @Test
+    public void testInsertHandler() throws Exception
+    {
+        HelloHandler helloHandler = new HelloHandler();
+        _contextHandler.setHandler(helloHandler);
+        Handler.Wrapper coreHandler = new Handler.Wrapper()
+        {
+            @Override
+            public boolean handle(org.eclipse.jetty.server.Request request, Response response, Callback callback) throws Exception
+            {
+                response.getHeaders().put("Core", "Inserted");
+                return super.handle(request, response, callback);
+            }
+        };
+        _contextHandler.insertHandler(coreHandler);
+
+        HandlerWrapper nestedHandler = new HandlerWrapper()
+        {
+            @Override
+            public void handle(String target, Request baseRequest, HttpServletRequest request, HttpServletResponse response) throws IOException, ServletException
+            {
+                response.setHeader("Nested", "Inserted");
+                super.handle(target, baseRequest, request, response);
+            }
+        };
+        _contextHandler.insertHandler(nestedHandler);
+
+        assertThat(_contextHandler.getCoreContextHandler().getHandler(), sameInstance(coreHandler));
+        assertThat(coreHandler.getHandler().toString(), containsString("CoreToNestedHandler"));
+        assertThat(_contextHandler.getHandler(), sameInstance(nestedHandler));
+        assertThat(nestedHandler.getHandler(), sameInstance(helloHandler));
+
+        _server.start();
+
+        String rawResponse = _connector.getResponse("""
+            GET / HTTP/1.0
+            
+            """);
+
+        HttpTester.Response response = HttpTester.parseResponse(rawResponse);
+
+        assertThat(response.getStatus(), is(200));
+        assertThat(response.getField(HttpHeader.CONTENT_LENGTH).getIntValue(), greaterThan(0));
+        assertThat(response.getContent(), containsString("Hello"));
+        assertThat(response.get("Core"), is("Inserted"));
+        assertThat(response.get("Nested"), is("Inserted"));
     }
 
     private static class TestErrorHandler extends ErrorHandler implements ErrorHandler.ErrorPageMapper
@@ -720,6 +869,18 @@ public class ContextHandlerTest
         public String getErrorPage(HttpServletRequest request)
         {
             return "/errorPage";
+        }
+    }
+
+    private static class HelloHandler extends AbstractHandler
+    {
+        @Override
+        public void handle(String target, Request baseRequest, HttpServletRequest request, HttpServletResponse response) throws IOException
+        {
+            baseRequest.setHandled(true);
+            response.setStatus(200);
+            response.setContentType("text/plain");
+            response.getOutputStream().print("Hello\n");
         }
     }
 }
