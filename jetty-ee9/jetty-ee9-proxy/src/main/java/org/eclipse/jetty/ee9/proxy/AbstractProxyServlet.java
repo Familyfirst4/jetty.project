@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -37,9 +37,10 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.eclipse.jetty.client.ContinueProtocolHandler;
 import org.eclipse.jetty.client.HttpClient;
 import org.eclipse.jetty.client.ProtocolHandlers;
-import org.eclipse.jetty.client.api.Request;
-import org.eclipse.jetty.client.api.Response;
-import org.eclipse.jetty.client.dynamic.HttpClientTransportDynamic;
+import org.eclipse.jetty.client.Request;
+import org.eclipse.jetty.client.Response;
+import org.eclipse.jetty.client.transport.HttpClientTransportDynamic;
+import org.eclipse.jetty.http.HttpCookieStore;
 import org.eclipse.jetty.http.HttpField;
 import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpHeader;
@@ -47,8 +48,8 @@ import org.eclipse.jetty.http.HttpHeaderValue;
 import org.eclipse.jetty.http.HttpScheme;
 import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.io.ClientConnector;
-import org.eclipse.jetty.util.HttpCookieStore;
 import org.eclipse.jetty.util.StringUtil;
+import org.eclipse.jetty.util.component.LifeCycle;
 import org.eclipse.jetty.util.ssl.SslContextFactory;
 import org.eclipse.jetty.util.thread.QueuedThreadPool;
 import org.slf4j.Logger;
@@ -145,11 +146,13 @@ public abstract class AbstractProxyServlet extends HttpServlet
     {
         try
         {
-            _client.stop();
+            LifeCycle.stop(_client);
         }
         catch (Exception x)
         {
-            if (_log.isDebugEnabled())
+            if (_log == null)
+                x.printStackTrace();
+            else if (_log.isDebugEnabled())
                 _log.debug("Failed to stop client", x);
         }
     }
@@ -276,7 +279,7 @@ public abstract class AbstractProxyServlet extends HttpServlet
         client.setFollowRedirects(false);
 
         // Must not store cookies, otherwise cookies of different clients will mix.
-        client.setCookieStore(new HttpCookieStore.Empty());
+        client.setHttpCookieStore(new HttpCookieStore.Empty());
 
         Executor executor;
         String value = config.getInitParameter("maxThreads");
@@ -456,9 +459,12 @@ public abstract class AbstractProxyServlet extends HttpServlet
 
     protected boolean hasContent(HttpServletRequest clientRequest)
     {
-        return clientRequest.getContentLength() > 0 ||
-            clientRequest.getContentType() != null ||
-            clientRequest.getHeader(HttpHeader.TRANSFER_ENCODING.asString()) != null;
+        long contentLength = clientRequest.getContentLengthLong();
+        if (contentLength == 0)
+            return false;
+        if (contentLength > 0)
+            return true;
+        return clientRequest.getHeader(HttpHeader.TRANSFER_ENCODING.asString()) != null;
     }
 
     protected boolean expects100Continue(HttpServletRequest request)
@@ -638,12 +644,15 @@ public abstract class AbstractProxyServlet extends HttpServlet
 
     protected void onClientRequestFailure(HttpServletRequest clientRequest, Request proxyRequest, HttpServletResponse proxyResponse, Throwable failure)
     {
-        boolean aborted = proxyRequest.abort(failure);
-        if (!aborted)
+        proxyRequest.abort(failure).whenComplete((aborted, x) ->
         {
-            int status = clientRequestStatus(failure);
-            sendProxyResponseError(clientRequest, proxyResponse, status);
-        }
+            // The variable 'aborted' could be null.
+            if (aborted == Boolean.FALSE)
+            {
+                int status = clientRequestStatus(failure);
+                sendProxyResponseError(clientRequest, proxyResponse, status);
+            }
+        });
     }
 
     protected int clientRequestStatus(Throwable failure)
@@ -663,7 +672,7 @@ public abstract class AbstractProxyServlet extends HttpServlet
                 continue;
 
             String newHeaderValue = filterServerResponseHeader(clientRequest, serverResponse, headerName, field.getValue());
-            if (newHeaderValue == null || newHeaderValue.trim().length() == 0)
+            if (newHeaderValue == null)
                 continue;
 
             proxyResponse.addHeader(headerName, newHeaderValue);
@@ -762,10 +771,17 @@ public abstract class AbstractProxyServlet extends HttpServlet
         }
     }
 
-    protected void onContinue(HttpServletRequest clientRequest, Request proxyRequest)
+    /**
+     * <p>Returns the action to perform when the proxy receives
+     * a 100 Continue response from the server.</p>
+     *
+     * @param clientRequest the client request
+     * @param proxyRequest the request being proxied
+     * @return the 100 Continue action to run
+     */
+    protected Runnable onContinue(HttpServletRequest clientRequest, Request proxyRequest)
     {
-        if (_log.isDebugEnabled())
-            _log.debug("{} handling 100 Continue", getRequestId(clientRequest));
+        return null;
     }
 
     /**
@@ -850,10 +866,10 @@ public abstract class AbstractProxyServlet extends HttpServlet
     class ProxyContinueProtocolHandler extends ContinueProtocolHandler
     {
         @Override
-        protected void onContinue(Request request)
+        protected Runnable onContinue(Request request)
         {
             HttpServletRequest clientRequest = (HttpServletRequest)request.getAttributes().get(CLIENT_REQUEST_ATTRIBUTE);
-            AbstractProxyServlet.this.onContinue(clientRequest, request);
+            return AbstractProxyServlet.this.onContinue(clientRequest, request);
         }
     }
 }

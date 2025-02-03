@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -37,8 +37,8 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.Function;
-import java.util.function.Predicate;
 import java.util.stream.Stream;
 
 import jakarta.servlet.MultipartConfigElement;
@@ -52,14 +52,16 @@ import jakarta.servlet.http.MappingMatch;
 import jakarta.servlet.http.Part;
 import jakarta.servlet.http.PushBuilder;
 import org.eclipse.jetty.http.BadMessageException;
+import org.eclipse.jetty.http.ComplianceViolation;
 import org.eclipse.jetty.http.CookieCompliance;
-import org.eclipse.jetty.http.HttpCompliance;
 import org.eclipse.jetty.http.HttpCookie;
+import org.eclipse.jetty.http.HttpException;
+import org.eclipse.jetty.http.HttpField;
 import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpHeader;
+import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.http.HttpTester;
 import org.eclipse.jetty.http.HttpURI;
-import org.eclipse.jetty.http.MetaData;
 import org.eclipse.jetty.http.MimeTypes;
 import org.eclipse.jetty.http.UriCompliance;
 import org.eclipse.jetty.http.pathmap.MatchedPath;
@@ -72,19 +74,26 @@ import org.eclipse.jetty.server.ConnectionMetaData;
 import org.eclipse.jetty.server.Context;
 import org.eclipse.jetty.server.ForwardedRequestCustomizer;
 import org.eclipse.jetty.server.HttpConnectionFactory;
+import org.eclipse.jetty.server.HttpCookieUtils;
 import org.eclipse.jetty.server.HttpStream;
 import org.eclipse.jetty.server.LocalConnector;
 import org.eclipse.jetty.server.LocalConnector.LocalEndPoint;
 import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.server.TunnelSupport;
 import org.eclipse.jetty.toolchain.test.jupiter.WorkDir;
 import org.eclipse.jetty.toolchain.test.jupiter.WorkDirExtension;
 import org.eclipse.jetty.util.BufferUtil;
+import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.IO;
+import org.eclipse.jetty.util.NanoTime;
 import org.hamcrest.Matchers;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -110,7 +119,6 @@ import static org.junit.jupiter.api.Assertions.fail;
 public class RequestTest
 {
     private static final Logger LOG = LoggerFactory.getLogger(RequestTest.class);
-    public WorkDir workDir;
     private Server _server;
     private ContextHandler _context;
     private LocalConnector _connector;
@@ -122,11 +130,14 @@ public class RequestTest
         _server = new Server();
         _context = new ContextHandler(_server);
         HttpConnectionFactory http = new HttpConnectionFactory();
+        http.setRecordHttpComplianceViolations(true);
         http.setInputBufferSize(1024);
         http.getHttpConfiguration().setRequestHeaderSize(512);
         http.getHttpConfiguration().setResponseHeaderSize(512);
         http.getHttpConfiguration().setOutputBufferSize(2048);
         http.getHttpConfiguration().addCustomizer(new ForwardedRequestCustomizer());
+        http.getHttpConfiguration().setRequestCookieCompliance(CookieCompliance.RFC6265_LEGACY);
+        http.getHttpConfiguration().addComplianceViolationListener(new ComplianceViolation.CapturingListener());
         _connector = new LocalConnector(_server, http);
         _server.addConnector(_connector);
         _connector.setIdleTimeout(500);
@@ -202,6 +213,34 @@ public class RequestTest
     }
 
     @Test
+    public void testBadUtf8Query() throws Exception
+    {
+        _server.stop();
+        _connector.getConnectionFactory(HttpConnectionFactory.class)
+            .getHttpConfiguration().setUriCompliance(UriCompliance.DEFAULT.with("test", UriCompliance.Violation.BAD_UTF8_ENCODING));
+        _server.start();
+
+        _handler._checker = (request, response) ->
+        {
+            String param = request.getParameter("param");
+            String other = request.getParameter("other");
+            return param != null && param.equals("bad_�") && other != null && other.equals("short�");
+        };
+
+        //Send a request with query string with illegal hex code to cause
+        //an exception parsing the params
+        String request = """
+            GET /?param=bad_%e0%b8&other=short%a HTTP/1.1\r
+            Host: whatever\r
+            Connection: close
+            
+            """;
+
+        String responses = _connector.getResponse(request);
+        assertThat(responses, startsWith("HTTP/1.1 200"));
+    }
+
+    @Test
     public void testParamExtraction() throws Exception
     {
         _handler._checker = (request, response) ->
@@ -212,7 +251,7 @@ public class RequestTest
                 request.getParameterMap();
                 return false;
             }
-            catch (BadMessageException e)
+            catch (Throwable e)
             {
                 // Should be able to retrieve the raw query
                 String rawQuery = request.getQueryString();
@@ -236,14 +275,10 @@ public class RequestTest
     public void testParameterExtractionKeepOrderingIntact() throws Exception
     {
         AtomicReference<Map<String, String[]>> reference = new AtomicReference<>();
-        _handler._checker = new RequestTester()
+        _handler._checker = (request, response) ->
         {
-            @Override
-            public boolean check(HttpServletRequest request, HttpServletResponse response)
-            {
-                reference.set(request.getParameterMap());
-                return true;
-            }
+            reference.set(request.getParameterMap());
+            return true;
         };
 
         String request = "POST /?first=1&second=2&third=3&fourth=4 HTTP/1.1\r\n" +
@@ -263,14 +298,10 @@ public class RequestTest
     public void testParameterExtractionOrderingWithMerge() throws Exception
     {
         AtomicReference<Map<String, String[]>> reference = new AtomicReference<>();
-        _handler._checker = new RequestTester()
+        _handler._checker = (request, response) ->
         {
-            @Override
-            public boolean check(HttpServletRequest request, HttpServletResponse response)
-            {
-                reference.set(request.getParameterMap());
-                return true;
-            }
+            reference.set(request.getParameterMap());
+            return true;
         };
 
         String request = "POST /?a=1&b=2&c=3&a=4 HTTP/1.1\r\n" +
@@ -318,12 +349,11 @@ public class RequestTest
         _handler._checker = (request, response) ->
         {
             request.getParameterMap();
-            // should have thrown a BadMessageException
+            //
             return false;
         };
 
-        //Send a request with query string with illegal hex code to cause
-        //an exception parsing the params
+        //Send a request with a form body that is smaller than Content-Length.
         String request = "POST / HTTP/1.1\r\n" +
             "Host: whatever\r\n" +
             "Content-Type: " + MimeTypes.Type.FORM_ENCODED.asString() + "\n" +
@@ -390,7 +420,7 @@ public class RequestTest
                 assertTrue(e.getMessage().startsWith("No multipart config"));
                 return true;
             }
-            catch (Exception e)
+            catch (Throwable e)
             {
                 return false;
             }
@@ -453,11 +483,10 @@ public class RequestTest
     }
 
     @Test
-    public void testMultiPart() throws Exception
+    public void testMultiPart(WorkDir workDir) throws Exception
     {
         Path testTmpDir = workDir.getEmptyPathDir();
-
-        // We should have two tmp files after parsing the multipart form.
+        // We should have two tmp files after parsing the multipart form. bb
         RequestTester tester = (request, response) ->
         {
             try (Stream<Path> s = Files.list(testTmpDir))
@@ -465,7 +494,7 @@ public class RequestTest
                 return s.count() == 2;
             }
         };
-        
+
         _server.stop();
         _context.setContextPath("/foo");
         _context.setResourceBase(".");
@@ -495,7 +524,7 @@ public class RequestTest
         endPoint.addInput(request);
         String response = endPoint.getResponse();
         assertThat(response, startsWith("HTTP/1.1 200"));
-        assertThat(response, containsString("Violation: TRANSFER_ENCODING"));
+        assertThat(response, containsString("Violation: CONTENT_TRANSFER_ENCODING"));
 
         // We know the previous request has completed if another request can be processed on the same connection.
         String cleanupRequest = "GET /foo/cleanup HTTP/1.1\r\n" +
@@ -510,10 +539,10 @@ public class RequestTest
     }
 
     @Test
-    public void testBadMultiPart() throws Exception
+    public void testBadMultiPart(WorkDir workDir) throws Exception
     {
-        //a bad multipart where one of the fields has no name
         Path testTmpDir = workDir.getEmptyPathDir();
+        //a bad multipart where one of the fields has no name
 
         _server.stop();
         _context.setContextPath("/foo");
@@ -568,7 +597,7 @@ public class RequestTest
                 request.getParameter("param");
                 return false;
             }
-            catch (BadMessageException e)
+            catch (Throwable e)
             {
                 // Should still be able to get the raw query.
                 String rawQuery = request.getQueryString();
@@ -600,9 +629,11 @@ public class RequestTest
                 request.getParameter("param");
                 return false;
             }
-            catch (BadMessageException e)
+            catch (Throwable e)
             {
-                return e.getCode() == 415;
+                if (e instanceof HttpException httpException)
+                    return httpException.getCode() == 415;
+                throw e;
             }
         };
 
@@ -706,8 +737,16 @@ public class RequestTest
         assertThat(responses, startsWith("HTTP/1.1 200"));
     }
 
-    @Test
-    public void testInvalidHostHeader() throws Exception
+    @ParameterizedTest
+    @ValueSource(strings = {
+        "Host: whatever.com:xxxx", // invalid port
+        "Host: myhost:testBadPort", // invalid port
+        "Host: a b c d", // spaces
+        "Host: a\to\tz", // control characters
+        "Host: hosta, hostb, hostc", // spaces (commas are ok)
+        "Host: hosta\nHost: hostb\nHost: hostc" // multi-line
+    })
+    public void testInvalidHostHeader(String hostline) throws Exception
     {
         // Use a contextHandler with vhosts to force call to Request.getServerName()
         _server.stop();
@@ -716,7 +755,7 @@ public class RequestTest
 
         // Request with illegal Host header
         String request = "GET / HTTP/1.1\n" +
-            "Host: whatever.com:xxxx\n" +
+            hostline + "\n" +
             "Content-Type: text/html;charset=utf8\n" +
             "Connection: close\n" +
             "\n";
@@ -779,6 +818,57 @@ public class RequestTest
     }
 
     @Test
+    public void testConnectRequestURLSameAsHost() throws Exception
+    {
+        final AtomicReference<String> resultRequestURL = new AtomicReference<>();
+        final AtomicReference<String> resultRequestURI = new AtomicReference<>();
+        _handler._checker = (request, response) ->
+        {
+            resultRequestURL.set(request.getRequestURL().toString());
+            resultRequestURI.set(request.getRequestURI());
+            return true;
+        };
+
+        String rawResponse = _connector.getResponse(
+            """
+                CONNECT myhost:9999 HTTP/1.1\r
+                Host: myhost:9999\r
+                Connection: close\r
+                \r
+                """);
+        HttpTester.Response response = HttpTester.parseResponse(rawResponse);
+        assertThat(response.getStatus(), is(HttpStatus.OK_200));
+        assertThat("request.getRequestURL", resultRequestURL.get(), is("http://myhost:9999/"));
+        assertThat("request.getRequestURI", resultRequestURI.get(), is("/"));
+    }
+
+    @Test
+    public void testConnectRequestURLDifferentThanHost() throws Exception
+    {
+        final AtomicReference<String> resultRequestURL = new AtomicReference<>();
+        final AtomicReference<String> resultRequestURI = new AtomicReference<>();
+        _handler._checker = (request, response) ->
+        {
+            resultRequestURL.set(request.getRequestURL().toString());
+            resultRequestURI.set(request.getRequestURI());
+            return true;
+        };
+
+        // per spec, "Host" is ignored if request-target is authority-form
+        String rawResponse = _connector.getResponse(
+            """
+                CONNECT myhost:9999 HTTP/1.1\r
+                Host: otherhost:8888\r
+                Connection: close\r
+                \r
+                """);
+        HttpTester.Response response = HttpTester.parseResponse(rawResponse);
+        assertThat(response.getStatus(), is(HttpStatus.OK_200));
+        assertThat("request.getRequestURL", resultRequestURL.get(), is("http://myhost:9999/"));
+        assertThat("request.getRequestURI", resultRequestURI.get(), is("/"));
+    }
+
+    @Test
     public void testHostPort() throws Exception
     {
         final ArrayList<String> results = new ArrayList<>();
@@ -835,6 +925,19 @@ public class RequestTest
                 "\n");
         i = 0;
         assertThat(response, containsString("400 Bad"));
+
+        results.clear();
+        response = _connector.getResponse(
+            "GET http://myhost:8888/ HTTP/1.1\n" +
+                "Host: myhost:8888\n" +
+                "Connection: close\n" +
+                "\n");
+        i = 0;
+        assertThat(response, containsString("200 OK"));
+        assertEquals("http://myhost:8888/", results.get(i++));
+        assertEquals("0.0.0.0", results.get(i++));
+        assertEquals("myhost", results.get(i++));
+        assertEquals("8888", results.get(i));
 
         results.clear();
         response = _connector.getResponse(
@@ -932,10 +1035,10 @@ public class RequestTest
         });
         final InetSocketAddress remoteAddr = new InetSocketAddress(local, 32768);
 
-        org.eclipse.jetty.server.Handler.Wrapper handler = new org.eclipse.jetty.server.Handler.Wrapper()
+        org.eclipse.jetty.server.Handler.Singleton handler = new org.eclipse.jetty.server.Handler.Wrapper()
         {
             @Override
-            public org.eclipse.jetty.server.Request.Processor handle(org.eclipse.jetty.server.Request request) throws Exception
+            public boolean handle(org.eclipse.jetty.server.Request request, org.eclipse.jetty.server.Response response, Callback callback) throws Exception
             {
                 ConnectionMetaData connectionMetaData = new ConnectionMetaData.Wrapper(request.getConnectionMetaData())
                 {
@@ -946,7 +1049,7 @@ public class RequestTest
                     }
                 };
 
-                org.eclipse.jetty.server.Request.WrapperProcessor wrapper = new org.eclipse.jetty.server.Request.WrapperProcessor(request)
+                org.eclipse.jetty.server.Request wrapper = new org.eclipse.jetty.server.Request.Wrapper(request)
                 {
                     @Override
                     public ConnectionMetaData getConnectionMetaData()
@@ -955,7 +1058,7 @@ public class RequestTest
                     }
                 };
 
-                return wrapper.wrapProcessor(super.handle(wrapper));
+                return super.handle(wrapper, response, callback);
             }
         };
 
@@ -1242,7 +1345,7 @@ public class RequestTest
                 {
                     //expected
                 }
-                catch (Exception e)
+                catch (Throwable e)
                 {
                     fail("Session creation after response commit should throw IllegalStateException");
                 }
@@ -1256,7 +1359,7 @@ public class RequestTest
             "Connection: close\n" +
             "\n");
         assertThat(response, containsString(" 302 Found"));
-        assertThat(response, containsString("Location: http://myhost/foo"));
+        assertThat(response, containsString("Location: /foo"));
     }
 
     @Test
@@ -1389,8 +1492,7 @@ public class RequestTest
             200, TimeUnit.MILLISECONDS
         );
         assertThat(response, containsString("200"));
-        assertThat(response, containsString("Connection: TE"));
-        assertThat(response, containsString("Connection: Other"));
+        assertThat(response, containsString("Connection: TE,Other"));
 
         response = _connector.getResponse(
             "GET / HTTP/1.1\n" +
@@ -1399,8 +1501,76 @@ public class RequestTest
                 "\n"
         );
         assertThat(response, containsString("200 OK"));
-        assertThat(response, containsString("Connection: close"));
+        assertThat(response, containsString("Connection: TE,Other,close"));
         assertThat(response, containsString("Hello World"));
+    }
+
+    @Test
+    public void testSpecCookies() throws Exception
+    {
+        _server.stop();
+        _connector.getConnectionFactory(HttpConnectionFactory.class)
+            .getHttpConfiguration().setRequestCookieCompliance(CookieCompliance.RFC2965);
+        _server.start();
+
+        final ArrayList<Cookie> cookies = new ArrayList<>();
+
+        _handler._checker = (request, response) ->
+        {
+            Cookie[] ca = request.getCookies();
+            if (ca != null)
+                cookies.addAll(Arrays.asList(ca));
+            response.getOutputStream().println("Cookie monster!");
+            return true;
+        };
+
+        String response = _connector.getResponse(
+            """
+                GET / HTTP/1.1
+                Host: whatever
+                Cookie: name1=value1
+                Connection: close
+
+                """
+        );
+        assertTrue(response.startsWith("HTTP/1.1 200 OK"));
+        assertEquals(1, cookies.size());
+    }
+
+    @Test
+    public void testSpecCookiesVersion() throws Exception
+    {
+        _server.stop();
+        _connector.getConnectionFactory(HttpConnectionFactory.class)
+            .getHttpConfiguration().setRequestCookieCompliance(CookieCompliance.RFC2965);
+        _server.start();
+
+        final ArrayList<Cookie> cookies = new ArrayList<>();
+
+        _handler._checker = (request, response) ->
+        {
+            Cookie[] ca = request.getCookies();
+            if (ca != null)
+                cookies.addAll(Arrays.asList(ca));
+            response.getOutputStream().println("Cookie monster!");
+            return true;
+        };
+
+        String response = _connector.getResponse(
+            """
+                GET / HTTP/1.1
+                Host: whatever
+                Cookie: $Version="1"; name1="value1"; $Path="/servlet_jsh_cookie_web"; $Domain="localhost"
+                Connection: close
+                
+                """
+        );
+        assertTrue(response.startsWith("HTTP/1.1 200 OK"));
+        assertEquals(1, cookies.size());
+        Cookie cookie = cookies.get(0);
+        assertThat(cookie.getVersion(), is(1));
+        assertThat(cookie.getPath(), is("/servlet_jsh_cookie_web"));
+        assertThat(cookie.getDomain(), is("localhost"));
     }
 
     @Test
@@ -1631,12 +1801,12 @@ public class RequestTest
         assertEquals("value", cookies[0]);
         assertNull(cookies[1]);
     }
-    
+
     /**
      * Test that multiple requests on the same connection with different cookies
      * do not bleed cookies.
-     * 
-     * @throws Exception
+     *
+     * @throws Exception if there is an unspecified problem
      */
     @Test
     public void testDifferentCookies() throws Exception
@@ -1678,7 +1848,7 @@ public class RequestTest
         response = HttpTester.parseResponse(lep.getResponse());
         checkCookieResult(sessionId3, new String[] {sessionId1, sessionId2}, response.getContent());
     }
-    
+
     @Test
     public void testHashDOSKeys() throws Exception
     {
@@ -1704,14 +1874,13 @@ public class RequestTest
                 "\r\n" +
                 buf;
 
-            long start = TimeUnit.NANOSECONDS.toMillis(System.nanoTime());
+            long start = NanoTime.now();
             String rawResponse = _connector.getResponse(request);
             HttpTester.Response response = HttpTester.parseResponse(rawResponse);
             assertThat("Response.status", response.getStatus(), is(400));
             assertThat("Response body content", response.getContent(), containsString(BadMessageException.class.getName()));
             assertThat("Response body content", response.getContent(), containsString(IllegalStateException.class.getName()));
-            long now = TimeUnit.NANOSECONDS.toMillis(System.nanoTime());
-            assertTrue((now - start) < 5000);
+            assertTrue(NanoTime.millisSince(start) < 5000);
         }
     }
 
@@ -1743,21 +1912,20 @@ public class RequestTest
                 "\r\n" +
                 buf;
 
-            long start = TimeUnit.NANOSECONDS.toMillis(System.nanoTime());
+            long start = NanoTime.now();
             String rawResponse = _connector.getResponse(request);
             HttpTester.Response response = HttpTester.parseResponse(rawResponse);
             assertThat("Response.status", response.getStatus(), is(400));
             assertThat("Response body content", response.getContent(), containsString(BadMessageException.class.getName()));
             assertThat("Response body content", response.getContent(), containsString(IllegalStateException.class.getName()));
-            long now = TimeUnit.NANOSECONDS.toMillis(System.nanoTime());
-            assertTrue((now - start) < 5000);
+            assertTrue(NanoTime.millisSince(start) < 5000);
         }
     }
 
     @Test
     public void testNotSupportedCharacterEncoding()
     {
-        Request request = new Request(new HttpChannel(_context, new MockConnectionMetaData(new MockConnector())), null);
+        Request request = new Request(new HttpChannel(_context, new MockConnectionMetaData(_connector)), null);
         assertThrows(UnsupportedEncodingException.class, () -> request.setCharacterEncoding("doesNotExist"));
     }
 
@@ -1765,7 +1933,7 @@ public class RequestTest
     public void testGetterSafeFromNullPointerException()
     {
         // This is only needed for tests that mock with null values.
-        Request request = new Request(new HttpChannel(_context, new MockConnectionMetaData(new MockConnector())), null);
+        Request request = new Request(new HttpChannel(_context, new MockConnectionMetaData(_connector)), null);
 
         assertNull(request.getAuthType());
         assertNull(request.getAuthentication());
@@ -1806,11 +1974,14 @@ public class RequestTest
     public void testPushBuilder()
     {
         String uri = "http://host/foo/something";
-        HttpChannel httpChannel = new HttpChannel(_context, new MockConnectionMetaData(new MockConnector()));
+        HttpChannel httpChannel = new HttpChannel(_context, new MockConnectionMetaData(_connector));
         Request request = new MockRequest(httpChannel, new HttpInput(httpChannel));
-        request.getResponse().getHttpFields().add(new HttpCookie.SetCookieHttpField(new HttpCookie("good", "thumbsup", 100), CookieCompliance.RFC6265));
-        request.getResponse().getHttpFields().add(new HttpCookie.SetCookieHttpField(new HttpCookie("bonza", "bewdy", 1), CookieCompliance.RFC6265));
-        request.getResponse().getHttpFields().add(new HttpCookie.SetCookieHttpField(new HttpCookie("bad", "thumbsdown", 0), CookieCompliance.RFC6265));
+        request.getResponse().onResponse(HttpFields.build());
+        request.getResponse().getHttpFields().add(new HttpCookieUtils.SetCookieHttpField(HttpCookie.from("good", "thumbsup", Map.of(HttpCookie.MAX_AGE_ATTRIBUTE, Long.toString(100))), CookieCompliance.RFC6265));
+        request.getResponse().getHttpFields().add(new HttpCookieUtils.SetCookieHttpField(HttpCookie.from("bonza", "bewdy", Map.of(HttpCookie.MAX_AGE_ATTRIBUTE, Long.toString(1))), CookieCompliance.RFC6265));
+        request.getResponse().getHttpFields().add(new HttpCookieUtils.SetCookieHttpField(HttpCookie.from("bad", "thumbsdown", Map.of(HttpCookie.MAX_AGE_ATTRIBUTE, Long.toString(0))), CookieCompliance.RFC6265));
+        request.getResponse().getHttpFields().add(new HttpField(HttpHeader.SET_COOKIE, HttpCookieUtils.getSetCookie(HttpCookie.from("ugly", "duckling", Map.of(HttpCookie.MAX_AGE_ATTRIBUTE, Long.toString(100))), CookieCompliance.RFC6265)));
+        request.getResponse().getHttpFields().add(new HttpField(HttpHeader.SET_COOKIE, "flow=away; Max-Age=0; Secure; HttpOnly; SameSite=None"));
         HttpFields.Mutable fields = HttpFields.build();
         fields.add(HttpHeader.AUTHORIZATION, "Basic foo");
 
@@ -1836,13 +2007,15 @@ public class RequestTest
         assertThat(builder.getHeader("Cookie"), containsString("good"));
         assertThat(builder.getHeader("Cookie"), containsString("maxpos"));
         assertThat(builder.getHeader("Cookie"), not(containsString("bad")));
+        assertThat(builder.getHeader("Cookie"), containsString("ugly"));
+        assertThat(builder.getHeader("Cookie"), not(containsString("flown")));
     }
 
     @Test
     public void testPushBuilderWithIdNoAuth()
     {
         String uri = "http://host/foo/something";
-        HttpChannel httpChannel = new HttpChannel(_context, new MockConnectionMetaData(new MockConnector()));
+        HttpChannel httpChannel = new HttpChannel(_context, new MockConnectionMetaData(_connector));
         Request request = new MockRequest(httpChannel, new HttpInput(httpChannel))
         {
             @Override
@@ -1853,6 +2026,7 @@ public class RequestTest
         };
         HttpFields.Mutable fields = HttpFields.build();
         request.onRequest(new TestCoreRequest(uri, fields));
+        request.getResponse().onResponse(HttpFields.build());
         assertTrue(request.isPushSupported());
         PushBuilder builder = request.newPushBuilder();
         assertNotNull(builder);
@@ -2118,7 +2292,7 @@ public class RequestTest
             try
             {
                 MultipartConfigElement mpce = new MultipartConfigElement(tmpDir.getAbsolutePath(), -1, -1, 2);
-                request.setAttribute(Request.__MULTIPART_CONFIG_ELEMENT, mpce);
+                request.setAttribute(Request.MULTIPART_CONFIG_ELEMENT, mpce);
 
                 String field1 = request.getParameter("field1");
                 assertNotNull(field1);
@@ -2127,12 +2301,12 @@ public class RequestTest
                 assertNotNull(foo);
                 assertTrue(foo.getSize() > 0);
                 response.setStatus(200);
-                List<String> violations = (List<String>)request.getAttribute(HttpCompliance.VIOLATIONS_ATTR);
-                if (violations != null)
+                List<ComplianceViolation.Event> violationEvents = (List<ComplianceViolation.Event>)request.getAttribute(ComplianceViolation.CapturingListener.VIOLATIONS_ATTR_KEY);
+                if (violationEvents != null)
                 {
-                    for (String v : violations)
+                    for (ComplianceViolation.Event event : violationEvents)
                     {
-                        response.addHeader("Violation", v);
+                        response.addHeader("Violation", event.violation().toString());
                     }
                 }
 
@@ -2145,7 +2319,7 @@ public class RequestTest
                 assertTrue(e.getMessage().startsWith("No multipart config"));
                 response.setStatus(200);
             }
-            catch (Exception e)
+            catch (Throwable e)
             {
                 response.sendError(500);
             }
@@ -2174,7 +2348,7 @@ public class RequestTest
             try
             {
                 MultipartConfigElement mpce = new MultipartConfigElement(tmpDir.toString(), -1, -1, 2);
-                request.setAttribute(Request.__MULTIPART_CONFIG_ELEMENT, mpce);
+                request.setAttribute(Request.MULTIPART_CONFIG_ELEMENT, mpce);
 
                 //We should get an error when we getParams if there was a problem parsing the multipart
                 request.getPart("xxx");
@@ -2187,14 +2361,16 @@ public class RequestTest
         }
     }
 
-    private static class TestCoreRequest implements org.eclipse.jetty.server.Request
+    private static class TestCoreRequest extends ContextHandler.CoreContextRequest
     {
+        private final Server _server = new Server();
         private final ConnectionMetaData _connectionMetaData;
         private final String _uri;
         private final HttpFields.Mutable _fields;
 
         public TestCoreRequest(String uri, HttpFields.Mutable fields)
         {
+            super(new MockCoreRequest(), null, null);
             _uri = uri;
             _fields = fields;
             _connectionMetaData = new MockConnectionMetaData();
@@ -2233,13 +2409,7 @@ public class RequestTest
         @Override
         public Context getContext()
         {
-            return null;
-        }
-
-        @Override
-        public String getPathInContext()
-        {
-            return _uri;
+            return _server.getContext();
         }
 
         @Override
@@ -2249,7 +2419,13 @@ public class RequestTest
         }
 
         @Override
-        public long getTimeStamp()
+        public HttpFields getTrailers()
+        {
+            return null;
+        }
+
+        @Override
+        public long getHeadersNanoTime()
         {
             return 0;
         }
@@ -2273,6 +2449,12 @@ public class RequestTest
         }
 
         @Override
+        public boolean consumeAvailable()
+        {
+            return false;
+        }
+
+        @Override
         public void demand(Runnable demandCallback)
         {
         }
@@ -2283,18 +2465,18 @@ public class RequestTest
         }
 
         @Override
-        public void push(MetaData.Request request)
+        public void addFailureListener(Consumer<Throwable> onFailure)
         {
         }
 
         @Override
-        public boolean addErrorListener(Predicate<Throwable> onError)
+        public TunnelSupport getTunnelSupport()
         {
-            return false;
+            return null;
         }
 
         @Override
-        public void addHttpStreamWrapper(Function<HttpStream, HttpStream.Wrapper> wrapper)
+        public void addHttpStreamWrapper(Function<HttpStream, HttpStream> wrapper)
         {
         }
 
@@ -2327,7 +2509,7 @@ public class RequestTest
         {
         }
     }
-    
+
     private static void checkCookieResult(String containedCookie, String[] notContainedCookies, String response)
     {
         assertNotNull(containedCookie);
@@ -2340,5 +2522,53 @@ public class RequestTest
                 assertThat(response, not(containsString(notContainsCookie)));
             }
         }
+    }
+
+    @Test
+    public void testGetCharacterEncoding() throws Exception
+    {
+        _handler._checker = (request, response) ->
+        {
+            // No character encoding specified
+            request.getReader();
+            // Try setting after read has been obtained
+            request.setCharacterEncoding("ISO-8859-2");
+            assertThat(request.getCharacterEncoding(), nullValue());
+            return true;
+        };
+
+        String rawResponse = _connector.getResponse(
+            """
+                GET /test HTTP/1.1\r
+                Host: host\r
+                Connection: close\r
+                \r
+                """);
+        HttpTester.Response response = HttpTester.parseResponse(rawResponse);
+        assertThat(response.getStatus(), is(HttpStatus.OK_200));
+    }
+
+    @Test
+    public void testUnknownCharacterEncoding() throws Exception
+    {
+        _handler._checker = (request, response) ->
+        {
+            assertThat(request.getCharacterEncoding(), is("Unknown"));
+            Assertions.assertThrows(UnsupportedEncodingException.class, request::getReader);
+            return true;
+        };
+
+        String rawResponse = _connector.getResponse(
+            """
+                POST /test HTTP/1.1\r
+                Host: host\r
+                Content-Type:multipart/form-data; charset=Unknown\r
+                Content-Length: 10\r
+                Connection: close\r
+                \r
+                1234567890\r
+                """);
+        HttpTester.Response response = HttpTester.parseResponse(rawResponse);
+        assertThat(response.getStatus(), is(HttpStatus.OK_200));
     }
 }

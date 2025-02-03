@@ -1,80 +1,195 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+
+  <modelVersion>4.0.0</modelVersion>
   <parent>
     <groupId>org.eclipse.jetty</groupId>
     <artifactId>jetty-project</artifactId>
-    <version>12.0.0-SNAPSHOT</version>
+    <version>12.0.17-SNAPSHOT</version>
   </parent>
-
-  <modelVersion>4.0.0</modelVersion>
   <groupId>org.eclipse.jetty.ee10</groupId>
   <artifactId>jetty-ee10</artifactId>
-  <name>EE10 :: Parent</name>
   <packaging>pom</packaging>
-
-  <properties>
-    <com.sun.mail.version>2.0.1</com.sun.mail.version>
-    <!-- TODO: Remove these javax.* entries? -->
-    <javax.activation.impl.version>1.1.0.v201105071233</javax.activation.impl.version>
-    <javax.security.auth.message.version>1.0.0.v201108011116</javax.security.auth.message.version>
-    <javax.mail.glassfish.version>1.4.1.v201005082020</javax.mail.glassfish.version>
-
-    <jakarta.activation.api.version>2.1.0</jakarta.activation.api.version>
-    <jakarta.annotation.api.version>2.1.1</jakarta.annotation.api.version>
-    <jakarta.authentication.api.version>3.0.0</jakarta.authentication.api.version>
-    <jakarta.el.api.version>5.0.0</jakarta.el.api.version>
-    <jakarta.enterprise.cdi.api.version>4.0.1</jakarta.enterprise.cdi.api.version>
-    <jakarta.inject.api.version>2.0.1</jakarta.inject.api.version>
-    <jakarta.interceptor.api.version>2.1.0</jakarta.interceptor.api.version>
-    <jakarta.mail.api.version>2.1.0</jakarta.mail.api.version>
-    <jakarta.transaction-api.version>2.0.1</jakarta.transaction-api.version>
-    <jakarta.servlet.api.version>6.0.0</jakarta.servlet.api.version>
-    <jakarta.servlet.jsp.api.version>3.1.0</jakarta.servlet.jsp.api.version>
-    <jakarta.servlet.jsp.jstl.api.version>3.0.0</jakarta.servlet.jsp.jstl.api.version>
-    <jakarta.servlet.jsp.jstl.impl.version>3.0.0</jakarta.servlet.jsp.jstl.impl.version> <!-- TODO: remove? -->
-    <jakarta.ws.rs.api.version>3.1.0</jakarta.ws.rs.api.version>
-    <jakarta.xml.bind.api.version>4.0.0</jakarta.xml.bind.api.version>
-    <jakarta.xml.bind.impl.version>4.0.0</jakarta.xml.bind.impl.version>
-    <jakarta.xml.ws.api.version>4.0.0</jakarta.xml.ws.api.version>
-    <jakarta.xml.jaxws.impl.version>4.0.0-M4</jakarta.xml.jaxws.impl.version>
-    <jakarta.websocket.api.version>2.1.0</jakarta.websocket.api.version>
-    <jsp.impl.version>10.1.0-M16</jsp.impl.version>
-    <sonar.skip>true</sonar.skip>
-  </properties>
+  <name>EE10</name>
 
   <modules>
-    <module>jetty-ee10-demos</module>
-    <module>jetty-ee10-apache-jsp</module>
-    <module>jetty-ee10-glassfish-jstl</module>
     <module>jetty-ee10-annotations</module>
-    <!-- TODO -->
-    <!-- module>jetty-ee10-ant</module -->
+    <module>jetty-ee10-apache-jsp</module>
+    <module>jetty-ee10-bom</module>
     <module>jetty-ee10-cdi</module>
-    <module>jetty-ee10-jaas</module>
+    <module>jetty-ee10-demos</module>
+    <module>jetty-ee10-examples</module>
+    <module>jetty-ee10-fcgi-proxy</module>
+    <module>jetty-ee10-glassfish-jstl</module>
+    <module>jetty-ee10-home</module>
     <module>jetty-ee10-jaspi</module>
     <module>jetty-ee10-jndi</module>
     <module>jetty-ee10-jspc-maven-plugin</module>
     <module>jetty-ee10-maven-plugin</module>
-    <module>jetty-ee10-openid</module>
-    <!-- TODO -->
-    <!-- module>jetty-ee10-osgi</module -->
+    <module>jetty-ee10-osgi</module>
     <module>jetty-ee10-plus</module>
     <module>jetty-ee10-proxy</module>
     <module>jetty-ee10-quickstart</module>
     <module>jetty-ee10-runner</module>
     <module>jetty-ee10-servlet</module>
     <module>jetty-ee10-servlets</module>
+    <module>jetty-ee10-tests</module>
     <module>jetty-ee10-webapp</module>
     <module>jetty-ee10-websocket</module>
-    <module>jetty-ee10-tests</module>
-    <module>jetty-examples</module>
-    <module>jetty-ee10-bom</module>
-    <module>test-ee10-sessions</module>
-    <module>jetty-ee10-home</module>
   </modules>
+
+  <properties>
+    <jakarta.activation.api.version>2.1.3</jakarta.activation.api.version>
+    <jakarta.annotation.api.version>2.1.1</jakarta.annotation.api.version>
+    <jakarta.authentication.api.version>3.0.0</jakarta.authentication.api.version>
+    <jakarta.el.api.version>5.0.1</jakarta.el.api.version>
+    <jakarta.enterprise.cdi.api.version>4.0.1</jakarta.enterprise.cdi.api.version>
+    <jakarta.enterprise.lang.model.version>4.0.1</jakarta.enterprise.lang.model.version>
+    <jakarta.inject.api.version>2.0.1.MR</jakarta.inject.api.version>
+    <jakarta.interceptor.api.version>2.1.0</jakarta.interceptor.api.version>
+    <jakarta.mail.api.version>2.1.3</jakarta.mail.api.version>
+    <jakarta.servlet.api.version>6.0.0</jakarta.servlet.api.version>
+    <jakarta.servlet.jsp.api.version>3.1.1</jakarta.servlet.jsp.api.version>
+    <jakarta.servlet.jsp.jstl.api.version>3.0.0</jakarta.servlet.jsp.jstl.api.version>
+    <jakarta.servlet.jsp.jstl.impl.version>3.0.1</jakarta.servlet.jsp.jstl.impl.version>
+    <jakarta.transaction-api.version>2.0.1</jakarta.transaction-api.version>
+    <jakarta.websocket.api.version>2.1.1</jakarta.websocket.api.version>
+    <jakarta.ws.rs.api.version>3.1.0</jakarta.ws.rs.api.version>
+    <jakarta.xml.bind.api.version>4.0.2</jakarta.xml.bind.api.version>
+    <jakarta.xml.bind.impl.version>4.0.5</jakarta.xml.bind.impl.version>
+    <jakarta.xml.jaxws.impl.version>4.0.3</jakarta.xml.jaxws.impl.version>
+    <jakarta.xml.ws.api.version>4.0.2</jakarta.xml.ws.api.version>
+    <jersey.version>3.1.10</jersey.version>
+
+    <jsp.impl.version>10.1.31</jsp.impl.version>
+    <mail.impl.version>2.0.1</mail.impl.version>
+
+    <sonar.skip>true</sonar.skip>
+    <weld.version>5.1.3.Final</weld.version>
+  </properties>
 
   <dependencyManagement>
     <dependencies>
+      <dependency>
+        <groupId>com.sun.mail</groupId>
+        <artifactId>jakarta.mail</artifactId>
+        <version>${mail.impl.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.sun.xml.ws</groupId>
+        <artifactId>jaxws-rt</artifactId>
+        <version>${jakarta.xml.jaxws.impl.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>jakarta.activation</groupId>
+        <artifactId>jakarta.activation-api</artifactId>
+        <version>${jakarta.activation.api.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>jakarta.annotation</groupId>
+        <artifactId>jakarta.annotation-api</artifactId>
+        <version>${jakarta.annotation.api.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>jakarta.authentication</groupId>
+        <artifactId>jakarta.authentication-api</artifactId>
+        <version>${jakarta.authentication.api.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>jakarta.el</groupId>
+        <artifactId>jakarta.el-api</artifactId>
+        <version>${jakarta.el.api.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>jakarta.enterprise</groupId>
+        <artifactId>jakarta.enterprise.cdi-api</artifactId>
+        <version>${jakarta.enterprise.cdi.api.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>jakarta.enterprise</groupId>
+        <artifactId>jakarta.enterprise.lang-model</artifactId>
+        <version>${jakarta.enterprise.lang.model.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>jakarta.inject</groupId>
+        <artifactId>jakarta.inject-api</artifactId>
+        <version>${jakarta.inject.api.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>jakarta.interceptor</groupId>
+        <artifactId>jakarta.interceptor-api</artifactId>
+        <version>${jakarta.interceptor.api.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>jakarta.mail</groupId>
+        <artifactId>jakarta.mail-api</artifactId>
+        <version>${jakarta.mail.api.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>jakarta.servlet</groupId>
+        <artifactId>jakarta.servlet-api</artifactId>
+        <version>${jakarta.servlet.api.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>jakarta.servlet.jsp</groupId>
+        <artifactId>jakarta.servlet.jsp-api</artifactId>
+        <version>${jakarta.servlet.jsp.api.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>jakarta.servlet.jsp.jstl</groupId>
+        <artifactId>jakarta.servlet.jsp.jstl-api</artifactId>
+        <version>${jakarta.servlet.jsp.jstl.api.version}</version>
+        <exclusions>
+          <exclusion>
+            <groupId>jakarta.el</groupId>
+            <artifactId>jakarta.el-api</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>jakarta.servlet</groupId>
+            <artifactId>jakarta.servlet-api</artifactId>
+          </exclusion>
+        </exclusions>
+      </dependency>
+      <dependency>
+        <groupId>jakarta.transaction</groupId>
+        <artifactId>jakarta.transaction-api</artifactId>
+        <version>${jakarta.transaction-api.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>jakarta.websocket</groupId>
+        <artifactId>jakarta.websocket-api</artifactId>
+        <version>${jakarta.websocket.api.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>jakarta.websocket</groupId>
+        <artifactId>jakarta.websocket-client-api</artifactId>
+        <version>${jakarta.websocket.api.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>jakarta.ws.rs</groupId>
+        <artifactId>jakarta.ws.rs-api</artifactId>
+        <version>${jakarta.ws.rs.api.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>jakarta.xml.bind</groupId>
+        <artifactId>jakarta.xml.bind-api</artifactId>
+        <version>${jakarta.xml.bind.api.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>jakarta.xml.ws</groupId>
+        <artifactId>jakarta.xml.ws-api</artifactId>
+        <version>${jakarta.xml.ws.api.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.eclipse.jetty</groupId>
+        <artifactId>jetty-openid</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.eclipse.jetty</groupId>
+        <artifactId>jetty-security</artifactId>
+        <version>${project.version}</version>
+      </dependency>
       <!-- Jetty EE10 Dependencies -->
       <dependency>
         <groupId>org.eclipse.jetty.ee10</groupId>
@@ -93,12 +208,12 @@
       </dependency>
       <dependency>
         <groupId>org.eclipse.jetty.ee10</groupId>
-        <artifactId>jetty-ee10-glassfish-jstl</artifactId>
+        <artifactId>jetty-ee10-fcgi-proxy</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
         <groupId>org.eclipse.jetty.ee10</groupId>
-        <artifactId>jetty-ee10-jaas</artifactId>
+        <artifactId>jetty-ee10-glassfish-jstl</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
@@ -119,11 +234,6 @@
       <dependency>
         <groupId>org.eclipse.jetty.ee10</groupId>
         <artifactId>jetty-ee10-maven-plugin</artifactId>
-        <version>${project.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>org.eclipse.jetty.ee10</groupId>
-        <artifactId>jetty-ee10-openid</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
@@ -154,46 +264,6 @@
       <dependency>
         <groupId>org.eclipse.jetty.ee10</groupId>
         <artifactId>jetty-ee10-webapp</artifactId>
-        <version>${project.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>org.eclipse.jetty.ee10.websocket</groupId>
-        <artifactId>jetty-ee10-websocket-jakarta-client</artifactId>
-        <version>${project.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>org.eclipse.jetty.ee10.websocket</groupId>
-        <artifactId>jetty-ee10-websocket-jakarta-common</artifactId>
-        <version>${project.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>org.eclipse.jetty.ee10.websocket</groupId>
-        <artifactId>jetty-ee10-websocket-jakarta-server</artifactId>
-        <version>${project.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>org.eclipse.jetty.ee10.websocket</groupId>
-        <artifactId>jetty-ee10-websocket-jetty-api</artifactId>
-        <version>${project.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>org.eclipse.jetty.ee10.websocket</groupId>
-        <artifactId>jetty-ee10-websocket-jetty-client</artifactId>
-        <version>${project.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>org.eclipse.jetty.ee10.websocket</groupId>
-        <artifactId>jetty-ee10-websocket-jetty-common</artifactId>
-        <version>${project.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>org.eclipse.jetty.ee10.websocket</groupId>
-        <artifactId>jetty-ee10-websocket-jetty-server</artifactId>
-        <version>${project.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>org.eclipse.jetty.ee10.websocket</groupId>
-        <artifactId>jetty-ee10-websocket-servlet</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
@@ -248,13 +318,13 @@
       </dependency>
       <dependency>
         <groupId>org.eclipse.jetty.ee10.demos</groupId>
-        <artifactId>jetty-ee10-demo-spec-webapp</artifactId>
+        <artifactId>jetty-ee10-demo-simple-webapp</artifactId>
         <version>${project.version}</version>
         <type>war</type>
       </dependency>
       <dependency>
         <groupId>org.eclipse.jetty.ee10.demos</groupId>
-        <artifactId>jetty-ee10-demo-simple-webapp</artifactId>
+        <artifactId>jetty-ee10-demo-spec-webapp</artifactId>
         <version>${project.version}</version>
         <type>war</type>
       </dependency>
@@ -263,121 +333,40 @@
         <artifactId>jetty-ee10-demo-web-fragment</artifactId>
         <version>${project.version}</version>
       </dependency>
-      <!-- Jakarta EE10 Dependencies -->
       <dependency>
-        <groupId>org.mortbay.jasper</groupId>
-        <artifactId>apache-jsp</artifactId>
-        <version>${jsp.impl.version}</version>
+        <groupId>org.eclipse.jetty.ee10.websocket</groupId>
+        <artifactId>jetty-ee10-websocket-jakarta-client</artifactId>
+        <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>org.mortbay.jasper</groupId>
-        <artifactId>apache-el</artifactId>
-        <version>${jsp.impl.version}</version>
+        <groupId>org.eclipse.jetty.ee10.websocket</groupId>
+        <artifactId>jetty-ee10-websocket-jakarta-client-webapp</artifactId>
+        <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>com.sun.xml.ws</groupId>
-        <artifactId>jaxws-rt</artifactId>
-        <version>${jakarta.xml.jaxws.impl.version}</version>
+        <groupId>org.eclipse.jetty.ee10.websocket</groupId>
+        <artifactId>jetty-ee10-websocket-jakarta-common</artifactId>
+        <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>com.sun.mail</groupId>
-        <artifactId>jakarta.mail</artifactId>
-        <version>${com.sun.mail.version}</version>
+        <groupId>org.eclipse.jetty.ee10.websocket</groupId>
+        <artifactId>jetty-ee10-websocket-jakarta-server</artifactId>
+        <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>jakarta.el</groupId>
-        <artifactId>jakarta.el-api</artifactId>
-        <version>${jakarta.el.api.version}</version>
+        <groupId>org.eclipse.jetty.ee10.websocket</groupId>
+        <artifactId>jetty-ee10-websocket-jetty-client-webapp</artifactId>
+        <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>jakarta.enterprise</groupId>
-        <artifactId>jakarta.enterprise.cdi-api</artifactId>
-        <version>${jakarta.enterprise.cdi.api.version}</version>
+        <groupId>org.eclipse.jetty.ee10.websocket</groupId>
+        <artifactId>jetty-ee10-websocket-jetty-server</artifactId>
+        <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>jakarta.activation</groupId>
-        <artifactId>jakarta.activation-api</artifactId>
-        <version>${jakarta.activation.api.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>jakarta.annotation</groupId>
-        <artifactId>jakarta.annotation-api</artifactId>
-        <version>${jakarta.annotation.api.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>jakarta.authentication</groupId>
-        <artifactId>jakarta.authentication-api</artifactId>
-        <version>${jakarta.authentication.api.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>jakarta.interceptor</groupId>
-        <artifactId>jakarta.interceptor-api</artifactId>
-        <version>${jakarta.interceptor.api.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>jakarta.inject</groupId>
-        <artifactId>jakarta.inject-api</artifactId>
-        <version>${jakarta.inject.api.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>jakarta.mail</groupId>
-        <artifactId>jakarta.mail-api</artifactId>
-        <version>${jakarta.mail.api.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>jakarta.servlet</groupId>
-        <artifactId>jakarta.servlet-api</artifactId>
-        <version>${jakarta.servlet.api.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>jakarta.servlet.jsp</groupId>
-        <artifactId>jakarta.servlet.jsp-api</artifactId>
-        <version>${jakarta.servlet.jsp.api.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>jakarta.servlet.jsp.jstl</groupId>
-        <artifactId>jakarta.servlet.jsp.jstl-api</artifactId>
-        <version>${jakarta.servlet.jsp.jstl.api.version}</version>
-        <exclusions>
-          <exclusion>
-            <groupId>jakarta.servlet</groupId>
-            <artifactId>jakarta.servlet-api</artifactId>
-          </exclusion>
-          <exclusion>
-            <groupId>jakarta.el</groupId>
-            <artifactId>jakarta.el-api</artifactId>
-          </exclusion>
-        </exclusions>
-      </dependency>
-      <dependency>
-        <groupId>jakarta.transaction</groupId>
-        <artifactId>jakarta.transaction-api</artifactId>
-        <version>${jakarta.transaction-api.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>jakarta.ws.rs</groupId>
-        <artifactId>jakarta.ws.rs-api</artifactId>
-        <version>${jakarta.ws.rs.api.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>jakarta.xml.bind</groupId>
-        <artifactId>jakarta.xml.bind-api</artifactId>
-        <version>${jakarta.xml.bind.api.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>jakarta.xml.ws</groupId>
-        <artifactId>jakarta.xml.ws-api</artifactId>
-        <version>${jakarta.xml.ws.api.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>jakarta.websocket</groupId>
-        <artifactId>jakarta.websocket-client-api</artifactId>
-        <version>${jakarta.websocket.api.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>jakarta.websocket</groupId>
-        <artifactId>jakarta.websocket-api</artifactId>
-        <version>${jakarta.websocket.api.version}</version>
+        <groupId>org.eclipse.jetty.ee10.websocket</groupId>
+        <artifactId>jetty-ee10-websocket-servlet</artifactId>
+        <version>${project.version}</version>
       </dependency>
       <dependency>
         <groupId>org.glassfish.jaxb</groupId>
@@ -385,25 +374,412 @@
         <version>${jakarta.xml.bind.impl.version}</version>
       </dependency>
       <dependency>
+        <groupId>org.glassfish.jersey.containers</groupId>
+        <artifactId>jersey-container-servlet</artifactId>
+        <version>${jersey.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.glassfish.jersey.inject</groupId>
+        <artifactId>jersey-hk2</artifactId>
+        <version>${jersey.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.glassfish.jersey.media</groupId>
+        <artifactId>jersey-media-json-binding</artifactId>
+        <version>${jersey.version}</version>
+      </dependency>
+      <dependency>
         <groupId>org.glassfish.web</groupId>
         <artifactId>jakarta.servlet.jsp.jstl</artifactId>
         <version>${jakarta.servlet.jsp.jstl.impl.version}</version>
       </dependency>
       <dependency>
-        <groupId>org.eclipse.jetty.orbit</groupId>
-        <artifactId>javax.mail.glassfish</artifactId>
-        <version>${javax.mail.glassfish.version}</version>
+        <groupId>org.mortbay.jasper</groupId>
+        <artifactId>apache-el</artifactId>
+        <version>${jsp.impl.version}</version>
       </dependency>
+      <!-- Jakarta EE10 Dependencies -->
       <dependency>
-        <groupId>org.eclipse.jetty.orbit</groupId>
-        <artifactId>javax.activation</artifactId>
-        <version>${javax.activation.impl.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>org.eclipse.jetty.orbit</groupId>
-        <artifactId>javax.security.auth.message</artifactId>
-        <version>${javax.security.auth.message.version}</version>
+        <groupId>org.mortbay.jasper</groupId>
+        <artifactId>apache-jsp</artifactId>
+        <version>${jsp.impl.version}</version>
       </dependency>
     </dependencies>
   </dependencyManagement>
+
+  <profiles>
+    <profile>
+      <!--
+        $ mvn -Pdependency-updates-reports validate
+        # once done, check the jetty-ee10/target/site/dependency-updates-aggregate-report.html
+        -->
+      <id>dependency-updates-reports</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>versions-maven-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>ee10-report</id>
+                <goals>
+                  <goal>dependency-updates-aggregate-report</goal>
+                </goals>
+                <phase>validate</phase>
+                <configuration>
+                  <formats>
+                    <format>html</format>
+                  </formats>
+                  <onlyProjectDependencies>true</onlyProjectDependencies>
+                  <onlyUpgradable>true</onlyUpgradable>
+                  <ruleSet>
+                    <rules>
+                      <rule>
+                        <!-- ignore maven alpha/beta releases -->
+                        <groupId>org.apache.maven</groupId>
+                        <ignoreVersions>
+                          <ignoreVersion>
+                            <type>regex</type>
+                            <version>.+-(alpha|beta).?[0-9]+</version>
+                          </ignoreVersion>
+                        </ignoreVersions>
+                      </rule>
+                      <rule>
+                        <!-- ignore jetty core/root deps -->
+                        <groupId>org.eclipse.jetty</groupId>
+                        <ignoreVersions>
+                          <ignoreVersion>
+                            <type>regex</type>
+                            <version>.+</version>
+                          </ignoreVersion>
+                        </ignoreVersions>
+                      </rule>
+                      <rule>
+                        <!-- ignore all jetty nested deps -->
+                        <groupId>org.eclipse.jetty.*</groupId>
+                        <ignoreVersions>
+                          <ignoreVersion>
+                            <type>regex</type>
+                            <version>.+</version>
+                          </ignoreVersion>
+                        </ignoreVersions>
+                      </rule>
+                      <rule>
+                        <!-- ignore unstable mina releases -->
+                        <groupId>org.apache.mina</groupId>
+                        <ignoreVersions>
+                          <ignoreVersion>
+                            <type>regex</type>
+                            <version>.+-M[0-9]+$</version>
+                          </ignoreVersion>
+                        </ignoreVersions>
+                      </rule>
+                    </rules>
+                  </ruleSet>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+    <profile>
+      <!--
+        $ mvn -Pupdate-dependencies-ee10 validate
+        -->
+      <id>update-dependencies-ee10</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>versions-maven-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>ee10-update</id>
+                <goals>
+                  <goal>update-properties</goal>
+                </goals>
+                <phase>validate</phase>
+                <configuration>
+                  <onlyProjectDependencies>true</onlyProjectDependencies>
+                  <onlyUpgradable>true</onlyUpgradable>
+                  <ruleSet>
+                    <rules>
+                      <rule>
+                        <!-- ignore maven alpha/beta releases -->
+                        <groupId>org.apache.maven</groupId>
+                        <ignoreVersions>
+                          <ignoreVersion>
+                            <type>regex</type>
+                            <version>.+-(alpha|beta).?[0-9]+</version>
+                          </ignoreVersion>
+                        </ignoreVersions>
+                      </rule>
+                      <rule>
+                        <!-- ignore jetty core/root deps -->
+                        <groupId>org.eclipse.jetty</groupId>
+                        <ignoreVersions>
+                          <ignoreVersion>
+                            <type>regex</type>
+                            <version>.+</version>
+                          </ignoreVersion>
+                        </ignoreVersions>
+                      </rule>
+                      <rule>
+                        <!-- ignore all jetty nested deps -->
+                        <groupId>org.eclipse.jetty.*</groupId>
+                        <ignoreVersions>
+                          <ignoreVersion>
+                            <type>regex</type>
+                            <version>.+</version>
+                          </ignoreVersion>
+                        </ignoreVersions>
+                      </rule>
+                      <rule>
+                        <!-- ignore unstable mina releases -->
+                        <groupId>org.apache.mina</groupId>
+                        <ignoreVersions>
+                          <ignoreVersion>
+                            <type>regex</type>
+                            <version>.+-M[0-9]+$</version>
+                          </ignoreVersion>
+                        </ignoreVersions>
+                      </rule>
+                      <rule>
+                        <!-- for ee10, we need to stay on 2.1.x of activation spec -->
+                        <groupId>jakarta.activation</groupId>
+                        <ignoreVersions>
+                          <ignoreVersion>
+                            <type>regex</type>
+                            <version>^(?!2.1.).+</version>
+                          </ignoreVersion>
+                        </ignoreVersions>
+                      </rule>
+                      <rule>
+                        <!-- for ee10, we need to stay on 2.1.x of annotation spec -->
+                        <groupId>jakarta.annotation</groupId>
+                        <ignoreVersions>
+                          <ignoreVersion>
+                            <type>regex</type>
+                            <version>^(?!2.1.).+</version>
+                          </ignoreVersion>
+                        </ignoreVersions>
+                      </rule>
+                      <rule>
+                        <!-- for ee10, we need to stay on 3.0.x of authentication spec -->
+                        <groupId>jakarta.authentication</groupId>
+                        <ignoreVersions>
+                          <ignoreVersion>
+                            <type>regex</type>
+                            <version>^(?!3.0.).+</version>
+                          </ignoreVersion>
+                        </ignoreVersions>
+                      </rule>
+                      <rule>
+                        <!-- for ee10, we need to stay on 5.0.x of el spec -->
+                        <groupId>jakarta.el</groupId>
+                        <ignoreVersions>
+                          <ignoreVersion>
+                            <type>regex</type>
+                            <version>^(?!5.0.).+</version>
+                          </ignoreVersion>
+                        </ignoreVersions>
+                      </rule>
+                      <rule>
+                        <!-- for ee10, we need to stay on 4.0.x of cdi spec -->
+                        <groupId>jakarta.enterprise</groupId>
+                        <artifactId>jakarta.enterprise.cdi-api</artifactId>
+                        <ignoreVersions>
+                          <ignoreVersion>
+                            <type>regex</type>
+                            <version>^(?!4.0.).+</version>
+                          </ignoreVersion>
+                        </ignoreVersions>
+                      </rule>
+                      <rule>
+                        <!-- for ee10, we need to stay on 4.0.x of enterprise lang spec -->
+                        <groupId>jakarta.enterprise</groupId>
+                        <artifactId>jakarta.enterprise.lang-model</artifactId>
+                        <ignoreVersions>
+                          <ignoreVersion>
+                            <type>regex</type>
+                            <version>^(?!4.0.).+</version>
+                          </ignoreVersion>
+                        </ignoreVersions>
+                      </rule>
+                      <rule>
+                        <!-- for ee10, we need to stay on 2.0.x of inject spec -->
+                        <groupId>jakarta.inject</groupId>
+                        <artifactId>jakarta.inject-api</artifactId>
+                        <ignoreVersions>
+                          <ignoreVersion>
+                            <type>regex</type>
+                            <version>^(?!2.0.).+</version>
+                          </ignoreVersion>
+                        </ignoreVersions>
+                      </rule>
+                      <rule>
+                        <!-- for ee10, we need to stay on 2.1.x of interceptor spec -->
+                        <groupId>jakarta.interceptor</groupId>
+                        <artifactId>jakarta.interceptor-api</artifactId>
+                        <ignoreVersions>
+                          <ignoreVersion>
+                            <type>regex</type>
+                            <version>^(?!2.1.).+</version>
+                          </ignoreVersion>
+                        </ignoreVersions>
+                      </rule>
+                      <rule>
+                        <!-- for ee10, we need to stay on 2.1.x of mail spec -->
+                        <groupId>jakarta.mail</groupId>
+                        <artifactId>jakarta.mail-api</artifactId>
+                        <ignoreVersions>
+                          <ignoreVersion>
+                            <type>regex</type>
+                            <version>^(?!2.1.).+</version>
+                          </ignoreVersion>
+                        </ignoreVersions>
+                      </rule>
+                      <rule>
+                        <!-- for ee10, we need to stay on 6.0.x of servlet spec -->
+                        <groupId>jakarta.servlet</groupId>
+                        <artifactId>jakarta.servlet-api</artifactId>
+                        <ignoreVersions>
+                          <ignoreVersion>
+                            <type>regex</type>
+                            <version>^(?!6.0.).+</version>
+                          </ignoreVersion>
+                        </ignoreVersions>
+                      </rule>
+                      <rule>
+                        <!-- for ee10, we need to stay on 3.1.x of jsp spec -->
+                        <groupId>jakarta.servlet</groupId>
+                        <artifactId>jakarta.servlet.jsp-api</artifactId>
+                        <ignoreVersions>
+                          <ignoreVersion>
+                            <type>regex</type>
+                            <version>^(?!3.1.).+</version>
+                          </ignoreVersion>
+                        </ignoreVersions>
+                      </rule>
+                      <rule>
+                        <!-- for ee10, we need to stay on 3.0.x of jsp-jstl spec -->
+                        <groupId>jakarta.servlet.jsp.jstl</groupId>
+                        <artifactId>jakarta.servlet.jsp.jstl-api</artifactId>
+                        <ignoreVersions>
+                          <ignoreVersion>
+                            <type>regex</type>
+                            <version>^(?!3.0.).+</version>
+                          </ignoreVersion>
+                        </ignoreVersions>
+                      </rule>
+                      <rule>
+                        <!-- for ee10, we need to stay on 3.0.x of jsp-jstl impl -->
+                        <groupId>org.glassfish.web</groupId>
+                        <artifactId>jakarta.servlet.jsp.jstl</artifactId>
+                        <ignoreVersions>
+                          <ignoreVersion>
+                            <type>regex</type>
+                            <version>^(?!3.0.).+</version>
+                          </ignoreVersion>
+                        </ignoreVersions>
+                      </rule>
+                      <rule>
+                        <!-- for ee10, we need to stay on 3.0.x of transaction spec -->
+                        <groupId>jakarta.transaction</groupId>
+                        <artifactId>jakarta.transaction-api</artifactId>
+                        <ignoreVersions>
+                          <ignoreVersion>
+                            <type>regex</type>
+                            <version>^(?!3.0.).+</version>
+                          </ignoreVersion>
+                        </ignoreVersions>
+                      </rule>
+                      <rule>
+                        <!-- for ee10, we need to stay on 2.1.x of websocket spec -->
+                        <groupId>jakarta.websocket</groupId>
+                        <artifactId>jakarta.websocket-api</artifactId>
+                        <ignoreVersions>
+                          <ignoreVersion>
+                            <type>regex</type>
+                            <version>^(?!2.1.).+</version>
+                          </ignoreVersion>
+                        </ignoreVersions>
+                      </rule>
+                      <rule>
+                        <!-- for ee10, we need to stay on 2.1.x of websocket spec -->
+                        <groupId>jakarta.websocket</groupId>
+                        <artifactId>jakarta.websocket-client-api</artifactId>
+                        <ignoreVersions>
+                          <ignoreVersion>
+                            <type>regex</type>
+                            <version>^(?!2.1.).+</version>
+                          </ignoreVersion>
+                        </ignoreVersions>
+                      </rule>
+                      <rule>
+                        <!-- for ee10, we need to stay on 3.1.x of ws.rs.api spec -->
+                        <groupId>jakarta.ws.rs</groupId>
+                        <artifactId>jakarta.ws.rs-api</artifactId>
+                        <ignoreVersions>
+                          <ignoreVersion>
+                            <type>regex</type>
+                            <version>^(?!3.1).+</version>
+                          </ignoreVersion>
+                        </ignoreVersions>
+                      </rule>
+                      <rule>
+                        <!-- for ee10, we need to stay on 4.0.x of ws.rs.api impl -->
+                        <groupId>com.sun.xml.ws</groupId>
+                        <artifactId>jaxws-rt</artifactId>
+                        <ignoreVersions>
+                          <ignoreVersion>
+                            <type>regex</type>
+                            <version>^(?!4.0).+</version>
+                          </ignoreVersion>
+                        </ignoreVersions>
+                      </rule>
+                      <rule>
+                        <!-- for ee10, we need to stay on 4.0.x of xml.bind impl -->
+                        <groupId>org.glassfish.jaxb</groupId>
+                        <artifactId>jaxb-runtime</artifactId>
+                        <ignoreVersions>
+                          <ignoreVersion>
+                            <type>regex</type>
+                            <version>^(?!4.0.).+</version>
+                          </ignoreVersion>
+                        </ignoreVersions>
+                      </rule>
+                      <rule>
+                        <!-- for ee10, we need to stay on 4.0.x of xml.bind-api -->
+                        <groupId>jakarta.xml.bind</groupId>
+                        <artifactId>jakarta.xml.bind-api</artifactId>
+                        <ignoreVersions>
+                          <ignoreVersion>
+                            <type>regex</type>
+                            <version>^(?!4.0.).+</version>
+                          </ignoreVersion>
+                        </ignoreVersions>
+                      </rule>
+                      <rule>
+                        <!-- for ee10, we need to stay on 4.0.x of xml.ws-api -->
+                        <groupId>jakarta.xml.ws</groupId>
+                        <artifactId>jakarta.xml.ws-api</artifactId>
+                        <ignoreVersions>
+                          <ignoreVersion>
+                            <type>regex</type>
+                            <version>^(?!4.0.).+</version>
+                          </ignoreVersion>
+                        </ignoreVersions>
+                      </rule>
+                    </rules>
+                  </ruleSet>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>

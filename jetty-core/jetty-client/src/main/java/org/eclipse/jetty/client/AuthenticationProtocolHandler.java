@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -23,36 +23,33 @@ import java.util.concurrent.TimeoutException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.eclipse.jetty.client.api.Authentication;
-import org.eclipse.jetty.client.api.Authentication.HeaderInfo;
-import org.eclipse.jetty.client.api.Connection;
-import org.eclipse.jetty.client.api.ContentResponse;
-import org.eclipse.jetty.client.api.Request;
-import org.eclipse.jetty.client.api.Response;
-import org.eclipse.jetty.client.api.Result;
-import org.eclipse.jetty.client.util.BufferingResponseListener;
+import org.eclipse.jetty.client.Authentication.HeaderInfo;
+import org.eclipse.jetty.client.internal.HttpContentResponse;
+import org.eclipse.jetty.client.transport.HttpConversation;
+import org.eclipse.jetty.client.transport.HttpRequest;
+import org.eclipse.jetty.client.transport.ResponseListeners;
 import org.eclipse.jetty.http.HttpField;
 import org.eclipse.jetty.http.HttpHeader;
+import org.eclipse.jetty.http.HttpMethod;
 import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.http.QuotedCSV;
+import org.eclipse.jetty.util.NanoTime;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public abstract class AuthenticationProtocolHandler implements ProtocolHandler
 {
     public static final int DEFAULT_MAX_CONTENT_LENGTH = 16 * 1024;
-    public static final Logger LOG = LoggerFactory.getLogger(AuthenticationProtocolHandler.class);
+    private static final Logger LOG = LoggerFactory.getLogger(AuthenticationProtocolHandler.class);
+    private static final Pattern CHALLENGE_PATTERN = Pattern.compile("(?<schemeOnly>[!#$%&'*+\\-.^_`|~0-9A-Za-z]+)|(?:(?<scheme>[!#$%&'*+\\-.^_`|~0-9A-Za-z]+)\\s+)?(?:(?<token68>[a-zA-Z0-9\\-._~+/]+=*)|(?<paramName>[!#$%&'*+\\-.^_`|~0-9A-Za-z]+)\\s*=\\s*(?:(?<paramValue>.*)))");
+
     private final HttpClient client;
     private final int maxContentLength;
-    private final ResponseNotifier notifier;
-
-    private static final Pattern CHALLENGE_PATTERN = Pattern.compile("(?<schemeOnly>[!#$%&'*+\\-.^_`|~0-9A-Za-z]+)|(?:(?<scheme>[!#$%&'*+\\-.^_`|~0-9A-Za-z]+)\\s+)?(?:(?<token68>[a-zA-Z0-9\\-._~+/]+=*)|(?<paramName>[!#$%&'*+\\-.^_`|~0-9A-Za-z]+)\\s*=\\s*(?:(?<paramValue>.*)))");
 
     protected AuthenticationProtocolHandler(HttpClient client, int maxContentLength)
     {
         this.client = client;
         this.maxContentLength = maxContentLength;
-        this.notifier = new ResponseNotifier();
     }
 
     protected HttpClient getHttpClient()
@@ -71,7 +68,7 @@ public abstract class AuthenticationProtocolHandler implements ProtocolHandler
     @Override
     public Response.Listener getResponseListener()
     {
-        // Return new instances every time to keep track of the response content
+        // Return new instances every time to keep track of the response content.
         return new AuthenticationListener();
     }
 
@@ -126,6 +123,15 @@ public abstract class AuthenticationProtocolHandler implements ProtocolHandler
         }
 
         @Override
+        public void onSuccess(Response response)
+        {
+            // The request may still be sending content, stop it.
+            Request request = response.getRequest();
+            if (request.getBody() != null)
+                request.abort(new HttpRequestException("Aborting request after receiving a %d response".formatted(response.getStatus()), request));
+        }
+
+        @Override
         public void onComplete(Result result)
         {
             HttpRequest request = (HttpRequest)result.getRequest();
@@ -162,16 +168,13 @@ public abstract class AuthenticationProtocolHandler implements ProtocolHandler
             Authentication authentication = null;
             Authentication.HeaderInfo headerInfo = null;
             URI authURI = resolveURI(request, getAuthenticationURI(request));
-            if (authURI != null)
+            for (HeaderInfo element : headerInfos)
             {
-                for (Authentication.HeaderInfo element : headerInfos)
+                authentication = client.getAuthenticationStore().findAuthentication(element.getType(), authURI, element.getRealm());
+                if (authentication != null)
                 {
-                    authentication = client.getAuthenticationStore().findAuthentication(element.getType(), authURI, element.getRealm());
-                    if (authentication != null)
-                    {
-                        headerInfo = element;
-                        break;
-                    }
+                    headerInfo = element;
+                    break;
                 }
             }
             if (authentication == null)
@@ -204,21 +207,16 @@ public abstract class AuthenticationProtocolHandler implements ProtocolHandler
 
                 conversation.setAttribute(authenticationAttribute, true);
 
-                URI requestURI = request.getURI();
-                String path = null;
-                if (requestURI == null)
-                {
-                    requestURI = resolveURI(request, null);
-                    path = request.getPath();
-                }
-                Request newRequest = client.copyRequest(request, requestURI);
+                Request newRequest = client.copyRequest(request, request.getURI());
+                if (HttpMethod.CONNECT.is(newRequest.getMethod()))
+                    newRequest.path(request.getPath());
 
                 // Adjust the timeout of the new request, taking into account the
                 // timeout of the previous request and the time already elapsed.
-                long timeoutAt = request.getTimeoutAt();
-                if (timeoutAt < Long.MAX_VALUE)
+                long timeoutNanoTime = request.getTimeoutNanoTime();
+                if (timeoutNanoTime < Long.MAX_VALUE)
                 {
-                    long newTimeout = timeoutAt - System.nanoTime();
+                    long newTimeout = NanoTime.until(timeoutNanoTime);
                     if (newTimeout > 0)
                     {
                         newRequest.timeout(newTimeout, TimeUnit.NANOSECONDS);
@@ -230,9 +228,6 @@ public abstract class AuthenticationProtocolHandler implements ProtocolHandler
                         return;
                     }
                 }
-
-                if (path != null)
-                    newRequest.path(path);
 
                 authnResult.apply(newRequest);
                 // Copy existing, explicitly set, authorization headers.
@@ -276,19 +271,20 @@ public abstract class AuthenticationProtocolHandler implements ProtocolHandler
         {
             HttpConversation conversation = request.getConversation();
             conversation.updateResponseListeners(null);
-            notifier.forwardSuccessComplete(conversation.getResponseListeners(), request, response);
+            ResponseListeners responseListeners = conversation.getResponseListeners();
+            responseListeners.emitSuccessComplete(new Result(request, response));
         }
 
         private void forwardFailureComplete(HttpRequest request, Throwable requestFailure, Response response, Throwable responseFailure)
         {
             HttpConversation conversation = request.getConversation();
             conversation.updateResponseListeners(null);
-            List<Response.ResponseListener> responseListeners = conversation.getResponseListeners();
+            ResponseListeners responseListeners = conversation.getResponseListeners();
             if (responseFailure == null)
-                notifier.forwardSuccess(responseListeners, response);
+                responseListeners.emitSuccess(response);
             else
-                notifier.forwardFailure(responseListeners, response, responseFailure);
-            notifier.notifyComplete(responseListeners, new Result(request, requestFailure, response, responseFailure));
+                responseListeners.emitFailure(response, responseFailure);
+            responseListeners.notifyComplete(new Result(request, requestFailure, response, responseFailure));
         }
 
         private List<Authentication.HeaderInfo> parseAuthenticateHeader(Response response, HttpHeader header)
@@ -312,7 +308,7 @@ public abstract class AuthenticationProtocolHandler implements ProtocolHandler
         }
     }
 
-    private class AfterAuthenticationListener extends Response.Listener.Adapter
+    private class AfterAuthenticationListener implements Response.Listener
     {
         private final Authentication.Result authenticationResult;
 

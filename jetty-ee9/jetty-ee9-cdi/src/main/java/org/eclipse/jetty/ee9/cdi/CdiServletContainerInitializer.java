@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -28,21 +28,21 @@ import org.slf4j.LoggerFactory;
  * <p>A {@link ServletContainerInitializer} that introspects for a CDI API
  * implementation within a web application and applies an integration
  * mode if CDI is found.  CDI integration modes can be selected per webapp with
- * the "org.eclipse.jetty.ee9.cdi" init parameter or default to the mode set by the
- * "org.eclipse.jetty.ee9.cdi" server attribute.  Supported modes are:</p>
+ * the "org.eclipse.jetty.cdi" init parameter or default to the mode set by the
+ * "org.eclipse.jetty.cdi" server attribute.  Supported modes are:</p>
  * <dl>
  * <dt>CdiSpiDecorator</dt>
  *     <dd>Jetty will call the CDI SPI within the webapp to decorate objects (default).</dd>
  * <dt>CdiDecoratingLister</dt>
  *     <dd>The webapp may register a decorator on the context attribute
- *     "org.eclipse.jetty.ee9.cdi.decorator".</dd>
+ *     "org.eclipse.jetty.cdi.decorator".</dd>
  * </dl>
  *
  * @see AnnotationConfiguration.ServletContainerInitializerOrdering
  */
 public class CdiServletContainerInitializer implements ServletContainerInitializer
 {
-    public static final String CDI_INTEGRATION_ATTRIBUTE = "org.eclipse.jetty.ee9.cdi";
+    public static final String CDI_INTEGRATION_ATTRIBUTE = "org.eclipse.jetty.cdi";
     private static final Logger LOG = LoggerFactory.getLogger(CdiServletContainerInitializer.class);
 
     @Override

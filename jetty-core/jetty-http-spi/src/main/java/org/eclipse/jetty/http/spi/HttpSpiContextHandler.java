@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -45,10 +45,13 @@ public class HttpSpiContextHandler extends ContextHandler
     {
         this._httpContext = httpContext;
         this._httpHandler = httpHandler;
-        super.setHandler(new Handler.Processor()
+        // The default jax-ws web server allows posting to URLs that do not end
+        // with a trailing '/'; allow it too to be a drop-in replacement.
+        setAllowNullPathInContext(true);
+        super.setHandler(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 try (HttpExchange jettyHttpExchange = request.isSecure()
                     ? new JettyHttpsExchange(_httpContext, request, response)
@@ -56,7 +59,7 @@ public class HttpSpiContextHandler extends ContextHandler
                 {
                     Authenticator auth = _httpContext.getAuthenticator();
                     if (auth != null && handleAuthentication(request, response, callback, jettyHttpExchange, auth))
-                        return;
+                        return true;
 
                     _httpHandler.handle(jettyHttpExchange);
                     callback.succeeded();
@@ -66,6 +69,7 @@ public class HttpSpiContextHandler extends ContextHandler
                     LOG.debug("Failed to handle", ex);
                     Response.writeError(request, response, callback, 500, null, ex);
                 }
+                return true;
             }
         });
     }

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -49,6 +49,28 @@ public interface QuietException
         }
 
         public Exception(Throwable cause)
+        {
+            super(cause);
+        }
+    }
+
+    class RuntimeException extends java.lang.RuntimeException implements QuietException
+    {
+        public RuntimeException()
+        {
+        }
+
+        public RuntimeException(String message)
+        {
+            super(message);
+        }
+
+        public RuntimeException(String message, Throwable cause)
+        {
+            super(message, cause);
+        }
+
+        public RuntimeException(Throwable cause)
         {
             super(cause);
         }

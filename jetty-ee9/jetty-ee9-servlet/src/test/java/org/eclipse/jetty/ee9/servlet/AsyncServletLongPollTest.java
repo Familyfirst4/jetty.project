@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -15,10 +15,14 @@ package org.eclipse.jetty.ee9.servlet;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
+import java.util.EnumSet;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import jakarta.servlet.AsyncContext;
 import jakarta.servlet.ServletException;
@@ -28,14 +32,14 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.eclipse.jetty.http.HttpTester;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
+import org.hamcrest.Matchers;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-@Disabled // TODO
 public class AsyncServletLongPollTest
 {
     private Server server;
@@ -46,7 +50,7 @@ public class AsyncServletLongPollTest
     protected void prepare(HttpServlet servlet) throws Exception
     {
         server = new Server();
-        connector = new ServerConnector(server);
+        connector = new ServerConnector(server, 1, 1);
         server.addConnector(connector);
         String contextPath = "/context";
         context = new ServletContextHandler(server, contextPath, ServletContextHandler.NO_SESSIONS);
@@ -66,7 +70,7 @@ public class AsyncServletLongPollTest
     @Test
     public void testSuspendedRequestCompletedByAnotherRequest() throws Exception
     {
-        final CountDownLatch asyncLatch = new CountDownLatch(1);
+        CountDownLatch asyncLatch = new CountDownLatch(1);
         prepare(new HttpServlet()
         {
             private volatile AsyncContext asyncContext;
@@ -94,7 +98,7 @@ public class AsyncServletLongPollTest
                 if (param != null)
                     error = Integer.parseInt(param);
 
-                final AsyncContext asyncContext = this.asyncContext;
+                AsyncContext asyncContext = this.asyncContext;
                 if (asyncContext != null)
                 {
                     HttpServletResponse asyncResponse = (HttpServletResponse)asyncContext.getResponse();
@@ -151,6 +155,52 @@ public class AsyncServletLongPollTest
 
             HttpTester.Response response3 = HttpTester.parseResponse(input1);
             assertEquals(200, response3.getStatus());
+        }
+    }
+
+    @Test
+    public void testSuspendedRequestThenServerStop() throws Exception
+    {
+        AtomicReference<Thread> threadRef = new AtomicReference<>();
+        AtomicReference<AsyncContext> asyncContextRef = new AtomicReference<>();
+        prepare(new HttpServlet()
+        {
+            @Override
+            protected void service(HttpServletRequest request, HttpServletResponse response)
+            {
+                threadRef.set(Thread.currentThread());
+                // Suspend the request.
+                // There is no AsyncListener, so when the server stops, an
+                // error response is sent by the implementation as per spec.
+                AsyncContext asyncContext = request.startAsync();
+                asyncContextRef.set(asyncContext);
+            }
+        });
+
+        try (SocketChannel client = SocketChannel.open(new InetSocketAddress("localhost", connector.getLocalPort())))
+        {
+            HttpTester.Request request = HttpTester.newRequest();
+            request.setURI(uri);
+            client.write(request.generate());
+
+            await().atMost(5, TimeUnit.SECONDS).until(asyncContextRef::get, Matchers.notNullValue());
+
+            // Wait for the request on the server to become idle.
+            await().atMost(5, TimeUnit.SECONDS).until(() ->
+            {
+                Thread thread = threadRef.get();
+                return thread != null && EnumSet.of(Thread.State.WAITING, Thread.State.TIMED_WAITING).contains(thread.getState());
+            });
+
+            server.stop();
+
+            client.socket().setSoTimeout(1000);
+
+            HttpTester.Response response = HttpTester.parseResponse(client);
+            // The response may or may not arrive, as the server is racing
+            // between sending an error response and closing the connections.
+            if (response != null)
+                assertEquals(500, response.getStatus());
         }
     }
 }

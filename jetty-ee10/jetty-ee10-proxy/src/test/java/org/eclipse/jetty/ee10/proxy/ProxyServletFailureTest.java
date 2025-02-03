@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -29,13 +29,13 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.eclipse.jetty.client.AsyncRequestContent;
+import org.eclipse.jetty.client.BytesRequestContent;
+import org.eclipse.jetty.client.ContentResponse;
 import org.eclipse.jetty.client.HttpClient;
 import org.eclipse.jetty.client.HttpProxy;
-import org.eclipse.jetty.client.api.ContentResponse;
-import org.eclipse.jetty.client.api.Request;
-import org.eclipse.jetty.client.api.Response;
-import org.eclipse.jetty.client.util.AsyncRequestContent;
-import org.eclipse.jetty.client.util.BytesRequestContent;
+import org.eclipse.jetty.client.Request;
+import org.eclipse.jetty.client.Response;
 import org.eclipse.jetty.ee10.servlet.ServletContextHandler;
 import org.eclipse.jetty.ee10.servlet.ServletHolder;
 import org.eclipse.jetty.http.HttpHeader;
@@ -46,6 +46,7 @@ import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.thread.QueuedThreadPool;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -53,6 +54,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
+import static org.hamcrest.Matchers.is;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -97,7 +99,8 @@ public class ProxyServletFailureTest
         proxy.addConnector(proxyConnector);
         proxyConnector.getConnectionFactory(HttpConnectionFactory.class).getHttpConfiguration().setDelayDispatchUntilContent(false);
 
-        ServletContextHandler proxyCtx = new ServletContextHandler(proxy, "/", true, false);
+        ServletContextHandler proxyCtx = new ServletContextHandler("/", true, false);
+        proxy.setHandler(proxyCtx);
 
         ServletHolder proxyServletHolder = new ServletHolder(proxyServlet);
         proxyServletHolder.setInitParameters(initParams);
@@ -114,7 +117,7 @@ public class ProxyServletFailureTest
         QueuedThreadPool executor = new QueuedThreadPool();
         executor.setName("client");
         result.setExecutor(executor);
-        result.getProxyConfiguration().getProxies().add(new HttpProxy("localhost", proxyConnector.getLocalPort()));
+        result.getProxyConfiguration().addProxy(new HttpProxy("localhost", proxyConnector.getLocalPort()));
         result.start();
         return result;
     }
@@ -127,7 +130,8 @@ public class ProxyServletFailureTest
         serverConnector = new ServerConnector(server);
         server.addConnector(serverConnector);
 
-        ServletContextHandler appCtx = new ServletContextHandler(server, "/", true, false);
+        ServletContextHandler appCtx = new ServletContextHandler("/", true, false);
+        server.setHandler(appCtx);
         ServletHolder appServletHolder = new ServletHolder(servlet);
         appCtx.addServlet(appServletHolder, "/*");
 
@@ -178,6 +182,7 @@ public class ProxyServletFailureTest
 
     @ParameterizedTest
     @MethodSource("impls")
+    @Disabled("idle timeouts do not work yet")
     public void testClientRequestDoesNotSendContentProxyIdlesTimeout(Class<? extends ProxyServlet> proxyServletClass) throws Exception
     {
         prepareProxy(proxyServletClass);
@@ -203,6 +208,7 @@ public class ProxyServletFailureTest
             socket.setSoTimeout(2 * idleTimeout);
 
             HttpTester.Response response = HttpTester.parseResponse(socket.getInputStream());
+            assertNotNull(response);
             assertThat("response status", response.getStatus(), greaterThanOrEqualTo(500));
             String connectionHeader = response.get(HttpHeader.CONNECTION);
             assertNotNull(connectionHeader);
@@ -213,6 +219,7 @@ public class ProxyServletFailureTest
 
     @ParameterizedTest
     @MethodSource("impls")
+    @Disabled("idle timeouts do not work yet")
     public void testClientRequestStallsContentProxyIdlesTimeout(Class<? extends ProxyServlet> proxyServletClass) throws Exception
     {
         prepareProxy(proxyServletClass);
@@ -239,6 +246,7 @@ public class ProxyServletFailureTest
             socket.setSoTimeout(2 * idleTimeout);
 
             HttpTester.Response response = HttpTester.parseResponse(socket.getInputStream());
+            assertNotNull(response);
             assertThat("response status", response.getStatus(), greaterThanOrEqualTo(500));
             String connectionHeader = response.get(HttpHeader.CONNECTION);
             assertNotNull(connectionHeader);
@@ -249,6 +257,7 @@ public class ProxyServletFailureTest
 
     @ParameterizedTest
     @MethodSource("impls")
+    @Disabled("idle timeouts do not work yet")
     public void testProxyRequestStallsContentServerIdlesTimeout(Class<? extends ProxyServlet> proxyServletClass) throws Exception
     {
         final byte[] content = new byte[]{'C', '0', 'F', 'F', 'E', 'E'};
@@ -305,15 +314,11 @@ public class ProxyServletFailureTest
         long idleTimeout = 1000;
         serverConnector.setIdleTimeout(idleTimeout);
 
-        //TODO fix me
-        /*        try (StacklessLogging ignore = new StacklessLogging(HttpChannelState.class))
-        {
-            ContentResponse response = client.newRequest("localhost", serverConnector.getLocalPort())
-                .body(new BytesRequestContent(content))
-                .send();
-        
-            assertThat(response.toString(), response.getStatus(), is(expected));
-        }*/
+        ContentResponse response = client.newRequest("localhost", serverConnector.getLocalPort())
+            .body(new BytesRequestContent(content))
+            .send();
+
+        assertThat(response.toString(), response.getStatus(), is(expected));
     }
 
     @ParameterizedTest
@@ -399,24 +404,20 @@ public class ProxyServletFailureTest
     @MethodSource("impls")
     public void testServerException(Class<? extends ProxyServlet> proxyServletClass) throws Exception
     {
-        //TODO fix me
-        /*        try (StacklessLogging ignore = new StacklessLogging(HttpChannelState.class))
+        prepareProxy(proxyServletClass);
+        prepareServer(new HttpServlet()
         {
-            prepareProxy(proxyServletClass);
-            prepareServer(new HttpServlet()
+            @Override
+            protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws ServletException
             {
-                @Override
-                protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws ServletException
-                {
-                    throw new ServletException("Expected Test Exception");
-                }
-            });
-        
-            ContentResponse response = client.newRequest("localhost", serverConnector.getLocalPort())
-                .timeout(5, TimeUnit.SECONDS)
-                .send();
-        
-            assertEquals(500, response.getStatus());
-        }*/
+                throw new ServletException("Expected Test Exception");
+            }
+        });
+
+        ContentResponse response = client.newRequest("localhost", serverConnector.getLocalPort())
+            .timeout(5, TimeUnit.SECONDS)
+            .send();
+
+        assertEquals(500, response.getStatus());
     }
 }

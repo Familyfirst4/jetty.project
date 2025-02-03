@@ -1,0 +1,63 @@
+//
+// ========================================================================
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
+//
+// This program and the accompanying materials are made available under the
+// terms of the Eclipse Public License v. 2.0 which is available at
+// https://www.eclipse.org/legal/epl-2.0, or the Apache License, Version 2.0
+// which is available at https://www.apache.org/licenses/LICENSE-2.0.
+//
+// SPDX-License-Identifier: EPL-2.0 OR Apache-2.0
+// ========================================================================
+//
+
+package org.eclipse.jetty.http2.frames;
+
+import java.nio.ByteBuffer;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import org.eclipse.jetty.http2.ErrorCode;
+import org.eclipse.jetty.http2.parser.Parser;
+import org.eclipse.jetty.io.ArrayByteBufferPool;
+import org.eclipse.jetty.io.ByteBufferPool;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+public class MaxFrameSizeParseTest
+{
+    private final ByteBufferPool bufferPool = new ArrayByteBufferPool();
+
+    @Test
+    public void testMaxFrameSize()
+    {
+        int maxFrameSize = Frame.DEFAULT_MAX_SIZE + 16;
+
+        AtomicInteger failure = new AtomicInteger();
+        Parser parser = new Parser(bufferPool, 8192);
+        parser.setMaxFrameSize(maxFrameSize);
+        parser.init(new Parser.Listener()
+        {
+            @Override
+            public void onConnectionFailure(int error, String reason)
+            {
+                failure.set(error);
+            }
+        });
+
+        // Iterate a few times to be sure the parser is properly reset.
+        for (int i = 0; i < 2; ++i)
+        {
+            byte[] bytes = new byte[]{0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0};
+            ByteBuffer buffer = ByteBuffer.wrap(bytes);
+            buffer.putInt(0, maxFrameSize + 1);
+            buffer.position(1);
+            while (buffer.hasRemaining())
+            {
+                parser.parse(buffer);
+            }
+        }
+
+        assertEquals(ErrorCode.FRAME_SIZE_ERROR.code, failure.get());
+    }
+}

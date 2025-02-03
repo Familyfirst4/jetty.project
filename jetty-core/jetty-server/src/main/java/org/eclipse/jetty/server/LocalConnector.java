@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -46,9 +46,9 @@ public class LocalConnector extends AbstractConnector
 {
     private final BlockingQueue<LocalEndPoint> _connects = new LinkedBlockingQueue<>();
 
-    public LocalConnector(Server server, Executor executor, Scheduler scheduler, ByteBufferPool pool, int acceptors, ConnectionFactory... factories)
+    public LocalConnector(Server server, Executor executor, Scheduler scheduler, ByteBufferPool bufferPool, int acceptors, ConnectionFactory... factories)
     {
-        super(server, executor, scheduler, pool, acceptors, factories);
+        super(server, executor, scheduler, bufferPool, Math.max(1, acceptors), factories);
         setIdleTimeout(30000);
     }
 
@@ -422,15 +422,24 @@ public class LocalConnector extends AbstractConnector
                     // read a chunk of response
                     ByteBuffer chunk;
                     if (BufferUtil.hasContent(_responseData))
+                    {
                         chunk = _responseData;
+                    }
                     else
                     {
                         chunk = waitForOutput(time, unit);
-                        if (BufferUtil.isEmpty(chunk) && (!isOpen() || isOutputShutdown() || isShutdown()))
+                        if (BufferUtil.isEmpty(chunk))
                         {
-                            parser.atEOF();
-                            parser.parseNext(BufferUtil.EMPTY_BUFFER);
-                            break;
+                            if (!isOpen() || isOutputShutdown() || isShutdown())
+                            {
+                                parser.atEOF();
+                                parser.parseNext(BufferUtil.EMPTY_BUFFER);
+                                break;
+                            }
+                            else
+                            {
+                                return null;
+                            }
                         }
                     }
 

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -42,7 +42,6 @@ import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.HttpConnectionFactory;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.Response;
-import org.eclipse.jetty.server.SecureRequestCustomizer;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.server.SslConnectionFactory;
@@ -93,13 +92,11 @@ public class SSLEngineTest
      * The expected response.
      */
     private static final String RESPONSE0 = "HTTP/1.1 200 OK\n" +
-        "Server: Jetty(" + JETTY_VERSION + ")\n" +
         "Content-Length: " + HELLO_WORLD.length() + "\n" +
         '\n' +
         HELLO_WORLD;
 
     private static final String RESPONSE1 = "HTTP/1.1 200 OK\n" +
-        "Server: Jetty(" + JETTY_VERSION + ")\n" +
         "Content-Length: " + HELLO_WORLD.length() + "\n" +
         "Connection: close\n" +
         '\n' +
@@ -121,6 +118,7 @@ public class SSLEngineTest
         HttpConnectionFactory http = new HttpConnectionFactory();
         http.setInputBufferSize(512);
         http.getHttpConfiguration().setRequestHeaderSize(512);
+        http.getHttpConfiguration().setSendServerVersion(false);
         connector = new ServerConnector(server, sslContextFactory, http);
         connector.setPort(0);
         connector.getConnectionFactory(HttpConnectionFactory.class).getHttpConfiguration().setSendDateHeader(false);
@@ -203,7 +201,7 @@ public class SSLEngineTest
             @Override
             protected SslConnection newSslConnection(Connector connector, EndPoint endPoint, SSLEngine engine)
             {
-                return new SslConnection(connector.getByteBufferPool(), connector.getExecutor(), endPoint, engine, isDirectBuffersForEncryption(), isDirectBuffersForDecryption())
+                return new SslConnection(connector.getByteBufferPool(), connector.getExecutor(), getSslContextFactory(), endPoint, engine, isDirectBuffersForEncryption(), isDirectBuffersForDecryption())
                 {
                     @Override
                     protected SSLEngineResult unwrap(SSLEngine sslEngine, ByteBuffer input, ByteBuffer output) throws SSLException
@@ -364,15 +362,13 @@ public class SSLEngineTest
         return sb.toString();
     }
 
-    private static class TestHandler extends Handler.Processor
+    private static class TestHandler extends Handler.Abstract
     {
         @Override
-        public void process(Request request, Response response, Callback callback) throws Exception
+        public boolean handle(Request request, Response response, Callback callback) throws Exception
         {
-            // System.err.println("HANDLE "+request.getRequestURI());
-            SecureRequestCustomizer.SslSessionData sslData = (SecureRequestCustomizer.SslSessionData)
-                request.getAttribute("org.eclipse.jetty.servlet.request.ssl_session_data");
-            String sslId = sslData.getId();
+            EndPoint.SslSessionData sslData = (EndPoint.SslSessionData)request.getAttribute(EndPoint.SslSessionData.ATTRIBUTE);
+            String sslId = sslData.sslSessionId();
             assertNotNull(sslId);
 
             Fields fields = Request.extractQueryParameters(request);
@@ -391,6 +387,7 @@ public class SSLEngineTest
             {
                 response.write(true, BufferUtil.toBuffer(HELLO_WORLD), callback);
             }
+            return true;
         }
     }
 }

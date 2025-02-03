@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -12,6 +12,8 @@
 //
 
 package org.eclipse.jetty.ee9.demos;
+
+import java.util.List;
 
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.handler.ContextHandler;
@@ -34,7 +36,7 @@ public class ManyContexts
         contextIT.setHandler(new HelloHandler("Buongiorno"));
 
         ContextHandler contextV = new ContextHandler("/");
-        contextV.setVirtualHosts(new String[]{"127.0.0.2"});
+        contextV.setVirtualHosts(List.of("127.0.0.2"));
         contextV.setHandler(new HelloHandler("Virtual Hello"));
 
         ContextHandlerCollection contexts = new ContextHandlerCollection(

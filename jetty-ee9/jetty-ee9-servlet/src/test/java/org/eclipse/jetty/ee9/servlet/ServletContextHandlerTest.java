@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -60,16 +60,16 @@ import jakarta.servlet.http.HttpSessionEvent;
 import jakarta.servlet.http.HttpSessionIdListener;
 import jakarta.servlet.http.HttpSessionListener;
 import org.eclipse.jetty.ee9.nested.ContextHandler;
+import org.eclipse.jetty.ee9.nested.Handler;
 import org.eclipse.jetty.ee9.nested.HandlerWrapper;
 import org.eclipse.jetty.ee9.nested.Request;
-import org.eclipse.jetty.ee9.nested.ResourceHandler;
 import org.eclipse.jetty.ee9.nested.Response;
 import org.eclipse.jetty.ee9.nested.SessionHandler;
-import org.eclipse.jetty.ee9.nested.UserIdentity;
 import org.eclipse.jetty.ee9.security.RoleInfo;
 import org.eclipse.jetty.ee9.security.SecurityHandler;
 import org.eclipse.jetty.http.HttpTester;
 import org.eclipse.jetty.logging.StacklessLogging;
+import org.eclipse.jetty.security.UserIdentity;
 import org.eclipse.jetty.server.LocalConnector;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.handler.ContextHandlerCollection;
@@ -90,6 +90,7 @@ import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
+import static org.hamcrest.Matchers.sameInstance;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -765,6 +766,7 @@ public class ServletContextHandlerTest
         Integer timeout = Integer.valueOf(100);
         ServletContextHandler root = new ServletContextHandler(contexts, "/", ServletContextHandler.SESSIONS);
         root.getSessionHandler().setMaxInactiveInterval((int)TimeUnit.MINUTES.toSeconds(startMin));
+        root.addServlet(new ServletHolder(TestSessionTimeoutServlet.class), "/");
         root.addBean(new MySCIStarter(root.getServletContext(), new MySCI(true, timeout.intValue())), true);
         _server.start();
 
@@ -779,6 +781,17 @@ public class ServletContextHandlerTest
         assertTrue((Boolean)root.getServletContext().getAttribute("MyContextListener.getSessionTimeout"));
         //test can't set session timeout from ContextListener that is not from annotation or web.xml
         assertTrue((Boolean)root.getServletContext().getAttribute("MyContextListener.setSessionTimeout"));
+
+        //test accessing timeout from a servlet
+        StringBuilder rawRequest = new StringBuilder();
+        rawRequest.append("GET / HTTP/1.1\r\n");
+        rawRequest.append("Host: local\r\n");
+        rawRequest.append("Connection: close\r\n");
+        rawRequest.append("\r\n");
+        String rawResponse = _connector.getResponse(rawRequest.toString());
+        HttpTester.Response response = HttpTester.parseResponse(rawResponse);
+        assertEquals(200, response.getStatus(), "response status");
+        assertEquals("SessionTimeout = " + timeout, response.getContent(), "response content");
     }
 
     @Test
@@ -891,6 +904,7 @@ public class ServletContextHandlerTest
         _server.setHandler(contexts);
 
         ServletContextHandler root = new ServletContextHandler(contexts, "/", ServletContextHandler.SESSIONS);
+        root.getSessionHandler().setSessionPath("/");
         ListenerHolder initialListener = new ListenerHolder();
         initialListener.setListener(new InitialListener());
         root.getServletHandler().addListener(initialListener);
@@ -1814,9 +1828,10 @@ public class ServletContextHandlerTest
     }
 
     @Test
-    public void testReplaceHandler() throws Exception
+    public void testInsertHandler() throws Exception
     {
-        ServletContextHandler servletContextHandler = new ServletContextHandler();
+        ServletContextHandler servletContextHandler = new ServletContextHandler(ServletContextHandler.SESSIONS | ServletContextHandler.SECURITY);
+        servletContextHandler.setBaseResourceAsString(".");
         ServletHolder sh = new ServletHolder(new TestServlet());
         servletContextHandler.addServlet(sh, "/foo");
         final AtomicBoolean contextInit = new AtomicBoolean(false);
@@ -1824,7 +1839,6 @@ public class ServletContextHandlerTest
 
         servletContextHandler.addEventListener(new ServletContextListener()
         {
-
             @Override
             public void contextInitialized(ServletContextEvent sce)
             {
@@ -1839,14 +1853,23 @@ public class ServletContextHandlerTest
                     contextDestroy.set(true);
             }
         });
-        ServletHandler shandler = servletContextHandler.getServletHandler();
 
-        ResourceHandler rh = new ResourceHandler();
+        org.eclipse.jetty.server.handler.ResourceHandler coreResourceHandler = new org.eclipse.jetty.server.handler.ResourceHandler();
+        HandlerWrapper nestedHandler = new HandlerWrapper();
+        Handler last = new HandlerWrapper();
 
-        servletContextHandler.insertHandler(rh);
-        assertEquals(shandler, servletContextHandler.getServletHandler());
-        assertEquals(rh, servletContextHandler.getHandler());
-        assertEquals(rh.getHandler(), shandler);
+        servletContextHandler.insertHandler(coreResourceHandler);
+        servletContextHandler.insertHandler(nestedHandler);
+        servletContextHandler.setHandler(last);
+
+        assertThat(servletContextHandler.getCoreContextHandler().getHandler(), sameInstance(coreResourceHandler));
+        assertThat(coreResourceHandler.getHandler().toString(), containsString("CoreToNestedHandler@"));
+        assertThat(servletContextHandler.getHandler(), sameInstance(nestedHandler));
+        assertThat(nestedHandler.getHandler(), instanceOf(SessionHandler.class));
+        assertThat(servletContextHandler.getSessionHandler().getHandler(), instanceOf(SecurityHandler.class));
+        assertThat(servletContextHandler.getSecurityHandler().getHandler(), instanceOf(ServletHandler.class));
+        assertThat(servletContextHandler.getServletHandler().getHandler(), sameInstance(last));
+
         _server.setHandler(servletContextHandler);
         _server.start();
         assertTrue(contextInit.get());
@@ -2011,6 +2034,20 @@ public class ServletContextHandlerTest
         {
             resp.getWriter().write("Added");
             resp.getWriter().close();
+        }
+    }
+
+    public static class TestSessionTimeoutServlet extends HttpServlet
+    {
+        private static final long serialVersionUID = 1L;
+
+        protected void doGet(HttpServletRequest req, HttpServletResponse resp)
+            throws ServletException, IOException
+        {
+            int t = req.getServletContext().getSessionTimeout();
+            resp.setStatus(HttpServletResponse.SC_OK);
+            PrintWriter writer = resp.getWriter();
+            writer.write("SessionTimeout = " + t);
         }
     }
 
@@ -2270,5 +2307,36 @@ public class ServletContextHandlerTest
         response = _connector.getResponse(request);
         assertThat(response, containsString("200 OK"));
         assertThat(response, containsString("/three"));
+    }
+
+    @Test
+    public void testEmptyPathInfo() throws Exception
+    {
+        ServletContextHandler context = new ServletContextHandler(null, "/c1", ServletContextHandler.NO_SESSIONS);
+        context.setAllowNullPathInfo(true);
+        context.addServlet(new ServletHolder("default-servlet", new HttpServlet()
+        {
+            @Override
+            protected void service(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException
+            {
+                resp.setContentType("text/plain");
+                resp.setCharacterEncoding("UTF-8");
+                resp.getWriter().write("OK2\n");
+                resp.getWriter().close();
+            }
+        }), "/");
+
+        _server.setHandler(context);
+        _server.start();
+        String rawRequest = """
+            GET /c1 HTTP/1.1\r
+            Host: localhost\r
+            Connection: close\r
+            \r
+            """;
+
+        String rawResponse = _connector.getResponse(rawRequest);
+        HttpTester.Response response = HttpTester.parseResponse(rawResponse);
+        assertThat(response.getContent(), containsString("OK2"));
     }
 }

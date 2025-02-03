@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -16,7 +16,7 @@ package org.eclipse.jetty.ee9.websocket.tests;
 import java.net.URI;
 import java.util.concurrent.TimeUnit;
 
-import org.eclipse.jetty.client.HttpRequest;
+import org.eclipse.jetty.client.Request;
 import org.eclipse.jetty.ee9.servlet.ServletContextHandler;
 import org.eclipse.jetty.ee9.websocket.api.Session;
 import org.eclipse.jetty.ee9.websocket.client.JettyUpgradeListener;
@@ -28,7 +28,6 @@ import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -67,7 +66,6 @@ public class ConnectionHeaderTest
         server.stop();
     }
 
-    @Disabled
     @ParameterizedTest
     @ValueSource(strings = {"Upgrade", "keep-alive, Upgrade", "close, Upgrade"})
     public void testConnectionKeepAlive(String connectionHeaderValue) throws Exception
@@ -76,7 +74,7 @@ public class ConnectionHeaderTest
         JettyUpgradeListener upgradeListener = new JettyUpgradeListener()
         {
             @Override
-            public void onHandshakeRequest(HttpRequest request)
+            public void onHandshakeRequest(Request request)
             {
                 HttpFields fields = request.getHeaders();
                 if (!(fields instanceof HttpFields.Mutable))

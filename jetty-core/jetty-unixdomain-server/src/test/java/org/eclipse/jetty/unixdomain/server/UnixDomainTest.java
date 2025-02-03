@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -15,18 +15,22 @@ package org.eclipse.jetty.unixdomain.server;
 
 import java.io.IOException;
 import java.net.SocketAddress;
+import java.net.UnixDomainSocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
+import org.eclipse.jetty.client.ContentResponse;
 import org.eclipse.jetty.client.HttpClient;
 import org.eclipse.jetty.client.HttpProxy;
-import org.eclipse.jetty.client.api.ContentResponse;
-import org.eclipse.jetty.client.dynamic.HttpClientTransportDynamic;
+import org.eclipse.jetty.client.Origin;
+import org.eclipse.jetty.client.transport.HttpClientTransportDynamic;
 import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.http.HttpURI;
 import org.eclipse.jetty.io.ClientConnector;
 import org.eclipse.jetty.io.EndPoint;
+import org.eclipse.jetty.io.Transport;
 import org.eclipse.jetty.server.ConnectionFactory;
 import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.HttpConnectionFactory;
@@ -40,11 +44,7 @@ import org.eclipse.jetty.util.component.LifeCycle;
 import org.hamcrest.Matchers;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledForJreRange;
-import org.junit.jupiter.api.condition.JRE;
 
 import static org.eclipse.jetty.client.ProxyProtocolClientConnectionFactory.V1;
 import static org.eclipse.jetty.client.ProxyProtocolClientConnectionFactory.V2;
@@ -56,32 +56,11 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-@EnabledForJreRange(min = JRE.JAVA_16)
 public class UnixDomainTest
 {
-    private static final Class<?> unixDomainSocketAddressClass = probe();
-
-    private static Class<?> probe()
-    {
-        try
-        {
-            return ClassLoader.getPlatformClassLoader().loadClass("java.net.UnixDomainSocketAddress");
-        }
-        catch (Throwable x)
-        {
-            return null;
-        }
-    }
-
     private ConnectionFactory[] factories = new ConnectionFactory[]{new HttpConnectionFactory()};
     private Server server;
     private Path unixDomainPath;
-
-    @BeforeEach
-    public void prepare()
-    {
-        Assumptions.assumeTrue(unixDomainSocketAddressClass != null);
-    }
 
     private void start(Handler handler) throws Exception
     {
@@ -108,10 +87,10 @@ public class UnixDomainTest
     public void testHTTPOverUnixDomain() throws Exception
     {
         String uri = "http://localhost:1234/path";
-        start(new Handler.Processor()
+        start(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 // Verify the URI is preserved.
                 assertEquals(uri, request.getHttpURI().asString());
@@ -120,9 +99,9 @@ public class UnixDomainTest
 
                 // Verify the SocketAddresses.
                 SocketAddress local = endPoint.getLocalSocketAddress();
-                assertThat(local, Matchers.instanceOf(unixDomainSocketAddressClass));
+                assertThat(local, Matchers.instanceOf(UnixDomainSocketAddress.class));
                 SocketAddress remote = endPoint.getRemoteSocketAddress();
-                assertThat(remote, Matchers.instanceOf(unixDomainSocketAddressClass));
+                assertThat(remote, Matchers.instanceOf(UnixDomainSocketAddress.class));
 
                 // Verify that other address methods don't throw.
                 local = assertDoesNotThrow(endPoint::getLocalAddress);
@@ -133,23 +112,20 @@ public class UnixDomainTest
                 assertDoesNotThrow(endPoint::toString);
 
                 callback.succeeded();
+                return true;
             }
         });
 
+        // Use the deprecated APIs for backwards compatibility testing.
         ClientConnector clientConnector = ClientConnector.forUnixDomain(unixDomainPath);
-        HttpClient httpClient = new HttpClient(new HttpClientTransportDynamic(clientConnector));
-        httpClient.start();
-        try
+        try (HttpClient httpClient = new HttpClient(new HttpClientTransportDynamic(clientConnector)))
         {
+            httpClient.start();
             ContentResponse response = httpClient.newRequest(uri)
                 .timeout(5, TimeUnit.SECONDS)
                 .send();
 
             assertEquals(HttpStatus.OK_200, response.getStatus());
-        }
-        finally
-        {
-            httpClient.stop();
         }
     }
 
@@ -158,35 +134,37 @@ public class UnixDomainTest
     {
         int fakeProxyPort = 4567;
         int fakeServerPort = 5678;
-        start(new Handler.Processor()
+        start(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 // Proxied requests must have an absolute URI.
                 HttpURI uri = request.getHttpURI();
                 assertNotNull(uri.getScheme());
                 assertEquals(fakeServerPort, uri.getPort());
                 callback.succeeded();
+                return true;
             }
         });
 
-        ClientConnector clientConnector = ClientConnector.forUnixDomain(unixDomainPath);
-
-        HttpClient httpClient = new HttpClient(new HttpClientTransportDynamic(clientConnector));
-        httpClient.getProxyConfiguration().getProxies().add(new HttpProxy("localhost", fakeProxyPort));
-        httpClient.start();
-        try
+        try (HttpClient httpClient = new HttpClient(new HttpClientTransportDynamic()))
         {
+            Origin proxyOrigin = new Origin(
+                "http",
+                new Origin.Address("localhost", fakeProxyPort),
+                null,
+                new Origin.Protocol(List.of("http/1.1"), false),
+                new Transport.TCPUnix(unixDomainPath)
+            );
+            httpClient.getProxyConfiguration().addProxy(new HttpProxy(proxyOrigin, null));
+            httpClient.start();
             ContentResponse response = httpClient.newRequest("localhost", fakeServerPort)
+                .transport(new Transport.TCPUnix(unixDomainPath))
                 .timeout(5, TimeUnit.SECONDS)
                 .send();
 
             assertEquals(HttpStatus.OK_200, response.getStatus());
-        }
-        finally
-        {
-            httpClient.stop();
         }
     }
 
@@ -196,45 +174,44 @@ public class UnixDomainTest
         String srcAddr = "/proxySrcAddr";
         String dstAddr = "/proxyDstAddr";
         factories = new ConnectionFactory[]{new ProxyConnectionFactory(), new HttpConnectionFactory()};
-        start(new Handler.Processor()
+        start(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 EndPoint endPoint = request.getConnectionMetaData().getConnection().getEndPoint();
                 assertThat(endPoint, Matchers.instanceOf(ProxyConnectionFactory.ProxyEndPoint.class));
-                assertThat(endPoint.getLocalSocketAddress(), Matchers.instanceOf(unixDomainSocketAddressClass));
-                assertThat(endPoint.getRemoteSocketAddress(), Matchers.instanceOf(unixDomainSocketAddressClass));
-                String target = request.getPathInContext();
+                assertThat(endPoint.getLocalSocketAddress(), Matchers.instanceOf(UnixDomainSocketAddress.class));
+                assertThat(endPoint.getRemoteSocketAddress(), Matchers.instanceOf(UnixDomainSocketAddress.class));
+                String target = Request.getPathInContext(request);
+                Path localPath = ((UnixDomainSocketAddress)endPoint.getLocalSocketAddress()).getPath();
                 if ("/v1".equals(target))
                 {
                     // As PROXYv1 does not support UNIX, the wrapped EndPoint data is used.
-                    Path localPath = toUnixDomainPath(endPoint.getLocalSocketAddress());
                     assertThat(localPath, Matchers.equalTo(unixDomainPath));
                 }
                 else if ("/v2".equals(target))
                 {
-                    assertThat(toUnixDomainPath(endPoint.getLocalSocketAddress()).toString(), Matchers.equalTo(FS.separators(dstAddr)));
-                    assertThat(toUnixDomainPath(endPoint.getRemoteSocketAddress()).toString(), Matchers.equalTo(FS.separators(srcAddr)));
+                    assertThat(localPath.toString(), Matchers.equalTo(FS.separators(dstAddr)));
+                    Path remotePath = ((UnixDomainSocketAddress)endPoint.getRemoteSocketAddress()).getPath();
+                    assertThat(remotePath.toString(), Matchers.equalTo(FS.separators(srcAddr)));
                 }
                 else
                 {
                     Assertions.fail("Invalid PROXY protocol version " + target);
                 }
                 callback.succeeded();
+                return true;
             }
         });
 
-        // Java 11+ portable way to implement SocketChannelWithAddress.Factory.
-        ClientConnector clientConnector = ClientConnector.forUnixDomain(unixDomainPath);
-
-        HttpClient httpClient = new HttpClient(new HttpClientTransportDynamic(clientConnector));
-        httpClient.start();
-        try
+        try (HttpClient httpClient = new HttpClient(new HttpClientTransportDynamic()))
         {
+            httpClient.start();
             // Try PROXYv1 with the PROXY information retrieved from the EndPoint.
             // PROXYv1 does not support the UNIX family.
             ContentResponse response1 = httpClient.newRequest("localhost", 0)
+                .transport(new Transport.TCPUnix(unixDomainPath))
                 .path("/v1")
                 .tag(new V1.Tag())
                 .timeout(5, TimeUnit.SECONDS)
@@ -245,16 +222,13 @@ public class UnixDomainTest
             // Try PROXYv2 with explicit PROXY information.
             var tag = new V2.Tag(V2.Tag.Command.PROXY, V2.Tag.Family.UNIX, V2.Tag.Protocol.STREAM, srcAddr, 0, dstAddr, 0, null);
             ContentResponse response2 = httpClient.newRequest("localhost", 0)
+                .transport(new Transport.TCPUnix(unixDomainPath))
                 .path("/v2")
                 .tag(tag)
                 .timeout(5, TimeUnit.SECONDS)
                 .send();
 
             assertEquals(HttpStatus.OK_200, response2.getStatus());
-        }
-        finally
-        {
-            httpClient.stop();
         }
     }
 
@@ -266,19 +240,5 @@ public class UnixDomainTest
         connector.setUnixDomainPath(Path.of("/does/not/exist"));
         server.addConnector(connector);
         assertThrows(IOException.class, () -> server.start());
-    }
-
-    private static Path toUnixDomainPath(SocketAddress address)
-    {
-        try
-        {
-            Assertions.assertNotNull(unixDomainSocketAddressClass);
-            return (Path)unixDomainSocketAddressClass.getMethod("getPath").invoke(address);
-        }
-        catch (Throwable x)
-        {
-            Assertions.fail(x);
-            throw new AssertionError();
-        }
     }
 }

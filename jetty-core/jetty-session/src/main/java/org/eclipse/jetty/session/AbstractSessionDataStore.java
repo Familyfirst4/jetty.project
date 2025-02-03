@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,10 +13,16 @@
 
 package org.eclipse.jetty.session;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.io.OutputStream;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
+import org.eclipse.jetty.util.ClassLoadingObjectInputStream;
 import org.eclipse.jetty.util.FuturePromise;
 import org.eclipse.jetty.util.annotation.ManagedAttribute;
 import org.eclipse.jetty.util.annotation.ManagedObject;
@@ -286,19 +292,20 @@ public abstract class AbstractSessionDataStore extends ContainerLifeCycle implem
         // OTHER contexts that expired a very long time ago (ie not being actively
         // managed by any node). As these sessions are not for our context, we 
         // can't load them, so they must just be forcibly deleted.
-        try
+
+        if (now > (_lastOrphanSweepTime + TimeUnit.SECONDS.toMillis(10 * _gracePeriodSec)))
         {
-            if (now > (_lastOrphanSweepTime + TimeUnit.SECONDS.toMillis(10 * _gracePeriodSec)))
+            try
             {
                 if (LOG.isDebugEnabled())
                     LOG.debug("Cleaning orphans at {}, last sweep at {}", now, _lastOrphanSweepTime);
-                
+
                 cleanOrphans(now - TimeUnit.SECONDS.toMillis(10 * _gracePeriodSec));
             }
-        }
-        finally
-        {
-            _lastOrphanSweepTime = now;
+            finally
+            {
+                _lastOrphanSweepTime = now;
+            }
         }
 
         return expired;

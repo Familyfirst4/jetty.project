@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -22,10 +22,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
-import org.eclipse.jetty.client.api.ContentResponse;
-import org.eclipse.jetty.client.http.HttpClientTransportOverHTTP;
-import org.eclipse.jetty.client.util.FormRequestContent;
-import org.eclipse.jetty.client.util.StringRequestContent;
+import org.eclipse.jetty.client.transport.HttpClientTransportOverHTTP;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpHeaderValue;
 import org.eclipse.jetty.http.HttpStatus;
@@ -48,6 +45,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -190,12 +188,13 @@ public class NetworkTrafficListenerTest
     public void testTrafficWithResponseContentOnPersistentConnection() throws Exception
     {
         String responseContent = "response_content" + END_OF_CONTENT;
-        start(new Handler.Processor()
+        start(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 response.write(true, UTF_8.encode(responseContent), callback);
+                return true;
             }
         });
 
@@ -249,8 +248,8 @@ public class NetworkTrafficListenerTest
         assertTrue(serverIncomingLatch.await(1, TimeUnit.SECONDS));
         assertTrue(serverOutgoingLatch.await(1, TimeUnit.SECONDS));
         assertTrue(clientIncomingLatch.await(1, TimeUnit.SECONDS));
-        assertEquals(clientOutgoing.get(), serverIncoming.get());
-        assertEquals(serverOutgoing.get(), clientIncoming.get());
+        await().atMost(5, TimeUnit.SECONDS).until(() -> clientOutgoing.get().equals(serverIncoming.get()));
+        await().atMost(5, TimeUnit.SECONDS).until(() -> serverOutgoing.get().equals(clientIncoming.get()));
     }
 
     @Test
@@ -328,12 +327,16 @@ public class NetworkTrafficListenerTest
     public void testTrafficWithRequestContentWithResponseRedirectOnPersistentConnection() throws Exception
     {
         String location = "/redirect";
-        start(new Handler.Processor()
+        start(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
-                Response.sendRedirect(request, response, callback, location);
+                Content.Source.consumeAll(request, Callback.from(
+                    () -> Response.sendRedirect(request, response, callback, location),
+                    callback::failed
+                ));
+                return true;
             }
         });
 
@@ -386,7 +389,7 @@ public class NetworkTrafficListenerTest
         ContentResponse response = client.newRequest("localhost", connector.getLocalPort())
             .body(new FormRequestContent(fields))
             .send();
-        assertEquals(HttpStatus.FOUND_302, response.getStatus());
+        assertEquals(HttpStatus.MOVED_TEMPORARILY_302, response.getStatus());
 
         assertTrue(clientOutgoingLatch.await(1, TimeUnit.SECONDS));
         assertTrue(serverIncomingLatch.await(1, TimeUnit.SECONDS));

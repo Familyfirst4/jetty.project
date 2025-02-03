@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -19,8 +19,7 @@ import java.util.Map;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 
-import org.eclipse.jetty.client.api.Connection;
-import org.eclipse.jetty.client.api.ContentResponse;
+import org.eclipse.jetty.client.transport.HttpDestination;
 import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.io.AbstractConnection;
 import org.eclipse.jetty.io.ClientConnectionFactory;
@@ -95,7 +94,7 @@ public class HttpClientCustomProxyTest
         // Setup the custom proxy
         int proxyPort = connector.getLocalPort();
         int serverPort = proxyPort + 1; // Any port will do for these tests - just not the same as the proxy
-        client.getProxyConfiguration().getProxies().add(new CAFEBABEProxy(new Origin.Address("localhost", proxyPort), false));
+        client.getProxyConfiguration().addProxy(new CAFEBABEProxy(new Origin.Address("localhost", proxyPort), false));
 
         ContentResponse response = client.newRequest(serverHost, serverPort)
             .timeout(5, TimeUnit.SECONDS)

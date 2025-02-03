@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -21,10 +21,10 @@ import java.util.List;
 import java.util.concurrent.Executor;
 import javax.inject.Inject;
 
+import org.eclipse.jetty.client.ContentResponse;
 import org.eclipse.jetty.client.HttpClient;
-import org.eclipse.jetty.client.api.ContentResponse;
 import org.eclipse.jetty.http2.client.HTTP2Client;
-import org.eclipse.jetty.http2.client.http.HttpClientTransportOverHTTP2;
+import org.eclipse.jetty.http2.client.transport.HttpClientTransportOverHTTP2;
 import org.eclipse.jetty.io.ClientConnector;
 import org.eclipse.jetty.util.ssl.SslContextFactory;
 import org.eclipse.jetty.util.thread.QueuedThreadPool;
@@ -70,11 +70,11 @@ public class TestJettyOSGiBootHTTP2JDK9
         TestOSGiUtil.coreJettyDependencies(options);
         TestOSGiUtil.coreJspDependencies(options);
         //deploy a test webapp
-        options.add(mavenBundle().groupId("org.eclipse.jetty.demos").artifactId("demo-jsp-webapp").classifier("webbundle").versionAsInProject());
+        options.add(mavenBundle().groupId("org.eclipse.jetty.ee9.demos").artifactId("jetty-ee9-demo-jsp-webapp").classifier("webbundle").versionAsInProject());
         options.add(mavenBundle().groupId("org.eclipse.jetty").artifactId("jetty-alpn-java-client").versionAsInProject().start());
         options.add(mavenBundle().groupId("org.eclipse.jetty").artifactId("jetty-alpn-client").versionAsInProject().start());
-        options.add(mavenBundle().groupId("org.eclipse.jetty.http2").artifactId("http2-client").versionAsInProject().start());
-        options.add(mavenBundle().groupId("org.eclipse.jetty.http2").artifactId("http2-http-client-transport").versionAsInProject().start());
+        options.add(mavenBundle().groupId("org.eclipse.jetty.http2").artifactId("jetty-http2-client").versionAsInProject().start());
+        options.add(mavenBundle().groupId("org.eclipse.jetty.http2").artifactId("jetty-http2-client-transport").versionAsInProject().start());
 
         options.add(CoreOptions.cleanCaches(true));
         return options.toArray(new Option[0]);
@@ -85,13 +85,12 @@ public class TestJettyOSGiBootHTTP2JDK9
         List<Option> res = new ArrayList<>();
         res.add(CoreOptions.systemProperty("jetty.alpn.protocols").value("h2,http/1.1"));
 
-        res.add(mavenBundle().groupId("org.eclipse.jetty.osgi").artifactId("jetty-ee9-osgi-alpn").versionAsInProject().noStart());
         res.add(mavenBundle().groupId("org.eclipse.jetty").artifactId("jetty-alpn-java-server").versionAsInProject().start());
         res.add(mavenBundle().groupId("org.eclipse.jetty").artifactId("jetty-alpn-server").versionAsInProject().start());
 
-        res.add(mavenBundle().groupId("org.eclipse.jetty.http2").artifactId("http2-common").versionAsInProject().start());
-        res.add(mavenBundle().groupId("org.eclipse.jetty.http2").artifactId("http2-hpack").versionAsInProject().start());
-        res.add(mavenBundle().groupId("org.eclipse.jetty.http2").artifactId("http2-server").versionAsInProject().start());
+        res.add(mavenBundle().groupId("org.eclipse.jetty.http2").artifactId("jetty-http2-common").versionAsInProject().start());
+        res.add(mavenBundle().groupId("org.eclipse.jetty.http2").artifactId("jetty-http2-hpack").versionAsInProject().start());
+        res.add(mavenBundle().groupId("org.eclipse.jetty.http2").artifactId("jetty-http2-server").versionAsInProject().start());
         return res;
     }
 

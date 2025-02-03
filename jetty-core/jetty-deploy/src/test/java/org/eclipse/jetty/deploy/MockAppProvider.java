@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,19 +13,18 @@
 
 package org.eclipse.jetty.deploy;
 
-import java.io.File;
+import java.nio.file.Path;
 
-import org.eclipse.jetty.deploy.util.FileID;
 import org.eclipse.jetty.server.handler.ContextHandler;
 import org.eclipse.jetty.toolchain.test.MavenTestingUtils;
-import org.eclipse.jetty.util.URIUtil;
+import org.eclipse.jetty.util.FileID;
 import org.eclipse.jetty.util.component.AbstractLifeCycle;
 import org.eclipse.jetty.util.component.Environment;
 
 public class MockAppProvider extends AbstractLifeCycle implements AppProvider
 {
     private DeploymentManager deployMan;
-    private File webappsDir;
+    private Path webappsDir;
 
     @Override
     public String getEnvironmentName()
@@ -42,25 +41,28 @@ public class MockAppProvider extends AbstractLifeCycle implements AppProvider
     @Override
     public void doStart()
     {
-        this.webappsDir = MavenTestingUtils.getTestResourceDir("webapps");
+        this.webappsDir = MavenTestingUtils.getTestResourcePathDir("webapps");
     }
 
-    public void findWebapp(String name)
+    public App createWebapp(String name)
     {
-        App app = new App(deployMan, this, "mock-" + name);
+        App app = new App(deployMan, this, Path.of("./mock-" + name));
         this.deployMan.addApp(app);
+        return app;
     }
 
     @Override
-    public ContextHandler createContextHandler(App app) throws Exception
+    public ContextHandler createContextHandler(App app)
     {
         ContextHandler contextHandler = new ContextHandler();
 
-        File war = new File(webappsDir, app.getFilename().substring(5));
+        String name = app.getPath().toString();
+        name = name.substring(name.lastIndexOf("-")  + 1);
+        Path war = webappsDir.resolve(name);
 
-        String path = war.getName();
+        String path = war.toString();
 
-        if (FileID.isWebArchiveFile(war))
+        if (FileID.isWebArchive(war))
         {
             // Context Path is the same as the archive.
             path = path.substring(0, path.length() - 4);
@@ -68,7 +70,7 @@ public class MockAppProvider extends AbstractLifeCycle implements AppProvider
 
         // special case of archive (or dir) named "root" is / context
         if (path.equalsIgnoreCase("root") || path.equalsIgnoreCase("root/"))
-            path = URIUtil.SLASH;
+            path = "/";
 
         // Ensure "/" is Prepended to all context paths.
         if (path.charAt(0) != '/')
@@ -81,5 +83,11 @@ public class MockAppProvider extends AbstractLifeCycle implements AppProvider
         contextHandler.setContextPath(path);
 
         return contextHandler;
+    }
+
+    @Override
+    public String toString()
+    {
+        return String.format("MockAppProvider@%x:%s", hashCode(), getEnvironmentName());
     }
 }

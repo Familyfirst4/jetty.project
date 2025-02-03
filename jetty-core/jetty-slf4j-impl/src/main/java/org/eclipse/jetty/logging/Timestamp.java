@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -51,9 +51,10 @@ class Timestamp
 
     public Timestamp(TimeZone timeZone)
     {
-        tzFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
         zoneId = timeZone.toZoneId();
-        tzFormatter.withZone(zoneId);
+        tzFormatter = DateTimeFormatter
+                .ofPattern("yyyy-MM-dd HH:mm:ss")
+                .withZone(zoneId);
         tick = null;
     }
 

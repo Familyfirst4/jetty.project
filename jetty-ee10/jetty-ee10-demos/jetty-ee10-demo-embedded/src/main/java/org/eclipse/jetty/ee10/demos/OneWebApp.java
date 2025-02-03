@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -39,7 +39,9 @@ public class OneWebApp
         // PlusConfiguration) to choosing where the webapp will unpack itself.
         WebAppContext webapp = new WebAppContext();
         webapp.setContextPath("/");
-        Path warFile = JettyDemos.find("demo-async-rest/demo-async-rest-webapp/target/demo-async-rest-webapp-@VER@.war");
+        JettyDemos.MavenCoordinate mavenCoordinate = new JettyDemos.MavenCoordinate("org.eclipse.jetty.ee10.demos",
+                "jetty-ee10-demo-async-rest-webapp", "", "war");
+        Path warFile = JettyDemos.find("demo-async-rest/demo-async-rest-webapp/target/demo-async-rest-webapp-@VER@.war", mavenCoordinate);
         webapp.setWar(warFile.toString());
 
         // A WebAppContext is a ContextHandler as well so it needs to be set to

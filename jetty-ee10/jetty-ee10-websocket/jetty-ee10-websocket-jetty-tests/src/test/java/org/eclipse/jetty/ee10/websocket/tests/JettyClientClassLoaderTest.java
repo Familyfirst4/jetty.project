@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -23,35 +23,36 @@ import jakarta.servlet.annotation.WebServlet;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.eclipse.jetty.client.ContentResponse;
 import org.eclipse.jetty.client.HttpClient;
-import org.eclipse.jetty.client.api.ContentResponse;
-import org.eclipse.jetty.client.api.Response;
-import org.eclipse.jetty.ee10.websocket.api.Session;
-import org.eclipse.jetty.ee10.websocket.api.WebSocketPolicy;
-import org.eclipse.jetty.ee10.websocket.api.annotations.OnWebSocketConnect;
-import org.eclipse.jetty.ee10.websocket.api.annotations.OnWebSocketMessage;
-import org.eclipse.jetty.ee10.websocket.api.annotations.WebSocket;
-import org.eclipse.jetty.ee10.websocket.client.WebSocketClient;
+import org.eclipse.jetty.client.Response;
 import org.eclipse.jetty.ee10.websocket.client.config.JettyWebSocketClientConfiguration;
-import org.eclipse.jetty.ee10.websocket.common.WebSocketSession;
 import org.eclipse.jetty.ee10.websocket.server.JettyWebSocketServlet;
 import org.eclipse.jetty.ee10.websocket.server.JettyWebSocketServletFactory;
 import org.eclipse.jetty.ee10.websocket.server.config.JettyWebSocketConfiguration;
 import org.eclipse.jetty.http.BadMessageException;
 import org.eclipse.jetty.http.HttpStatus;
-import org.eclipse.jetty.io.ByteBufferPool;
+import org.eclipse.jetty.io.EndPoint;
 import org.eclipse.jetty.util.component.ContainerLifeCycle;
+import org.eclipse.jetty.websocket.api.Callback;
+import org.eclipse.jetty.websocket.api.Configurable;
+import org.eclipse.jetty.websocket.api.Session;
+import org.eclipse.jetty.websocket.api.annotations.OnWebSocketMessage;
+import org.eclipse.jetty.websocket.api.annotations.OnWebSocketOpen;
+import org.eclipse.jetty.websocket.api.annotations.WebSocket;
+import org.eclipse.jetty.websocket.client.WebSocketClient;
+import org.eclipse.jetty.websocket.common.WebSocketSession;
 import org.eclipse.jetty.websocket.core.WebSocketComponents;
 import org.eclipse.jetty.websocket.core.client.CoreClientUpgradeRequest;
 import org.eclipse.jetty.xml.XmlConfiguration;
+import org.hamcrest.MatcherAssert;
+import org.hamcrest.Matchers;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.DisabledOnJre;
 import org.junit.jupiter.api.condition.JRE;
 
-import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
-import static org.hamcrest.Matchers.is;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 public class JettyClientClassLoaderTest
@@ -84,10 +85,10 @@ public class JettyClientClassLoaderTest
     {
         LinkedBlockingQueue<String> textMessages = new LinkedBlockingQueue<>();
 
-        @OnWebSocketConnect
+        @OnWebSocketOpen
         public void onOpen(Session session) throws Exception
         {
-            session.getRemote().sendString("ContextClassLoader: " + Thread.currentThread().getContextClassLoader());
+            session.sendText("ContextClassLoader: " + Thread.currentThread().getContextClassLoader(), Callback.NOOP);
         }
 
         @OnWebSocketMessage
@@ -152,7 +153,7 @@ public class JettyClientClassLoaderTest
         @OnWebSocketMessage
         public void onMessage(Session session, String message) throws Exception
         {
-            session.getRemote().sendString(message);
+            session.sendText(message, Callback.NOOP);
         }
     }
 
@@ -160,16 +161,16 @@ public class JettyClientClassLoaderTest
     {
         WebAppTester.WebApp app = webAppTester.createWebApp(contextName);
 
-        // Copy over the individual jars required for Javax WebSocket.
+        // Copy over the individual jars required for Jetty WebSocket.
         app.createWebInf();
-        app.copyLib(WebSocketPolicy.class, "websocket-jetty-api.jar");
-        app.copyLib(WebSocketClient.class, "websocket-jetty-client.jar");
-        app.copyLib(WebSocketSession.class, "websocket-jetty-common.jar");
+        app.copyLib(Configurable.class, "jetty-websocket-jetty-api.jar");
+        app.copyLib(WebSocketClient.class, "jetty-websocket-jetty-client.jar");
+        app.copyLib(WebSocketSession.class, "jetty-websocket-jetty-common.jar");
         app.copyLib(ContainerLifeCycle.class, "jetty-util.jar");
-        app.copyLib(CoreClientUpgradeRequest.class, "websocket-core-client.jar");
-        app.copyLib(WebSocketComponents.class, "websocket-core-common.jar");
+        app.copyLib(CoreClientUpgradeRequest.class, "jetty-websocket-core-client.jar");
+        app.copyLib(WebSocketComponents.class, "jetty-websocket-core-common.jar");
         app.copyLib(Response.class, "jetty-client.jar");
-        app.copyLib(ByteBufferPool.class, "jetty-io.jar");
+        app.copyLib(EndPoint.class, "jetty-io.jar");
         app.copyLib(BadMessageException.class, "jetty-http.jar");
         app.copyLib(XmlConfiguration.class, "jetty-xml.jar");
 
@@ -198,14 +199,14 @@ public class JettyClientClassLoaderTest
 
         // After hitting each WebApp we will get 200 response if test succeeds.
         ContentResponse response = httpClient.GET(webAppTester.getServerUri().resolve("/app/servlet"));
-        assertThat(response.getStatus(), is(HttpStatus.OK_200));
+        MatcherAssert.assertThat(response.getStatus(), Matchers.is(HttpStatus.OK_200));
 
         // The ContextClassLoader in the WebSocketClients onOpen was the WebAppClassloader.
-        assertThat(response.getContentAsString(), containsString("ContextClassLoader: WebAppClassLoader"));
+        MatcherAssert.assertThat(response.getContentAsString(), containsString("ContextClassLoader: WebAppClassLoader"));
 
         // Verify that we used Servers version of WebSocketClient.
         ClassLoader serverClassLoader = webAppTester.getServer().getClass().getClassLoader();
-        assertThat(response.getContentAsString(), containsString("ClientClassLoader: " + serverClassLoader));
+        MatcherAssert.assertThat(response.getContentAsString(), containsString("ClientClassLoader: " + serverClassLoader));
     }
 
     /**
@@ -234,12 +235,12 @@ public class JettyClientClassLoaderTest
 
         // After hitting each WebApp we will get 200 response if test succeeds.
         ContentResponse response = httpClient.GET(webAppTester.getServerUri().resolve("/app/servlet"));
-        assertThat(response.getStatus(), is(HttpStatus.OK_200));
+        MatcherAssert.assertThat(response.getStatus(), Matchers.is(HttpStatus.OK_200));
 
         // The ContextClassLoader in the WebSocketClients onOpen was the WebAppClassloader.
-        assertThat(response.getContentAsString(), containsString("ContextClassLoader: WebAppClassLoader"));
+        MatcherAssert.assertThat(response.getContentAsString(), containsString("ContextClassLoader: WebAppClassLoader"));
 
         // Verify that we used WebApps version of WebSocketClient.
-        assertThat(response.getContentAsString(), containsString("ClientClassLoader: WebAppClassLoader"));
+        MatcherAssert.assertThat(response.getContentAsString(), containsString("ClientClassLoader: WebAppClassLoader"));
     }
 }

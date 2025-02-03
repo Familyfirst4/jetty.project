@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -39,37 +39,34 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public class DefaultServletRangesTest
 {
     public static final String DATA = "01234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWZYZ!@#$%^&*()_+/.,[]";
-    public WorkDir testdir;
 
     private Server server;
     private LocalConnector connector;
-    private ServletContextHandler context;
 
     @BeforeEach
-    public void init() throws Exception
+    public void init(WorkDir workDir) throws Exception
     {
         server = new Server();
 
         connector = new LocalConnector(server);
         connector.getConnectionFactory(HttpConfiguration.ConnectionFactory.class).getHttpConfiguration().setSendServerVersion(false);
 
-        context = new ServletContextHandler();
+        ServletContextHandler context = new ServletContextHandler();
         context.setContextPath("/context");
         context.setWelcomeFiles(new String[]{"index.html", "index.jsp", "index.htm"});
 
         server.setHandler(context);
         server.addConnector(connector);
 
-        testdir.ensureEmpty();
-        File resBase = testdir.getPathFile("docroot").toFile();
-        FS.ensureDirExists(resBase);
+        File resBase = workDir.getEmptyPathDir().toFile();
+        FS.ensureDirExists(resBase.toPath());
         File data = new File(resBase, "data.txt");
         createFile(data, DATA);
         String resBasePath = resBase.getAbsolutePath();
 
         ServletHolder defholder = context.addServlet(DefaultServlet.class, "/");
         defholder.setInitParameter("acceptRanges", "true");
-        defholder.setInitParameter("resourceBase", resBasePath);
+        defholder.setInitParameter("baseResource", resBasePath);
 
         server.start();
     }

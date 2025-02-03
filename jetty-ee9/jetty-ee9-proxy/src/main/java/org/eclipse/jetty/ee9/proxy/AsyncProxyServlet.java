@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -25,9 +25,10 @@ import jakarta.servlet.ServletOutputStream;
 import jakarta.servlet.WriteListener;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import org.eclipse.jetty.client.api.Request;
-import org.eclipse.jetty.client.api.Response;
-import org.eclipse.jetty.client.util.AsyncRequestContent;
+import org.eclipse.jetty.client.AsyncRequestContent;
+import org.eclipse.jetty.client.Request;
+import org.eclipse.jetty.client.Response;
+import org.eclipse.jetty.server.handler.ConnectHandler;
 import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.IteratingCallback;
 
@@ -98,7 +99,7 @@ public class AsyncProxyServlet extends ProxyServlet
     /**
      * <p>Convenience extension of {@link AsyncProxyServlet} that offers transparent proxy functionalities.</p>
      *
-     * @see org.eclipse.jetty.proxy.AbstractProxyServlet.TransparentDelegate
+     * @see AbstractProxyServlet.TransparentDelegate
      */
     public static class Transparent extends AsyncProxyServlet
     {
@@ -187,14 +188,13 @@ public class AsyncProxyServlet extends ProxyServlet
 
         protected void onRequestContent(HttpServletRequest request, Request proxyRequest, AsyncRequestContent content, byte[] buffer, int offset, int length, Callback callback)
         {
-            content.offer(ByteBuffer.wrap(buffer, offset, length), callback);
+            content.write(ByteBuffer.wrap(buffer, offset, length), callback);
         }
 
         @Override
-        public void failed(Throwable x)
+        protected void onCompleteFailure(Throwable cause)
         {
-            super.failed(x);
-            onError(x);
+            onError(cause);
         }
     }
 

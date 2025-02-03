@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -16,13 +16,16 @@ package org.eclipse.jetty.server;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.net.Socket;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Exchanger;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.io.Connection;
+import org.eclipse.jetty.io.Content;
 import org.eclipse.jetty.io.EndPoint;
 import org.eclipse.jetty.server.LocalConnector.LocalEndPoint;
 import org.eclipse.jetty.server.handler.ContextHandler;
@@ -33,14 +36,15 @@ import org.eclipse.jetty.util.BufferUtil;
 import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.FutureCallback;
 import org.eclipse.jetty.util.IO;
+import org.eclipse.jetty.util.NanoTime;
 import org.eclipse.jetty.util.component.LifeCycle;
 import org.hamcrest.Matcher;
 import org.hamcrest.Matchers;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.awaitility.Awaitility.await;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.endsWith;
@@ -54,7 +58,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
-@Disabled // TODO
 public class StopTest
 {
     private static final Logger LOG = LoggerFactory.getLogger(StopTest.class);
@@ -90,7 +93,7 @@ public class StopTest
             }
             catch (Exception e)
             {
-                e.printStackTrace();
+                throw new RuntimeException(e);
             }
         });
         stopper.start();
@@ -105,10 +108,7 @@ public class StopTest
             ).getBytes());
             client.getOutputStream().flush();
 
-            while (!connector.isShutdown())
-            {
-                Thread.sleep(10);
-            }
+            await().atMost(10, TimeUnit.SECONDS).until(connector::isShutdown);
 
             handler.latchB.countDown();
 
@@ -134,7 +134,7 @@ public class StopTest
             public Connection newConnection(Connector con, EndPoint endPoint)
             {
                 // Slow closing connection
-                HttpConnection conn = new HttpConnection(getHttpConfiguration(), con, endPoint, isRecordHttpComplianceViolations())
+                HttpConnection conn = new HttpConnection(getHttpConfiguration(), con, endPoint)
                 {
                     @Override
                     public void onClose(Throwable cause)
@@ -155,12 +155,12 @@ public class StopTest
                     @Override
                     public void close()
                     {
-                        long start = System.nanoTime();
+                        long start = NanoTime.now();
                         new Thread(() ->
                         {
                             try
                             {
-                                Thread.sleep(closeWait - TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start));
+                                Thread.sleep(closeWait - NanoTime.millisSince(start));
                             }
                             catch (Throwable e)
                             {
@@ -205,7 +205,7 @@ public class StopTest
                 break;
         }
 
-        long start = System.nanoTime();
+        long start = NanoTime.now();
         try
         {
             server.stop();
@@ -215,10 +215,9 @@ public class StopTest
         {
             assertTrue(stopTimeout > 0 && stopTimeout < closeWait);
         }
-        long stop = System.nanoTime();
 
         // Check stop time was correct
-        assertThat(TimeUnit.NANOSECONDS.toMillis(stop - start), stopTimeMatcher);
+        assertThat(NanoTime.millisSince(start), stopTimeMatcher);
 
         // Connection closed
         while (true)
@@ -226,7 +225,7 @@ public class StopTest
             int r = client.getInputStream().read();
             if (r == -1)
                 break;
-            assertThat(TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - start), lessThan(10L));
+            assertThat(NanoTime.millisSince(start), lessThan(10L));
         }
 
         // onClose Thread interrupted or completed
@@ -279,89 +278,83 @@ public class StopTest
         LocalConnector connector = new LocalConnector(server);
         server.addConnector(connector);
 
-        StatisticsHandler stats = new StatisticsHandler();
+        ContextHandler context = new ContextHandler("/");
+        StatisticsHandler stats = new StatisticsHandler(context);
         server.setHandler(stats);
-
-        ContextHandler context = new ContextHandler(stats, "/");
 
         Exchanger<Void> exchanger0 = new Exchanger<>();
         Exchanger<Void> exchanger1 = new Exchanger<>();
-        /* TODO
-        context.setHandler(new AbstractHandler()
+        context.setHandler(new Handler.Abstract()
         {
             @Override
-            public void handle(String target, Request baseRequest, HttpServletRequest request, HttpServletResponse response)
-                throws IOException, ServletException
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
             {
                 try
                 {
                     exchanger0.exchange(null);
                     exchanger1.exchange(null);
+
+                    response.setStatus(200);
+                    Content.Sink.write(response, true, "The Response", callback);
                 }
                 catch (Throwable x)
                 {
-                    throw new ServletException(x);
+                    callback.failed(x);
                 }
 
-                baseRequest.setHandled(true);
-                response.setStatus(200);
-                response.getWriter().println("The Response");
-                response.getWriter().close();
+                return true;
             }
         });
 
-         */
 
         server.setStopTimeout(1000);
         server.start();
 
-        LocalEndPoint endp = connector.executeRequest(
-            "GET / HTTP/1.1\r\n" +
-                "Host: localhost\r\n" +
-                "\r\n"
-        );
-
-        exchanger0.exchange(null);
-        exchanger1.exchange(null);
-
-        String response = endp.getResponse();
-        assertThat(response, containsString("200 OK"));
-        assertThat(response, Matchers.not(containsString("Connection: close")));
-
-        endp.addInputAndExecute(BufferUtil.toBuffer("GET / HTTP/1.1\r\nHost:localhost\r\n\r\n"));
-
-        exchanger0.exchange(null);
-
-        FutureCallback stopped = new FutureCallback();
-        new Thread(() ->
+        try (LocalEndPoint endp = connector.executeRequest(
+            """
+                GET / HTTP/1.1\r
+                Host: localhost\r
+                \r
+                """
+        ))
         {
-            try
-            {
-                server.stop();
-                stopped.succeeded();
-            }
-            catch (Throwable e)
-            {
-                stopped.failed(e);
-            }
-        }).start();
+            exchanger0.exchange(null);
+            exchanger1.exchange(null);
 
-        long start = System.nanoTime();
-        while (!connector.isShutdown())
-        {
-            assertThat(TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - start), lessThan(10L));
-            Thread.sleep(10);
+            String response = endp.getResponse();
+            assertThat(response, containsString("200 OK"));
+            assertThat(response, Matchers.not(containsString("Connection: close")));
+
+            endp.addInputAndExecute(BufferUtil.toBuffer("GET / HTTP/1.1\r\nHost:localhost\r\n\r\n"));
+
+            exchanger0.exchange(null);
+
+            FutureCallback stopped = new FutureCallback();
+            new Thread(() ->
+            {
+                try
+                {
+                    server.stop();
+                    stopped.succeeded();
+                }
+                catch (Throwable e)
+                {
+                    stopped.failed(e);
+                }
+            }).start();
+
+            await().atMost(10, TimeUnit.SECONDS).until(connector::isShutdown);
+
+            // Check new connections rejected!
+            assertThrows(IllegalStateException.class, () -> connector.getResponse("GET / HTTP/1.1\r\nHost:localhost\r\n\r\n"));
+
+            // Check completed 200 has close
+            exchanger1.exchange(null);
+            response = endp.getResponse();
+            assertThat(response, containsString("200 OK"));
+            assertThat(response, Matchers.containsString("Connection: close"));
+            stopped.get(10, TimeUnit.SECONDS);
         }
-
-        // Check new connections rejected!
-        assertThrows(IllegalStateException.class, () -> connector.getResponse("GET / HTTP/1.1\r\nHost:localhost\r\n\r\n"));
-
-        // Check completed 200 has close
-        exchanger1.exchange(null);
-        response = endp.getResponse();
-        assertThat(response, containsString("200 OK"));
-        assertThat(response, Matchers.containsString("Connection: close"));
-        stopped.get(10, TimeUnit.SECONDS);
     }
 
     @Test
@@ -372,85 +365,81 @@ public class StopTest
         LocalConnector connector = new LocalConnector(server);
         server.addConnector(connector);
 
-        ContextHandler context = new ContextHandler(server, "/");
-
+        ContextHandler context = new ContextHandler("/");
+        server.setHandler(context);
         StatisticsHandler stats = new StatisticsHandler();
         context.setHandler(stats);
 
         Exchanger<Void> exchanger0 = new Exchanger<>();
         Exchanger<Void> exchanger1 = new Exchanger<>();
-        /* TODO
-        stats.setHandler(new AbstractHandler()
+        stats.setHandler(new Handler.Abstract()
         {
             @Override
-            public void handle(String target, Request baseRequest, HttpServletRequest request, HttpServletResponse response)
-                throws IOException, ServletException
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
             {
                 try
                 {
                     exchanger0.exchange(null);
                     exchanger1.exchange(null);
+
+                    response.setStatus(200);
+                    Content.Sink.write(response, true, "The Response", callback);
                 }
                 catch (Throwable x)
                 {
-                    throw new ServletException(x);
+                    callback.failed(x);
                 }
-
-                baseRequest.setHandled(true);
-                response.setStatus(200);
-                response.getWriter().println("The Response");
-                response.getWriter().close();
+                return true;
             }
         });
 
-         */
-
         server.start();
 
-        LocalEndPoint endp = connector.executeRequest(
-            "GET / HTTP/1.1\r\n" +
-                "Host: localhost\r\n" +
-                "\r\n"
-        );
-
-        exchanger0.exchange(null);
-        exchanger1.exchange(null);
-
-        String response = endp.getResponse();
-        assertThat(response, containsString("200 OK"));
-        assertThat(response, Matchers.not(containsString("Connection: close")));
-
-        endp.addInputAndExecute(BufferUtil.toBuffer("GET / HTTP/1.1\r\nHost:localhost\r\n\r\n"));
-        exchanger0.exchange(null);
-
-        CountDownLatch latch = new CountDownLatch(1);
-        new Thread(() ->
+        try (LocalEndPoint endp = connector.executeRequest(
+            """
+                GET / HTTP/1.1\r
+                Host: localhost\r
+                \r
+                """
+        ))
         {
-            try
+            exchanger0.exchange(null);
+            exchanger1.exchange(null);
+
+            String response = endp.getResponse();
+            assertThat(response, containsString("200 OK"));
+            assertThat(response, Matchers.not(containsString("Connection: close")));
+
+            endp.addInputAndExecute(BufferUtil.toBuffer("GET / HTTP/1.1\r\nHost:localhost\r\n\r\n"));
+            exchanger0.exchange(null);
+
+            CountDownLatch latch = new CountDownLatch(1);
+            new Thread(() ->
             {
-                context.stop();
-                latch.countDown();
-            }
-            catch (Exception e)
-            {
-                e.printStackTrace();
-            }
-        }).start();
-        while (context.isStarted())
-        {
-            Thread.sleep(10);
+                try
+                {
+                    context.stop();
+                    latch.countDown();
+                }
+                catch (Exception e)
+                {
+                    e.printStackTrace();
+                }
+            }).start();
+
+            await().atMost(10, TimeUnit.SECONDS).until(context::isStopped);
+
+            // Check new connections accepted, but don't find context!
+            String unavailable = connector.getResponse("GET / HTTP/1.1\r\nHost:localhost\r\n\r\n");
+            assertThat(unavailable, containsString(" 404 Not Found"));
+
+            // Check completed 200 does not have close
+            exchanger1.exchange(null);
+            response = endp.getResponse();
+            assertThat(response, containsString("200 OK"));
+            assertThat(response, Matchers.not(Matchers.containsString("Connection: close")));
+            assertTrue(latch.await(10, TimeUnit.SECONDS));
         }
-
-        // Check new connections accepted, but don't find context!
-        String unavailable = connector.getResponse("GET / HTTP/1.1\r\nHost:localhost\r\n\r\n");
-        assertThat(unavailable, containsString(" 404 Not Found"));
-
-        // Check completed 200 does not have close
-        exchanger1.exchange(null);
-        response = endp.getResponse();
-        assertThat(response, containsString("200 OK"));
-        assertThat(response, Matchers.not(Matchers.containsString("Connection: close")));
-        assertTrue(latch.await(10, TimeUnit.SECONDS));
     }
 
     @Test
@@ -484,12 +473,12 @@ public class StopTest
         ContextHandler context2 = new ContextHandler("/two")
         {
             @Override
-            protected void doStart() throws Exception
+            protected void doStart()
             {
                 context2Started.set(true);
             }
         };
-        contexts.setHandlers(new Handler[]{context0, context1, context2});
+        contexts.setHandlers(context0, context1, context2);
 
         try
         {
@@ -507,7 +496,7 @@ public class StopTest
         assertFalse(context2Started.get());
     }
 
-    static class NoopHandler extends Handler.Processor
+    static class NoopHandler extends Handler.Abstract
     {
         final CountDownLatch latch = new CountDownLatch(1);
 
@@ -516,36 +505,37 @@ public class StopTest
         }
 
         @Override
-        public void process(Request request, Response response, Callback callback) throws Exception
+        public boolean handle(Request request, Response response, Callback callback) throws Exception
         {
             callback.succeeded(); // TODO should the be after the countdown?
             latch.countDown();
+            return true;
         }
     }
 
-    static class ABHandler extends Handler.Processor
+    static class ABHandler extends Handler.Abstract
     {
         final CountDownLatch latchA = new CountDownLatch(1);
         final CountDownLatch latchB = new CountDownLatch(1);
 
         @Override
-        public void process(Request request, Response response, Callback callback) throws Exception
+        public boolean handle(Request request, Response response, Callback callback) throws Exception
         {
-            /* TODO
-            response.setContentLength(2);
-            response.write(true, callback, ByteBuffer.wrap("a".getBytes()));
-            try
+            response.getHeaders().put(HttpHeader.CONTENT_LENGTH, 2);
+            request.getContext().run(() ->
             {
-                latchA.countDown();
-                latchB.await();
-            }
-            catch (InterruptedException e)
-            {
-                throw new RuntimeException(e);
-            }
-            response.flushBuffer();
-            response.write(true, callback, ByteBuffer.wrap("b".getBytes()));
-             */
+                try
+                {
+                    latchA.countDown();
+                    latchB.await();
+                }
+                catch (InterruptedException e)
+                {
+                    throw new RuntimeException(e);
+                }
+                response.write(true, ByteBuffer.wrap("ab".getBytes()), callback);
+            });
+            return true;
         }
     }
 }

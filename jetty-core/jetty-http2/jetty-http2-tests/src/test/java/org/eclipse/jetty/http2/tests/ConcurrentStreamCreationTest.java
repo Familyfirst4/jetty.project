@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -45,12 +45,12 @@ public class ConcurrentStreamCreationTest extends AbstractTest
         int iterations = 1024;
         int total = threads * runs * iterations;
         CountDownLatch serverLatch = new CountDownLatch(total);
-        start(new ServerSessionListener.Adapter()
+        start(new ServerSessionListener()
         {
             @Override
             public Stream.Listener onNewStream(Stream stream, HeadersFrame frame)
             {
-                MetaData.Response response = new MetaData.Response(HttpVersion.HTTP_2, HttpStatus.OK_200, HttpFields.EMPTY);
+                MetaData.Response response = new MetaData.Response(HttpStatus.OK_200, null, HttpVersion.HTTP_2, HttpFields.EMPTY);
                 HeadersFrame responseFrame = new HeadersFrame(stream.getId(), response, null, true);
                 stream.headers(responseFrame, Callback.NOOP);
                 serverLatch.countDown();
@@ -58,7 +58,7 @@ public class ConcurrentStreamCreationTest extends AbstractTest
             }
         }, h2 -> h2.setMaxConcurrentStreams(total));
 
-        Session session = newClientSession(new Session.Listener.Adapter());
+        Session session = newClientSession(new Session.Listener() {});
 
         CyclicBarrier barrier = new CyclicBarrier(threads);
         CountDownLatch clientLatch = new CountDownLatch(total);
@@ -81,7 +81,7 @@ public class ConcurrentStreamCreationTest extends AbstractTest
                         {
                             MetaData.Request request = newRequest("GET", HttpFields.EMPTY);
                             HeadersFrame requestFrame = new HeadersFrame(request, null, true);
-                            session.newStream(requestFrame, promise, new Stream.Listener.Adapter()
+                            session.newStream(requestFrame, promise, new Stream.Listener()
                             {
                                 @Override
                                 public void onHeaders(Stream stream, HeadersFrame frame)
@@ -98,6 +98,7 @@ public class ConcurrentStreamCreationTest extends AbstractTest
                 x.printStackTrace();
             }
         }).start());
+
         assertTrue(clientLatch.await(total, TimeUnit.MILLISECONDS), String.format("Missing streams on client: %d/%d", clientLatch.getCount(), total));
         assertTrue(serverLatch.await(total, TimeUnit.MILLISECONDS), String.format("Missing streams on server: %d/%d", serverLatch.getCount(), total));
         assertTrue(responseLatch.await(total, TimeUnit.MILLISECONDS), String.format("Missing response on client: %d/%d", clientLatch.getCount(), total));

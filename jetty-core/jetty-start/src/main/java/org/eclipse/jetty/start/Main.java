@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,7 +14,6 @@
 package org.eclipse.jetty.start;
 
 import java.io.BufferedReader;
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -30,14 +29,20 @@ import java.net.SocketTimeoutException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
-import java.util.Locale;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
+import java.util.jar.Manifest;
 import java.util.stream.Collectors;
 
 import org.eclipse.jetty.start.Props.Prop;
 import org.eclipse.jetty.start.config.CommandLineConfigSource;
 import org.eclipse.jetty.start.config.ConfigSource;
+import org.eclipse.jetty.util.FileID;
 
 import static org.eclipse.jetty.start.UsageException.ERR_BAD_STOP_PROPS;
 import static org.eclipse.jetty.start.UsageException.ERR_INVOKE_MAIN;
@@ -136,7 +141,7 @@ public class Main
         }).start();
     }
 
-    private void dumpClasspathWithVersions(String name, PrintStream out, Classpath classpath)
+    private void listClasspath(String name, PrintStream out, Classpath classpath)
     {
         StartLog.endStartLog();
         out.println();
@@ -153,10 +158,95 @@ public class Main
         out.println("      changes to the --module=name command line options will be reflected here.");
 
         int i = 0;
-        for (File element : classpath.getElements())
+        for (Path element : classpath.getElements())
         {
-            out.printf("%2d: %24s | %s\n", i++, getVersion(element), baseHome.toShortForm(element));
+            String license = getLicenceFromJar(element);
+            if (license != null && !license.isEmpty())
+                out.printf("%2d: %24s | %s | %s\n", i++, getVersion(element), baseHome.toShortForm(element), license);
+            else
+                out.printf("%2d: %24s | %s\n", i++, getVersion(element), baseHome.toShortForm(element));
         }
+    }
+
+    private String getLicenceFromJar(Path jar)
+    {
+        if (!Files.exists(jar) || Files.isDirectory(jar) || !Files.isReadable(jar))
+            return null;
+        try
+        {
+            try (JarFile jarFile = new JarFile(jar.toFile()))
+            {
+                Manifest manifest = jarFile.getManifest();
+                if (manifest != null)
+                {
+                    String spdxLicense = manifest.getMainAttributes().getValue("SPDX-License-Identifier");
+                    if (spdxLicense != null)
+                        return spdxLicense;
+
+                    String bundleLicense = manifest.getMainAttributes().getValue("Bundle-License");
+                    if (bundleLicense != null)
+                        return bundleLicense;
+                }
+
+                Optional<String> license = jarFile.stream().filter(Main::isLicenseFile).map(e -> getLicenceFromFile(jarFile, e)).filter(Objects::nonNull).findFirst();
+                if (license.isPresent())
+                    return license.get();
+
+            }
+        }
+        catch (Throwable ignored)
+        {
+        }
+        return null;
+    }
+
+    private static boolean isLicenseFile(JarEntry entry)
+    {
+        String name = entry.getName();
+        return name.matches("(?i)^(META-INF/)?LICEN[SC]E.*") || name.matches("(?i)^LICEN[SC]E.*");
+    }
+
+    private String getLicenceFromFile(JarFile jarFile, JarEntry entry)
+    {
+        try
+        {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(jarFile.getInputStream(entry))))
+            {
+                String line;
+                StringBuilder licenseBuilder = new StringBuilder();
+                int nonEmptyLines = 0;
+
+                List<String> links = new ArrayList<>();
+
+                while ((line = reader.readLine()) != null)
+                {
+                    line = line.trim();
+                    if (!line.isEmpty())
+                    {
+                        if (line.contains("SPDX-License-Identifier:"))
+                            return line.substring(line.indexOf(':') + 1).trim();
+
+                        if (line.startsWith("http:") || line.startsWith("https:"))
+                            links.add(line);
+
+                        if (nonEmptyLines < 2)
+                        {
+                            licenseBuilder.append(line).append(" ");
+                            nonEmptyLines++;
+                        }
+                    }
+                }
+
+                if (!links.isEmpty())
+                    return links.stream().max(Comparator.comparingInt(String::length)).get();
+
+                return nonEmptyLines > 0 ? licenseBuilder.toString().trim() : null;
+            }
+        }
+        catch (Throwable ignored)
+        {
+        }
+        return null;
     }
 
     public BaseHome getBaseHome()
@@ -164,20 +254,16 @@ public class Main
         return baseHome;
     }
 
-    private String getVersion(File element)
+    private String getVersion(Path element)
     {
-        if (element.isDirectory())
+        if (Files.isDirectory(element))
         {
             return "(dir)";
         }
 
-        if (element.isFile())
+        if (Files.isRegularFile(element) && FileID.isJavaArchive(element))
         {
-            String name = element.getName().toLowerCase(Locale.ENGLISH);
-            if (name.endsWith(".jar"))
-            {
-                return JarVersion.getVersion(element);
-            }
+            return JarVersion.getVersion(element);
         }
 
         return "";
@@ -191,8 +277,8 @@ public class Main
                 StartLog.error("Do not start with ${jetty.base} == ${jetty.home}!");
             else
                 StartLog.error("No enabled jetty modules found!");
-            StartLog.info("${jetty.home} = " + getBaseHome().getHomePath());
-            StartLog.info("${jetty.base} = " + getBaseHome().getBasePath());
+            StartLog.info("${jetty.home} = %s", getBaseHome().getHomePath());
+            StartLog.info("${jetty.base} = %s", getBaseHome().getBasePath());
             StartLog.error("Please create and/or configure a ${jetty.base} directory.");
             usageExit(ERR_INVOKE_MAIN);
             return;
@@ -206,7 +292,7 @@ public class Main
         }
         catch (ClassNotFoundException e)
         {
-            StartLog.error("Unable to find: " + mainclass);
+            StartLog.error("Unable to find: %s", mainclass);
             StartLog.debug(e);
             usageExit(ERR_INVOKE_MAIN);
             return;
@@ -243,22 +329,21 @@ public class Main
         // Dump System Properties
         args.dumpSystemProperties(out);
 
+        StartEnvironment jettyEnvironment = args.getJettyEnvironment();
 
-        Environment coreEnvironment = args.getCoreEnvironment();
+        // Dump Jetty Properties
+        jettyEnvironment.dumpProperties(out);
+        // Dump Jetty Classpath
+        listClasspath(jettyEnvironment.getName(), out, jettyEnvironment.getClasspath());
+        // Dump Jetty Resolved XMLs
+        jettyEnvironment.dumpActiveXmls(out);
 
-        // Dump Core Properties
-        coreEnvironment.dumpProperties(out);
-        // Dump Core Classpath
-        dumpClasspathWithVersions(coreEnvironment.getName(), out, coreEnvironment.getClasspath());
-        // Dump Core Resolved XMLs
-        coreEnvironment.dumpActiveXmls(out);
-
-        for (Environment environment : args.getEnvironments())
+        for (StartEnvironment environment : args.getEnvironments())
         {
             // Dump Properties
             environment.dumpProperties(out);
             // Dump Classpath
-            dumpClasspathWithVersions(environment.getName(), out, environment.getClasspath());
+            listClasspath(environment.getName(), out, environment.getClasspath());
             // Dump Resolved XMLs
             environment.dumpActiveXmls(out);
         }
@@ -322,7 +407,7 @@ public class Main
 
         Props props = baseHome.getConfigSources().getProps();
         Prop home = props.getProp(BaseHome.JETTY_HOME);
-        Props argProps = args.getCoreEnvironment().getProperties();
+        Props argProps = args.getJettyEnvironment().getProperties();
         if (!argProps.containsKey(BaseHome.JETTY_HOME))
             argProps.setProperty(home);
         argProps.setProperty(BaseHome.JETTY_HOME + ".uri",
@@ -395,7 +480,7 @@ public class Main
         StartLog.debug("StartArgs: %s", args);
 
         // Get Desired Classpath based on user provided Active Options.
-        Classpath classpath = args.getCoreEnvironment().getClasspath();
+        Classpath classpath = args.getJettyEnvironment().getClasspath();
 
         // Show the usage information and return
         if (args.isHelp())
@@ -406,7 +491,7 @@ public class Main
         // Show the version information and return
         if (args.isListClasspath())
         {
-            dumpClasspathWithVersions("Core", System.out, classpath);
+            listClasspath("Jetty", System.out, classpath);
         }
 
         // Show configuration
@@ -433,7 +518,7 @@ public class Main
             Path outputFile = baseHome.getBasePath(args.getModuleGraphFilename());
             System.out.printf("Generating GraphViz Graph of Jetty Modules at %s%n", baseHome.toShortForm(outputFile));
             ModuleGraphWriter writer = new ModuleGraphWriter();
-            writer.config(args.getCoreEnvironment().getProperties());
+            writer.config(args.getJettyEnvironment().getProperties());
             writer.write(args.getAllModules(), outputFile);
         }
 
@@ -441,7 +526,8 @@ public class Main
         if (args.isDryRun())
         {
             CommandLineBuilder cmd = args.getMainArgs(args.getDryRunParts());
-            System.out.println(cmd.toString(StartLog.isDebugEnabled() ? " \\\n" : " "));
+            cmd.debug();
+            System.out.println(cmd.toCommandLine());
         }
 
         if (args.isStopCommand())
@@ -455,7 +541,7 @@ public class Main
             {
                 for (StartIni ini : config.getStartInis())
                 {
-                    ini.update(baseHome, args.getCoreEnvironment().getProperties());
+                    ini.update(baseHome, args.getJettyEnvironment().getProperties());
                 }
             }
         }
@@ -494,7 +580,7 @@ public class Main
             final Process process = pbuilder.start();
             Runtime.getRuntime().addShutdownHook(new Thread(() ->
             {
-                StartLog.debug("Destroying " + process);
+                StartLog.debug("Destroying %s", process);
                 process.destroy();
             }));
 
@@ -508,7 +594,11 @@ public class Main
 
         if (args.hasJvmArgs() || args.hasSystemProperties())
         {
-            StartLog.warn("System properties and/or JVM args set.  Consider using --dry-run or --exec");
+            StartLog.warn("Unknown Arguments detected.  Consider using --dry-run or --exec");
+            if (args.hasSystemProperties())
+                args.getSystemProperties().forEach((k, v) -> StartLog.warn("  Argument: -D%s=%s (interpreted as a System property, from %s)", k, System.getProperty(k), v));
+            if (args.hasJvmArgs())
+                args.getJvmArgSources().forEach((jvmArg, source) -> StartLog.warn("  Argument: %s (interpreted as a JVM argument, from %s)", jvmArg, source));
         }
 
         ClassLoader cl = classpath.getClassLoader();
@@ -534,7 +624,7 @@ public class Main
 
     private void doStop(StartArgs args)
     {
-        Props argsProps = args.getCoreEnvironment().getProperties();
+        Props argsProps = args.getJettyEnvironment().getProperties();
         final Prop stopHostProp = argsProps.getProp("STOP.HOST", true);
         final Prop stopPortProp = argsProps.getProp("STOP.PORT", true);
         final Prop stopKeyProp = argsProps.getProp("STOP.KEY", true);
@@ -686,7 +776,7 @@ public class Main
             }
             else
             {
-                StartLog.warn("Unable to find resource: " + resourceName);
+                StartLog.warn("Unable to find resource: %s", resourceName);
             }
         }
         catch (IOException e)

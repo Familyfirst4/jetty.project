@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,18 +14,19 @@
 package org.eclipse.jetty.ee10.demos;
 
 import java.io.FileNotFoundException;
-import java.net.URL;
 import java.util.Collections;
 
 import org.eclipse.jetty.ee10.servlet.ServletContextHandler;
 import org.eclipse.jetty.ee10.servlet.ServletHolder;
 import org.eclipse.jetty.ee10.servlet.security.ConstraintMapping;
 import org.eclipse.jetty.ee10.servlet.security.ConstraintSecurityHandler;
-import org.eclipse.jetty.ee10.servlet.security.HashLoginService;
-import org.eclipse.jetty.ee10.servlet.security.LoginService;
-import org.eclipse.jetty.ee10.servlet.security.authentication.BasicAuthenticator;
+import org.eclipse.jetty.security.Constraint;
+import org.eclipse.jetty.security.HashLoginService;
+import org.eclipse.jetty.security.LoginService;
+import org.eclipse.jetty.security.authentication.BasicAuthenticator;
 import org.eclipse.jetty.server.Server;
-import org.eclipse.jetty.util.security.Constraint;
+import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
 
 public class SecuredHelloHandler
 {
@@ -46,13 +47,11 @@ public class SecuredHelloHandler
         // In this example the name can be whatever you like since we are not
         // dealing with webapp realms.
         String realmResourceName = "etc/realm.properties";
-        ClassLoader classLoader = SecuredHelloHandler.class.getClassLoader();
-        URL realmProps = classLoader.getResource(realmResourceName);
-        if (realmProps == null)
+        Resource realmResource = ResourceFactory.of(server).newClassLoaderResource("etc/realm.properties", false);
+        if (realmResource == null)
             throw new FileNotFoundException("Unable to find " + realmResourceName);
 
-        LoginService loginService = new HashLoginService("MyRealm",
-            realmProps.toExternalForm());
+        LoginService loginService = new HashLoginService("MyRealm", realmResource);
         server.addBean(loginService);
         
         ServletContextHandler context = new ServletContextHandler();
@@ -70,10 +69,10 @@ public class SecuredHelloHandler
         // This constraint requires authentication and in addition that an
         // authenticated user be a member of a given set of roles for
         // authorization purposes.
-        Constraint constraint = new Constraint();
-        constraint.setName("auth");
-        constraint.setAuthenticate(true);
-        constraint.setRoles(new String[]{"user", "admin"});
+        Constraint constraint = new Constraint.Builder()
+            .name("auth")
+            .roles("user", "admin")
+            .build();
 
         // Binds a url pattern with the previously created constraint. The roles
         // for this constraint mapping are mined from the Constraint itself

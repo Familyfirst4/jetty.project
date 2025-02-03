@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -38,19 +38,22 @@ import org.eclipse.jetty.ee9.websocket.server.internal.DelegatedServerUpgradeRes
 import org.eclipse.jetty.ee9.websocket.server.internal.JettyServerFrameHandlerFactory;
 import org.eclipse.jetty.ee9.websocket.servlet.WebSocketUpgradeFilter;
 import org.eclipse.jetty.http.pathmap.PathSpec;
-import org.eclipse.jetty.util.Blocking;
+import org.eclipse.jetty.server.Request;
+import org.eclipse.jetty.server.Response;
+import org.eclipse.jetty.util.FutureCallback;
 import org.eclipse.jetty.util.component.ContainerLifeCycle;
 import org.eclipse.jetty.util.component.Dumpable;
 import org.eclipse.jetty.util.component.LifeCycle;
 import org.eclipse.jetty.websocket.core.Configuration;
 import org.eclipse.jetty.websocket.core.WebSocketComponents;
+import org.eclipse.jetty.websocket.core.WebSocketConstants;
 import org.eclipse.jetty.websocket.core.exception.WebSocketException;
-import org.eclipse.jetty.websocket.core.internal.util.ReflectUtils;
 import org.eclipse.jetty.websocket.core.server.Handshaker;
 import org.eclipse.jetty.websocket.core.server.WebSocketCreator;
 import org.eclipse.jetty.websocket.core.server.WebSocketMappings;
 import org.eclipse.jetty.websocket.core.server.WebSocketNegotiator;
 import org.eclipse.jetty.websocket.core.server.WebSocketServerComponents;
+import org.eclipse.jetty.websocket.core.util.ReflectUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -134,10 +137,10 @@ public class JettyWebSocketServerContainer extends ContainerLifeCycle implements
         this.components = components;
         this.executor = executor;
         this.frameHandlerFactory = new JettyServerFrameHandlerFactory(this, components);
-        addBean(frameHandlerFactory);
+        installBean(frameHandlerFactory);
 
         addSessionListener(sessionTracker);
-        addBean(sessionTracker);
+        installBean(sessionTracker);
     }
 
     public void addMapping(String pathSpec, JettyWebSocketCreator creator)
@@ -152,11 +155,14 @@ public class JettyWebSocketServerContainer extends ContainerLifeCycle implements
             try
             {
                 Object webSocket = creator.createWebSocket(new DelegatedServerUpgradeRequest(req), new DelegatedServerUpgradeResponse(resp));
-                cb.succeeded();
+                if (webSocket == null)
+                    cb.succeeded();
                 return webSocket;
             }
             catch (Throwable t)
             {
+                if (LOG.isDebugEnabled())
+                    LOG.debug("Could not create WebSocket endpoint", t);
                 cb.failed(t);
                 return null;
             }
@@ -184,10 +190,15 @@ public class JettyWebSocketServerContainer extends ContainerLifeCycle implements
 
     /**
      * An immediate programmatic WebSocket upgrade that does not register a mapping or create a {@link WebSocketUpgradeFilter}.
+     *
+     * <p>A return value of true means the connection was Upgraded to WebSocket or an error response is being generated.
+     * A return value of false means that it was a bad upgrade request and couldn't be upgraded to WebSocket and the
+     * caller is responsible for generating the response.</p>
+     *
      * @param creator the WebSocketCreator to use.
      * @param request the HttpServletRequest.
      * @param response the HttpServletResponse.
-     * @return true if the connection was successfully upgraded to WebSocket.
+     * @return true if the connection could be upgraded or an error was sent.
      * @throws IOException if an I/O error occurs.
      */
     public boolean upgrade(JettyWebSocketCreator creator, HttpServletRequest request, HttpServletResponse response) throws IOException
@@ -197,26 +208,46 @@ public class JettyWebSocketServerContainer extends ContainerLifeCycle implements
             try
             {
                 Object webSocket = creator.createWebSocket(new DelegatedServerUpgradeRequest(req), new DelegatedServerUpgradeResponse(resp));
-                cb.succeeded();
+                if (webSocket == null)
+                    cb.succeeded();
                 return webSocket;
             }
             catch (Throwable t)
             {
+                if (LOG.isDebugEnabled())
+                    LOG.debug("Could not create WebSocket endpoint", t);
                 cb.failed(t);
                 return null;
             }
         };
 
-        HttpChannel httpChannel = (HttpChannel)request.getAttribute(HttpChannel.class.getName());
-        WebSocketNegotiator negotiator = WebSocketNegotiator.from(coreCreator, frameHandlerFactory, customizer);
+        WebSocketNegotiator negotiator = WebSocketNegotiator.from(coreCreator, frameHandlerFactory);
         Handshaker handshaker = webSocketMappings.getHandshaker();
 
-        try (Blocking.Callback callback = Blocking.callback())
+        HttpChannel httpChannel = (HttpChannel)request.getAttribute(HttpChannel.class.getName());
+        Request baseRequest = httpChannel.getCoreRequest();
+        Response baseResponse = httpChannel.getCoreResponse();
+
+        FutureCallback callback = new FutureCallback();
+        try
         {
-            boolean upgraded = handshaker.upgradeRequest(negotiator, httpChannel.getCoreRequest(), httpChannel.getCoreResponse(), callback, components, null);
-            callback.block();
-            return upgraded;
+            // Set the wrapped req and resp as attachments on the ServletContext Request/Response, so they
+            // are accessible when websocket-core calls back the Jetty WebSocket creator.
+            baseRequest.setAttribute(WebSocketConstants.WEBSOCKET_WRAPPED_REQUEST_ATTRIBUTE, request);
+            baseRequest.setAttribute(WebSocketConstants.WEBSOCKET_WRAPPED_RESPONSE_ATTRIBUTE, response);
+
+            if (handshaker.upgradeRequest(negotiator, baseRequest, baseResponse, callback, components, customizer))
+            {
+                callback.block();
+                return true;
+            }
         }
+        finally
+        {
+            baseRequest.removeAttribute(WebSocketConstants.WEBSOCKET_WRAPPED_REQUEST_ATTRIBUTE);
+            baseRequest.removeAttribute(WebSocketConstants.WEBSOCKET_WRAPPED_RESPONSE_ATTRIBUTE);
+        }
+        return false;
     }
 
     @Override

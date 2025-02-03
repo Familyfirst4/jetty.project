@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -52,17 +52,18 @@ public class CachingSessionDataStore extends ContainerLifeCycle implements Sessi
 
     /**
      * @param cache the front cache to use
-     * @param store the actual store for the the session data
+     * @param store the actual store for the session data
      */
     public CachingSessionDataStore(SessionDataMap cache, SessionDataStore store)
     {
         _cache = cache;
-        addBean(_cache, true);
+        installBean(_cache, true);
         _store = store;
-        addBean(_store, true);
+        installBean(_store, true);
     }
 
     /**
+     * Get the delegate session store.
      * @return the delegate session store
      */
     public SessionDataStore getSessionStore()
@@ -71,6 +72,7 @@ public class CachingSessionDataStore extends ContainerLifeCycle implements Sessi
     }
 
     /**
+     * Get the fronting cache for session data.
      * @return the fronting cache for session data
      */
     public SessionDataMap getSessionDataMap()

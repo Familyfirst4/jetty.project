@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -17,12 +17,15 @@ import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.Method;
 import java.net.MalformedURLException;
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.stream.Stream;
 
 import org.eclipse.jetty.ee9.plus.webapp.EnvConfiguration;
 import org.eclipse.jetty.ee9.quickstart.QuickStartConfiguration;
@@ -34,10 +37,14 @@ import org.eclipse.jetty.ee9.webapp.Configuration;
 import org.eclipse.jetty.ee9.webapp.Configurations;
 import org.eclipse.jetty.ee9.webapp.MetaInfConfiguration;
 import org.eclipse.jetty.ee9.webapp.WebAppContext;
+import org.eclipse.jetty.maven.Overlay;
+import org.eclipse.jetty.util.FileID;
 import org.eclipse.jetty.util.StringUtil;
 import org.eclipse.jetty.util.URIUtil;
+import org.eclipse.jetty.util.resource.CombinedResource;
 import org.eclipse.jetty.util.resource.Resource;
-import org.eclipse.jetty.util.resource.ResourceCollection;
+import org.eclipse.jetty.util.resource.ResourceFactory;
+import org.eclipse.jetty.util.resource.Resources;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -69,7 +76,7 @@ public class MavenWebAppContext extends WebAppContext
 
     private final Map<String, File> _webInfJarMap = new HashMap<String, File>();
 
-    private List<File> _classpathFiles; // webInfClasses+testClasses+webInfJars
+    private List<URI> _classpathUris; // webInfClasses+testClasses+webInfJars
 
     private String _jettyEnvXml;
 
@@ -123,9 +130,9 @@ public class MavenWebAppContext extends WebAppContext
         _webInfIncludeJarPattern = pattern;
     }
 
-    public List<File> getClassPathFiles()
+    public List<URI> getClassPathUris()
     {
-        return this._classpathFiles;
+        return this._classpathUris;
     }
 
     public void setJettyEnvXml(String jettyEnvXml)
@@ -186,6 +193,7 @@ public class MavenWebAppContext extends WebAppContext
     }
 
     /**
+     * Get the originAttribute.
      * @return the originAttribute
      */
     public String getOriginAttribute()
@@ -214,21 +222,26 @@ public class MavenWebAppContext extends WebAppContext
      * configuration
      *
      * @param resourceBases Array of resources strings to set as a
-     * {@link ResourceCollection}. Each resource string may be a
-     * comma separated list of resources
+     * {@link CombinedResource}.
      */
     public void setResourceBases(String[] resourceBases)
     {
-        List<String> resources = new ArrayList<String>();
-        for (String rl : resourceBases)
+        try
         {
-            String[] rs = StringUtil.csvSplit(rl);
-            for (String r : rs)
-            {
-                resources.add(r);
-            }
+            // TODO: what happens if this is called more than once?
+
+            // This is a user provided list of configurations.
+            // We have to assume that mounting can happen.
+            List<Resource> resources = Stream.of(resourceBases)
+                .map(s -> ResourceFactory.of(this).newResource(s))
+                .toList();
+            Resource r = ResourceFactory.combine(resources);
+            setBaseResource(r);
         }
-        setBaseResource(new ResourceCollection(resources.toArray(new String[resources.size()])));
+        catch (Throwable t)
+        {
+            throw new IllegalArgumentException("Bad resourceBases: [" + String.join(", ", resourceBases) + "]", t);
+        }
     }
 
     public List<File> getWebInfLib()
@@ -267,15 +280,21 @@ public class MavenWebAppContext extends WebAppContext
 
         // Set up the classes dirs that comprises the equivalent of
         // WEB-INF/classes
-        if (_testClasses != null)
+        if (_testClasses != null && _testClasses.exists())
             _webInfClasses.add(_testClasses);
-        if (_classes != null)
+        if (_classes != null && _classes.exists())
             _webInfClasses.add(_classes);
 
         // Set up the classpath
-        _classpathFiles = new ArrayList<>();
-        _classpathFiles.addAll(_webInfClasses);
-        _classpathFiles.addAll(_webInfJars);
+        _classpathUris = new ArrayList<>();
+        _webInfClasses.forEach(f -> _classpathUris.add(f.toURI()));
+        _webInfJars.forEach(f ->
+        {
+            // ensure our JAR file references are `jar:file:...` URI references
+            URI jarFileUri = URIUtil.toJarFileUri(f.toURI());
+            // else use file uri as-is
+            _classpathUris.add(Objects.requireNonNullElseGet(jarFileUri, f::toURI));
+        });
 
         // Initialize map containing all jars in /WEB-INF/lib
         _webInfJarMap.clear();
@@ -283,7 +302,7 @@ public class MavenWebAppContext extends WebAppContext
         {
             // Return all jar files from class path
             String fileName = file.getName();
-            if (fileName.endsWith(".jar"))
+            if (FileID.isJavaArchive(fileName))
                 _webInfJarMap.put(fileName, file);
         }
 
@@ -300,18 +319,11 @@ public class MavenWebAppContext extends WebAppContext
         Configurations configurations = super.newConfigurations();
         if (getJettyEnvXml() != null)
         {
-            try
+            // inject configurations with config from maven plugin
+            for (Configuration c : configurations)
             {
-                // inject configurations with config from maven plugin
-                for (Configuration c : configurations)
-                {
-                    if (c instanceof EnvConfiguration)
-                        ((EnvConfiguration)c).setJettyEnvResource(Resource.newResource(getJettyEnvXml()));
-                }
-            }
-            catch (IOException e)
-            {
-                throw new RuntimeException(e);
+                if (c instanceof EnvConfiguration)
+                    ((EnvConfiguration)c).setJettyEnvResource(ResourceFactory.of(this).newResource(getJettyEnvXml()));
             }
         }
 
@@ -321,9 +333,9 @@ public class MavenWebAppContext extends WebAppContext
     @Override
     public void doStop() throws Exception
     {
-        if (_classpathFiles != null)
-            _classpathFiles.clear();
-        _classpathFiles = null;
+        if (_classpathUris != null)
+            _classpathUris.clear();
+        _classpathUris = null;
 
         _classes = null;
         _testClasses = null;
@@ -359,69 +371,58 @@ public class MavenWebAppContext extends WebAppContext
 
         // If no regular resource exists check for access to /WEB-INF/lib or
         // /WEB-INF/classes
-        if ((resource == null || !resource.exists()) && pathInContext != null && _classes != null)
+        if (resource == null && pathInContext != null && _classes != null)
         {
-            // Canonicalize again to look for the resource inside /WEB-INF subdirectories.
-            String uri = URIUtil.canonicalPath(pathInContext);
+            // Normalize again to look for the resource inside /WEB-INF subdirectories.
+            String uri = URIUtil.normalizePath(pathInContext);
             if (uri == null)
                 return null;
 
-            try
+            // Replace /WEB-INF/classes with candidates for the classpath
+            if (uri.startsWith(WEB_INF_CLASSES_PREFIX))
             {
-                // Replace /WEB-INF/classes with candidates for the classpath
-                if (uri.startsWith(WEB_INF_CLASSES_PREFIX))
+                if (uri.equalsIgnoreCase(WEB_INF_CLASSES_PREFIX) || uri.equalsIgnoreCase(WEB_INF_CLASSES_PREFIX + "/"))
                 {
-                    if (uri.equalsIgnoreCase(WEB_INF_CLASSES_PREFIX) || uri.equalsIgnoreCase(WEB_INF_CLASSES_PREFIX + "/"))
+                    // exact match for a WEB-INF/classes, so preferentially
+                    // return the resource matching the web-inf classes
+                    // rather than the test classes
+                    if (_classes != null)
+                        return ResourceFactory.of(this).newResource(_classes.toPath());
+                    else if (_testClasses != null)
+                        return ResourceFactory.of(this).newResource(_testClasses.toPath());
+                }
+                else
+                {
+                    // try matching
+                    Resource res = null;
+                    int i = 0;
+                    while (Resources.missing(res) && (i < _webInfClasses.size()))
                     {
-                        // exact match for a WEB-INF/classes, so preferentially
-                        // return the resource matching the web-inf classes
-                        // rather than the test classes
-                        if (_classes != null)
-                            return Resource.newResource(_classes);
-                        else if (_testClasses != null)
-                            return Resource.newResource(_testClasses);
-                    }
-                    else
-                    {
-                        // try matching
-                        Resource res = null;
-                        int i = 0;
-                        while (res == null && (i < _webInfClasses.size()))
+                        String newPath = StringUtil.replace(uri, WEB_INF_CLASSES_PREFIX, _webInfClasses.get(i).getPath());
+                        res = ResourceFactory.of(this).newResource(newPath);
+                        if (Resources.missing(res))
                         {
-                            String newPath = StringUtil.replace(uri, WEB_INF_CLASSES_PREFIX, _webInfClasses.get(i).getPath());
-                            res = Resource.newResource(newPath);
-                            if (!res.exists())
-                            {
-                                res = null;
-                                i++;
-                            }
+                            res = null;
+                            i++;
                         }
-                        return res;
                     }
+                    return res;
                 }
-                else if (uri.startsWith(WEB_INF_LIB_PREFIX))
-                {
-                    // Return the real jar file for all accesses to
-                    // /WEB-INF/lib/*.jar
-                    String jarName = StringUtil.strip(uri, WEB_INF_LIB_PREFIX);
-                    if (jarName.startsWith("/") || jarName.startsWith("\\"))
-                        jarName = jarName.substring(1);
-                    if (jarName.length() == 0)
-                        return null;
-                    File jarFile = _webInfJarMap.get(jarName);
-                    if (jarFile != null)
-                        return Resource.newResource(jarFile.getPath());
-
+            }
+            else if (uri.startsWith(WEB_INF_LIB_PREFIX))
+            {
+                // Return the real jar file for all accesses to
+                // /WEB-INF/lib/*.jar
+                String jarName = StringUtil.strip(uri, WEB_INF_LIB_PREFIX);
+                if (jarName.startsWith("/") || jarName.startsWith("\\"))
+                    jarName = jarName.substring(1);
+                if (jarName.length() == 0)
                     return null;
-                }
-            }
-            catch (MalformedURLException e)
-            {
-                throw e;
-            }
-            catch (IOException e)
-            {
-                LOG.trace("IGNORED", e);
+                File jarFile = _webInfJarMap.get(jarName);
+                if (jarFile != null)
+                    return ResourceFactory.of(this).newResource(jarFile.getPath());
+
+                return null;
             }
         }
         return resource;
@@ -503,4 +504,11 @@ public class MavenWebAppContext extends WebAppContext
             LOG.warn("Problem initializing cdi", e);
         }
     }
+
+    // need to be overridden to avoid Maven reflection issues with super class and override method
+    public void setExtraClasspath(String extraClasspath) throws IOException
+    {
+        super.setExtraClasspath(extraClasspath);
+    }
+
 }

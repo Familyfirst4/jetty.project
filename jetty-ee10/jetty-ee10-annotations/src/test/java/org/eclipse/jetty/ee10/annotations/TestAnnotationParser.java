@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -15,11 +15,12 @@ package org.eclipse.jetty.ee10.annotations;
 
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
@@ -30,24 +31,25 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.eclipse.jetty.toolchain.test.FS;
-import org.eclipse.jetty.toolchain.test.IO;
 import org.eclipse.jetty.toolchain.test.MavenTestingUtils;
 import org.eclipse.jetty.toolchain.test.jupiter.WorkDir;
 import org.eclipse.jetty.toolchain.test.jupiter.WorkDirExtension;
 import org.eclipse.jetty.util.TypeUtil;
-import org.eclipse.jetty.util.resource.PathResource;
 import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.contains;
+import static org.hamcrest.Matchers.containsInAnyOrder;
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.in;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @ExtendWith(WorkDirExtension.class)
 public class TestAnnotationParser
@@ -66,7 +68,7 @@ public class TestAnnotationParser
         @Override
         public void handle(AnnotationParser.ClassInfo info, String annotation)
         {
-            if (annotation == null || !annotationName.equals(annotation))
+            if (!annotationName.equals(annotation))
                 return;
             foundClasses.add(info.getClassName());
         }
@@ -74,7 +76,7 @@ public class TestAnnotationParser
 
     public static class DuplicateClassScanHandler extends AnnotationParser.AbstractHandler
     {
-        private Map<String, List<String>> _classMap = new ConcurrentHashMap();
+        private Map<String, List<String>> _classMap = new ConcurrentHashMap<>();
 
         @Override
         public void handle(AnnotationParser.ClassInfo info)
@@ -96,12 +98,12 @@ public class TestAnnotationParser
         }
     }
 
-    public WorkDir testdir;
-
     @Test
-    public void testSampleAnnotation() throws Exception
+    public void testSampleAnnotation(WorkDir workDir) throws Exception
     {
-        String[] classNames = new String[]{"org.eclipse.jetty.annotations.ClassA"};
+        Path root = workDir.getEmptyPathDir();
+        copyClass(ClassA.class, root);
+
         AnnotationParser parser = new AnnotationParser();
 
         class SampleAnnotationHandler extends AnnotationParser.AbstractHandler
@@ -111,16 +113,16 @@ public class TestAnnotationParser
             @Override
             public void handle(AnnotationParser.ClassInfo info, String annotation)
             {
-                if (annotation == null || !"org.eclipse.jetty.annotations.Sample".equals(annotation))
+                if (!Sample.class.getName().equals(annotation))
                     return;
 
-                assertEquals("org.eclipse.jetty.annotations.ClassA", info.getClassName());
+                assertEquals(ClassA.class.getName(), info.getClassName());
             }
 
             @Override
             public void handle(AnnotationParser.FieldInfo info, String annotation)
             {
-                if (annotation == null || !"org.eclipse.jetty.annotations.Sample".equals(annotation))
+                if (!Sample.class.getName().equals(annotation))
                     return;
                 assertEquals("m", info.getFieldName());
                 assertEquals(org.objectweb.asm.Type.OBJECT, org.objectweb.asm.Type.getType(info.getFieldType()).getSort());
@@ -129,25 +131,25 @@ public class TestAnnotationParser
             @Override
             public void handle(AnnotationParser.MethodInfo info, String annotation)
             {
-                if (annotation == null || !"org.eclipse.jetty.annotations.Sample".equals(annotation))
+                if (!Sample.class.getName().equals(annotation))
                     return;
-                assertEquals("org.eclipse.jetty.annotations.ClassA", info.getClassInfo().getClassName());
+                assertEquals(ClassA.class.getName(), info.getClassInfo().getClassName());
                 assertThat(info.getMethodName(), is(in(methods)));
-                assertEquals("org.eclipse.jetty.annotations.Sample", annotation);
+                assertEquals(Sample.class.getName(), annotation);
             }
         }
 
-        //long start = System.currentTimeMillis();
-        parser.parse(Collections.singleton(new SampleAnnotationHandler()), classNames);
-        //long end = System.currentTimeMillis();
-
-        //System.err.println("Time to parse class: " + ((end - start)));
+        try (ResourceFactory.Closeable resourceFactory = ResourceFactory.closeable())
+        {
+            parser.parse(Collections.singleton(new SampleAnnotationHandler()), resourceFactory.newResource(root));
+        }
     }
 
     @Test
-    public void testMultiAnnotation() throws Exception
+    public void testMultiAnnotation(WorkDir workDir) throws Exception
     {
-        String[] classNames = new String[]{"org.eclipse.jetty.annotations.ClassB"};
+        Path root = workDir.getEmptyPathDir();
+        copyClass(ClassB.class, root);
         AnnotationParser parser = new AnnotationParser();
 
         class MultiAnnotationHandler extends AnnotationParser.AbstractHandler
@@ -155,81 +157,109 @@ public class TestAnnotationParser
             @Override
             public void handle(AnnotationParser.ClassInfo info, String annotation)
             {
-                if (annotation == null || !"org.eclipse.jetty.annotations.Multi".equals(annotation))
+                if (!Multi.class.getName().equals(annotation))
                     return;
-                assertTrue("org.eclipse.jetty.annotations.ClassB".equals(info.getClassName()));
+                assertEquals(ClassB.class.getName(), info.getClassName());
             }
 
             @Override
             public void handle(AnnotationParser.FieldInfo info, String annotation)
             {
-                assertTrue(annotation == null || !"org.eclipse.jetty.annotations.Multi".equals(annotation),
-                    "There should not be any");
+                assertNotEquals(Multi.class.getName(), annotation, "There should not be any");
             }
 
             @Override
             public void handle(AnnotationParser.MethodInfo info, String annotation)
             {
-                if (annotation == null || !"org.eclipse.jetty.annotations.Multi".equals(annotation))
+                if (!Multi.class.getName().equals(annotation))
                     return;
-                assertTrue("org.eclipse.jetty.annotations.ClassB".equals(info.getClassInfo().getClassName()));
-                assertTrue("a".equals(info.getMethodName()));
+                assertEquals(ClassB.class.getName(), info.getClassInfo().getClassName());
+                assertEquals("a", info.getMethodName());
             }
         }
 
-        parser.parse(Collections.singleton(new MultiAnnotationHandler()), classNames);
+        try (ResourceFactory.Closeable resourceFactory = ResourceFactory.closeable())
+        {
+            parser.parse(Collections.singleton(new MultiAnnotationHandler()), resourceFactory.newResource(root));
+        }
     }
 
     @Test
     public void testHiddenFilesInJar() throws Exception
     {
-        File badClassesJar = MavenTestingUtils.getTestResourceFile("bad-classes.jar");
+        Path badClassesJar = MavenTestingUtils.getTestResourcePathFile("bad-classes.jar");
         AnnotationParser parser = new AnnotationParser();
         Set<AnnotationParser.Handler> emptySet = Collections.emptySet();
-        parser.parse(emptySet, badClassesJar.toURI());
-        // only the valid classes inside bad-classes.jar should be parsed. If any invalid classes are parsed and exception would be thrown here
+
+        try (ResourceFactory.Closeable resourceFactory = ResourceFactory.closeable())
+        {
+            parser.parse(emptySet, resourceFactory.newResource(badClassesJar));
+            // only the valid classes inside bad-classes.jar should be parsed. If any invalid classes are parsed and exception would be thrown here
+        }
     }
 
     @Test
     public void testModuleInfoClassInJar() throws Exception
     {
-        File badClassesJar = MavenTestingUtils.getTestResourceFile("jdk9/slf4j-api-1.8.0-alpha2.jar");
+        Path badClassesJar = MavenTestingUtils.getTestResourcePathFile("jdk9/slf4j-api-1.8.0-alpha2.jar");
         AnnotationParser parser = new AnnotationParser();
         Set<AnnotationParser.Handler> emptySet = Collections.emptySet();
-        parser.parse(emptySet, badClassesJar.toURI());
-        // Should throw no exceptions, and happily skip the module-info.class files
+
+        try (ResourceFactory.Closeable resourceFactory = ResourceFactory.closeable())
+        {
+            parser.parse(emptySet, resourceFactory.newResource(badClassesJar));
+            // Should throw no exceptions, and happily skip the module-info.class files
+        }
     }
 
     @Test
     public void testJep238MultiReleaseInJar() throws Exception
     {
-        File badClassesJar = MavenTestingUtils.getTestResourceFile("jdk9/log4j-api-2.9.0.jar");
+        Path badClassesJar = MavenTestingUtils.getTestResourcePathFile("jdk9/log4j-api-2.9.0.jar");
         AnnotationParser parser = new AnnotationParser();
-        Set<AnnotationParser.Handler> emptySet = Collections.emptySet();
-        parser.parse(emptySet, badClassesJar.toURI());
-        // Should throw no exceptions, and skip the META-INF/versions/9/* files
+        try (ResourceFactory.Closeable resourceFactory = ResourceFactory.closeable())
+        {
+            // Should throw no exceptions and work with the META-INF/versions without incident
+            parser.parse(Collections.emptySet(), resourceFactory.newResource(badClassesJar));
+
+            //check for a class that is only in versions 9
+            Map<String, URI> parsed = parser.getParsedClassNames();
+            URI processIdUtilURI = parsed.get("org.apache.logging.log4j.util.ProcessIdUtil");
+            assertNotNull(processIdUtilURI);
+            if (Runtime.version().feature() > 17)
+                assertThat(processIdUtilURI.toString(), containsString("META-INF/versions/9"));
+        }
     }
 
     @Test
     public void testJep238MultiReleaseInJarJDK10() throws Exception
     {
-        File jdk10Jar = MavenTestingUtils.getTestResourceFile("jdk10/multirelease-10.jar");
+        Path jdk10Jar = MavenTestingUtils.getTestResourcePathFile("jdk10/multirelease-10.jar");
         AnnotationParser parser = new AnnotationParser();
-        DuplicateClassScanHandler handler = new DuplicateClassScanHandler();
-        Set<AnnotationParser.Handler> handlers = Collections.singleton(handler);
-        parser.parse(handlers, new PathResource(jdk10Jar));
-        // Should throw no exceptions
+
+        try (ResourceFactory.Closeable resourceFactory = ResourceFactory.closeable())
+        {
+            // Should throw no exceptions
+            parser.parse(Collections.emptySet(), resourceFactory.newResource(jdk10Jar));
+
+            Map<String, URI> parsed = parser.getParsedClassNames();
+            assertEquals(3, parsed.size());           
+            assertThat(parsed.keySet(), containsInAnyOrder("hello.DetailedVer", "hello.Greetings", "hello.Hello"));
+            if (Runtime.version().feature() > 17)
+                assertThat(parsed.get("hello.Greetings").toString(), containsString("META-INF/versions/10"));
+        }
     }
 
     @Test
-    public void testBasedirExclusion() throws Exception
+    public void testBasedirExclusion(WorkDir workDir) throws Exception
     {
+        Path testdir = workDir.getEmptyPathDir();
         // Build up basedir, which itself has a path segment that violates java package and classnaming.
         // The basedir should have no effect on annotation scanning.
-        // Intentionally using a base director name that starts with a "."
+        // Intentionally using a base directory name that starts with a "."
         // This mimics what you see in jenkins, hudson, hadoop, solr, camel, and selenium for their 
         // installed and/or managed webapps
-        File basedir = testdir.getPathFile(".base/workspace/classes").toFile();
+        Path basedir = testdir.resolve(".base/workspace/classes");
         FS.ensureEmpty(basedir);
 
         // Copy in class that is known to have annotations.
@@ -242,7 +272,10 @@ public class TestAnnotationParser
         AnnotationParser parser = new AnnotationParser();
 
         // Parse
-        parser.parse(Collections.singleton(tracker), basedir.toURI());
+        try (ResourceFactory.Closeable resourceFactory = ResourceFactory.closeable())
+        {
+            parser.parse(Collections.singleton(tracker), resourceFactory.newResource(basedir));
+        }
 
         // Validate
         assertThat("Found Class", tracker.foundClasses, contains(ClassA.class.getName()));
@@ -251,48 +284,50 @@ public class TestAnnotationParser
     @Test
     public void testScanDuplicateClassesInJars() throws Exception
     {
-        Resource testJar = Resource.newResource(MavenTestingUtils.getTestResourceFile("tinytest.jar"));
-        Resource testJar2 = Resource.newResource(MavenTestingUtils.getTestResourceFile("tinytest_copy.jar"));
-        AnnotationParser parser = new AnnotationParser();
-        DuplicateClassScanHandler handler = new DuplicateClassScanHandler();
-        Set<AnnotationParser.Handler> handlers = Collections.singleton(handler);
-        parser.parse(handlers, testJar);
-        parser.parse(handlers, testJar2);
-        List<String> locations = handler.getParsedList("org.acme.ClassOne");
-        assertNotNull(locations);
-        assertEquals(2, locations.size());
-        assertTrue(!(locations.get(0).equals(locations.get(1))));
+        try (ResourceFactory.Closeable resourceFactory = ResourceFactory.closeable())
+        {
+            Resource testJar = resourceFactory.newResource(MavenTestingUtils.getTargetPath("test-classes/tinytest.jar"));
+            Resource testJar2 = resourceFactory.newResource(MavenTestingUtils.getTargetPath("test-classes/tinytest_copy.jar"));
+            AnnotationParser parser = new AnnotationParser();
+            DuplicateClassScanHandler handler = new DuplicateClassScanHandler();
+            Set<AnnotationParser.Handler> handlers = Collections.singleton(handler);
+            parser.parse(handlers, testJar);
+            parser.parse(handlers, testJar2);
+            List<String> locations = handler.getParsedList("org.acme.ClassOne");
+            assertNotNull(locations);
+            assertEquals(2, locations.size());
+            assertNotEquals(locations.get(0), locations.get(1));
+        }
     }
 
     @Test
     public void testScanDuplicateClasses() throws Exception
     {
-        Resource testJar = Resource.newResource(MavenTestingUtils.getTestResourceFile("tinytest.jar"));
-        File testClasses = new File(MavenTestingUtils.getTargetDir(), "test-classes");
-        AnnotationParser parser = new AnnotationParser();
-        DuplicateClassScanHandler handler = new DuplicateClassScanHandler();
-        Set<AnnotationParser.Handler> handlers = Collections.singleton(handler);
-        parser.parse(handlers, testJar);
-        parser.parse(handlers, Resource.newResource(testClasses));
-        List<String> locations = handler.getParsedList("org.acme.ClassOne");
-        assertNotNull(locations);
-        assertEquals(2, locations.size());
-        assertTrue(!(locations.get(0).equals(locations.get(1))));
+        try (ResourceFactory.Closeable resourceFactory = ResourceFactory.closeable())
+        {
+            Resource testJar = resourceFactory.newResource(MavenTestingUtils.getTargetFile("test-classes/tinytest.jar").toPath());
+            File testClasses = new File(MavenTestingUtils.getTargetDir(), "test-classes");
+            AnnotationParser parser = new AnnotationParser();
+            DuplicateClassScanHandler handler = new DuplicateClassScanHandler();
+            Set<AnnotationParser.Handler> handlers = Collections.singleton(handler);
+            parser.parse(handlers, testJar);
+            parser.parse(handlers, resourceFactory.newResource(testClasses.toPath()));
+            List<String> locations = handler.getParsedList("org.acme.ClassOne");
+            assertNotNull(locations);
+            assertEquals(2, locations.size());
+            assertNotEquals(locations.get(0), locations.get(1));
+        }
     }
 
-    private void copyClass(Class<?> clazz, File basedir) throws IOException
+    private void copyClass(Class<?> clazz, Path outputDir) throws IOException, URISyntaxException
     {
         String classRef = TypeUtil.toClassReference(clazz);
         URL url = this.getClass().getResource('/' + classRef);
         assertThat("URL for: " + classRef, url, notNullValue());
 
-        Path outputFile = basedir.toPath().resolve(classRef);
-        FS.ensureDirExists(outputFile.getParent());
-
-        try (InputStream in = url.openStream();
-             OutputStream out = Files.newOutputStream(outputFile))
-        {
-            IO.copy(in, out);
-        }
+        Path srcClass = Paths.get(url.toURI());
+        Path dest = outputDir.resolve(classRef);
+        FS.ensureDirExists(dest.getParent());
+        Files.copy(srcClass, dest);
     }
 }

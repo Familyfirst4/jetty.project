@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -17,7 +17,6 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 import org.eclipse.jetty.util.BufferUtil;
 import org.eclipse.jetty.util.FutureCallback;
@@ -29,9 +28,6 @@ import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
-import static org.hamcrest.Matchers.greaterThan;
-import static org.hamcrest.Matchers.instanceOf;
-import static org.hamcrest.Matchers.is;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -269,33 +265,6 @@ public class ByteArrayEndPointTest
 
         assertTrue(endp.isOpen());
         Thread.sleep(oneAndHalfIdleTimeout);
-        // Still open because it has not been oshut or closed explicitly
-        // and there are no callbacks, so idle timeout is ignored.
-        assertTrue(endp.isOpen());
-
-        // Normal read is immediate, since there is data to read.
-        ByteBuffer buffer = BufferUtil.allocate(1024);
-        FutureCallback fcb = new FutureCallback();
-        endp.fillInterested(fcb);
-        fcb.get(idleTimeout, TimeUnit.MILLISECONDS);
-        assertTrue(fcb.isDone());
-        assertEquals(4, endp.fill(buffer));
-        assertEquals("test", BufferUtil.toString(buffer));
-
-        // Wait for a read timeout.
-        long start = System.nanoTime();
-        fcb = new FutureCallback();
-        endp.fillInterested(fcb);
-        try
-        {
-            fcb.get();
-            fail("Expected ExecutionException");
-        }
-        catch (ExecutionException t)
-        {
-            assertThat(t.getCause(), instanceOf(TimeoutException.class));
-        }
-        assertThat(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start), greaterThan(halfIdleTimeout));
-        assertThat("Endpoint open", endp.isOpen(), is(true));
+        assertFalse(endp.isOpen());
     }
 }

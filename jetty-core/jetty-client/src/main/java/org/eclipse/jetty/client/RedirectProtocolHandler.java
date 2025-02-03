@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,16 +13,13 @@
 
 package org.eclipse.jetty.client;
 
-import org.eclipse.jetty.client.api.Request;
-import org.eclipse.jetty.client.api.Response;
-import org.eclipse.jetty.client.api.Result;
 import org.eclipse.jetty.http.HttpField;
 import org.eclipse.jetty.http.HttpHeader;
 
 /**
  * <p>A protocol handler that handles redirect status codes 301, 302, 303, 307 and 308.</p>
  */
-public class RedirectProtocolHandler extends Response.Listener.Adapter implements ProtocolHandler
+public class RedirectProtocolHandler implements ProtocolHandler, Response.Listener
 {
     public static final String NAME = "redirect";
 
@@ -55,8 +52,17 @@ public class RedirectProtocolHandler extends Response.Listener.Adapter implement
     public boolean onHeader(Response response, HttpField field)
     {
         // Avoid that the content is decoded, which could generate
-        // errors, since we are discarding the content anyway.
+        // errors, since we are discarding the response content anyway.
         return field.getHeader() != HttpHeader.CONTENT_ENCODING;
+    }
+
+    @Override
+    public void onSuccess(Response response)
+    {
+        // The request may still be sending content, stop it.
+        Request request = response.getRequest();
+        if (request.getBody() != null)
+            request.abort(new HttpRequestException("Aborting request after receiving a %d response".formatted(response.getStatus()), request));
     }
 
     @Override
@@ -64,7 +70,7 @@ public class RedirectProtocolHandler extends Response.Listener.Adapter implement
     {
         Request request = result.getRequest();
         Response response = result.getResponse();
-        if (result.isSucceeded())
+        if (result.getResponseFailure() == null)
             redirector.redirect(request, response, null);
         else
             redirector.fail(request, response, result.getFailure());

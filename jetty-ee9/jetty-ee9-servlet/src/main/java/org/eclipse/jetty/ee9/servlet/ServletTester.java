@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -203,11 +203,13 @@ public class ServletTester extends ContainerLifeCycle
         _context.setBaseResource(resource);
     }
 
+    @Deprecated
     public String getResourceBase()
     {
         return _context.getResourceBase();
     }
 
+    @Deprecated
     public void setResourceBase(String resourceBase)
     {
         _context.setResourceBase(resourceBase);
@@ -227,7 +229,7 @@ public class ServletTester extends ContainerLifeCycle
     {
         _context = new ServletContextHandler(_server, contextPath, options);
         _server.setConnectors(new Connector[]{_connector});
-        addBean(_server);
+        installBean(_server);
     }
 
     public ServletContextHandler getContext()

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -55,7 +55,7 @@ public class ExtraXmlDescriptorProcessor extends IterativeDescriptorProcessor
     public void start(WebAppContext context, Descriptor descriptor)
     {
         LOG.debug("process {}", descriptor);
-        _origin = (StringUtil.isBlank(_originAttribute) ? null : "  <!-- " + descriptor + " -->\n");
+        _origin = (StringUtil.isBlank(_originAttribute) ? null : "  <!-- " + descriptor.getURI() + " -->\n");
     }
 
     @Override

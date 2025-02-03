@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -30,10 +30,10 @@ import jakarta.servlet.ServletRequest;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.logging.StacklessLogging;
 import org.eclipse.jetty.server.Connector;
-import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.HttpChannel;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.RequestLog;
@@ -42,6 +42,7 @@ import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.server.handler.ContextHandlerCollection;
 import org.eclipse.jetty.server.handler.DefaultHandler;
+import org.eclipse.jetty.server.handler.EventsHandler;
 import org.eclipse.jetty.util.component.AbstractLifeCycle;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -293,20 +294,24 @@ public class ServletRequestLogTest
         server.setConnectors(new Connector[]{connector});
 
         // First the behavior as defined in etc/jetty.xml
-        // id="Handlers"
-        Handler.Collection handlers = new Handler.Collection();
         // id="Contexts"
         ContextHandlerCollection contexts = new ContextHandlerCollection();
         // id="DefaultHandler"
         DefaultHandler defaultHandler = new DefaultHandler();
 
-        handlers.setHandlers(contexts, defaultHandler);
-        server.setHandler(handlers);
-
         // Next the behavior as defined by etc/jetty-requestlog.xml
         // the id="RequestLog"
         CaptureLog captureLog = new CaptureLog();
         server.setRequestLog(captureLog);
+
+        server.setHandler(new EventsHandler(contexts)
+        {
+            @Override
+            protected void onComplete(Request request, int status, HttpFields headers, Throwable failure)
+            {
+                assertRequestLog(expectedLogEntry, captureLog);
+            }
+        });
 
         // Lastly, the behavior as defined by deployment of a webapp
         // Add the Servlet Context
@@ -324,15 +329,6 @@ public class ServletRequestLogTest
 
             Assertions.assertTimeoutPreemptively(ofSeconds(4), () ->
             {
-                app.addEventListener(new ServletChannel.Listener()
-                {
-                    @Override
-                    public void onComplete(Request request)
-                    {
-                        assertRequestLog(expectedLogEntry, captureLog);
-                    }
-                });
-                
                 String host = connector.getHost();
                 if (host == null)
                     host = "localhost";
@@ -376,14 +372,20 @@ public class ServletRequestLogTest
         ErrorHandler errorHandler = new ErrorHandler();
         server.addBean(errorHandler);
 
-        ContextHandlerCollection contexts = new ContextHandlerCollection();
-        DefaultHandler defaultHandler = new DefaultHandler();
-        server.setHandler(new Handler.Collection(contexts, defaultHandler));
-
-        // Next the behavior as defined by etc/jetty-requestlog.xml
+        // The behavior as defined by etc/jetty-requestlog.xml
         // the id="RequestLog"
         CaptureLog captureLog = new CaptureLog();
         server.setRequestLog(captureLog);
+
+        ContextHandlerCollection contexts = new ContextHandlerCollection();
+        server.setHandler(new EventsHandler(contexts)
+        {
+            @Override
+            protected void onComplete(Request request, int status, HttpFields headers, Throwable failure)
+            {
+                assertRequestLog(expectedLogEntry, captureLog);
+            }
+        });
 
         // Lastly, the behavior as defined by deployment of a webapp
         // Add the Servlet Context
@@ -401,15 +403,6 @@ public class ServletRequestLogTest
 
             Assertions.assertTimeoutPreemptively(ofSeconds(4), () ->
             {
-                app.addEventListener(new ServletChannel.Listener()
-                {
-                    @Override
-                    public void onComplete(Request request)
-                    {
-                        assertRequestLog(expectedLogEntry, captureLog);
-                    }
-                });
-                
                 String host = connector.getHost();
                 if (host == null)
                     host = "localhost";
@@ -450,13 +443,20 @@ public class ServletRequestLogTest
         connector.setPort(0);
         server.setConnectors(new Connector[]{connector});
 
-        ContextHandlerCollection contexts = new ContextHandlerCollection();
-        server.setHandler(new Handler.Collection(contexts, new DefaultHandler()));
-
-        // Next the behavior as defined by etc/jetty-requestlog.xml
+        // The behavior as defined by etc/jetty-requestlog.xml
         // the id="RequestLog"
         CaptureLog captureLog = new CaptureLog();
         server.setRequestLog(captureLog);
+
+        ContextHandlerCollection contexts = new ContextHandlerCollection();
+        server.setHandler(new EventsHandler(contexts)
+        {
+            @Override
+            protected void onComplete(Request request, int status, HttpFields headers, Throwable failure)
+            {
+                assertRequestLog(expectedLogEntry, captureLog);
+            }
+        });
 
         // Lastly, the behavior as defined by deployment of a webapp
         // Add the Servlet Context
@@ -472,7 +472,7 @@ public class ServletRequestLogTest
         // Add error page mapping
         ErrorPageErrorHandler errorMapper = new ErrorPageErrorHandler();
         errorMapper.addErrorPage(500, "/errorpage");
-        app.setErrorProcessor(errorMapper);
+        app.setErrorHandler(errorMapper);
 
         try (StacklessLogging scope = new StacklessLogging(HttpChannel.class))
         {
@@ -480,15 +480,6 @@ public class ServletRequestLogTest
 
             Assertions.assertTimeoutPreemptively(ofSeconds(4), () ->
             {
-                app.addEventListener(new ServletChannel.Listener()
-                {
-                    @Override
-                    public void onComplete(Request request)
-                    {
-                        assertRequestLog(expectedLogEntry, captureLog);
-                    }
-                });
-                
                 String host = connector.getHost();
                 if (host == null)
                     host = "localhost";
@@ -528,17 +519,22 @@ public class ServletRequestLogTest
         connector.setPort(0);
         server.setConnectors(new Connector[]{connector});
 
-        // First the behavior as defined in etc/jetty.xml (as is)
-        // id="Contexts"
-        ContextHandlerCollection contexts = new ContextHandlerCollection();
-        // id="DefaultHandler"
-        DefaultHandler defaultHandler = new DefaultHandler();
-        server.setHandler(new Handler.Collection(contexts, defaultHandler));
-
-        // Next the proposed behavioral change to etc/jetty-requestlog.xml
+        // The proposed behavioral change to etc/jetty-requestlog.xml
         // the id="RequestLog"
         CaptureLog captureLog = new CaptureLog();
         server.setRequestLog(captureLog);
+
+        // The behavior as defined in etc/jetty.xml (as is)
+        // id="Contexts"
+        ContextHandlerCollection contexts = new ContextHandlerCollection();
+        server.setHandler(new EventsHandler(contexts)
+        {
+            @Override
+            protected void onComplete(Request request, int status, HttpFields headers, Throwable failure)
+            {
+                assertRequestLog(expectedLogEntry, captureLog);
+            }
+        });
 
         // Lastly, the behavior as defined by deployment of a webapp
         // Add the Servlet Context
@@ -554,7 +550,7 @@ public class ServletRequestLogTest
         // Add error page mapping
         ErrorPageErrorHandler errorMapper = new ErrorPageErrorHandler();
         errorMapper.addErrorPage(500, "/errorpage");
-        app.setErrorProcessor(errorMapper);
+        app.setErrorHandler(errorMapper);
 
         try
         {
@@ -562,15 +558,6 @@ public class ServletRequestLogTest
 
             Assertions.assertTimeoutPreemptively(ofSeconds(4), () ->
             {
-                app.addEventListener(new ServletChannel.Listener()
-                {
-                    @Override
-                    public void onComplete(Request request)
-                    {
-                        assertRequestLog(expectedLogEntry, captureLog);
-                    }
-                });
-
                 String host = connector.getHost();
                 if (host == null)
                     host = "localhost";

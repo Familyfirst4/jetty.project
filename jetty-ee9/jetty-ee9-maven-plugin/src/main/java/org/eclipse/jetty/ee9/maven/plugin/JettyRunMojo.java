@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -28,6 +28,7 @@ import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.plugins.annotations.ResolutionScope;
 import org.eclipse.jetty.ee9.webapp.WebAppContext;
+import org.eclipse.jetty.maven.ConsoleReader;
 import org.eclipse.jetty.util.IncludeExcludeSet;
 import org.eclipse.jetty.util.Scanner;
 import org.eclipse.jetty.util.component.LifeCycle;
@@ -111,7 +112,13 @@ public class JettyRunMojo extends AbstractUnassembledWebAppMojo
         {
             forker = newJettyForker();
             forker.setWaitForChild(true); //we run at the command line, echo child output and wait for it
-            forker.setScan(true); //have the forked child notice changes to the webapp
+            //if we can do hot redeploy, tell the forked process to watch for changes to the generated webapp file
+            if (scan >= 0)
+            {
+                forker.setScan(true);
+                forker.setScanInterval((scan == 0 ? 1 : scan)); //if redeploying on ENTER key, the forked process still needs to watch the generated webapp file
+            }
+
             //TODO is it ok to start the scanner before we start jetty?
             startScanner();
             forker.start(); //forks jetty instance 
@@ -219,8 +226,8 @@ public class JettyRunMojo extends AbstractUnassembledWebAppMojo
     {
         if (webApp.getDescriptor() != null)
         {
-            Resource r = Resource.newResource(webApp.getDescriptor());
-            scanner.addFile(r.getFile().toPath());
+            Resource r = webApp.getResourceFactory().newResource(webApp.getDescriptor());
+            scanner.addFile(r.getPath());
         }
 
         if (webApp.getJettyEnvXml() != null)
@@ -321,7 +328,7 @@ public class JettyRunMojo extends AbstractUnassembledWebAppMojo
      * be reconfigured after changes to the pom. If false, only
      * the webapp will be reconfigured.
      *
-     * @throws Exception
+     * @throws Exception if there is an unspecified problem
      */
     public void restartWebApp(boolean reconfigure) throws Exception
     {
@@ -350,7 +357,7 @@ public class JettyRunMojo extends AbstractUnassembledWebAppMojo
                     }
                 }
 
-                embedder.getWebApp().stop();
+                embedder.stopWebApp();
                 configureWebApp();
                 embedder.redeployWebApp();
                 if (scanner != null)

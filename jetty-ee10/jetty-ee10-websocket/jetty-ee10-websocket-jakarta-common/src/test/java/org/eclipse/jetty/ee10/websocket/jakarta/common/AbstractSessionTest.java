@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -22,20 +22,20 @@ import jakarta.websocket.Session;
 import org.eclipse.jetty.io.ByteBufferPool;
 import org.eclipse.jetty.websocket.core.CoreSession;
 import org.eclipse.jetty.websocket.core.WebSocketComponents;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public abstract class AbstractSessionTest
 {
-    protected static JakartaWebSocketSession session;
-    protected static JakartaWebSocketContainer container = new DummyContainer();
-    protected static WebSocketComponents components = new WebSocketComponents();
-    protected static TestCoreSession coreSession = new TestCoreSession();
+    protected JakartaWebSocketContainer container = new DummyContainer();
+    protected WebSocketComponents components = new WebSocketComponents();
+    protected TestCoreSession coreSession = new TestCoreSession(components);
+    protected JakartaWebSocketSession session;
 
-    @BeforeAll
-    public static void initSession() throws Exception
+    @BeforeEach
+    public void initSession() throws Exception
     {
         container.start();
         components.start();
@@ -46,8 +46,8 @@ public abstract class AbstractSessionTest
             .newDefaultEndpointConfig(websocketPojo.getClass()));
     }
 
-    @AfterAll
-    public static void stopContainer() throws Exception
+    @AfterEach
+    public void stopContainer() throws Exception
     {
         components.stop();
         container.stop();
@@ -56,6 +56,12 @@ public abstract class AbstractSessionTest
     public static class TestCoreSession extends CoreSession.Empty
     {
         private final Semaphore demand = new Semaphore(0);
+        private final WebSocketComponents components;
+
+        public TestCoreSession(WebSocketComponents components)
+        {
+            this.components = components;
+        }
 
         @Override
         public WebSocketComponents getWebSocketComponents()
@@ -66,7 +72,7 @@ public abstract class AbstractSessionTest
         @Override
         public ByteBufferPool getByteBufferPool()
         {
-            return components.getBufferPool();
+            return components.getByteBufferPool();
         }
 
         public void waitForDemand(long timeout, TimeUnit timeUnit) throws InterruptedException
@@ -75,7 +81,7 @@ public abstract class AbstractSessionTest
         }
 
         @Override
-        public void demand(long n)
+        public void demand()
         {
             demand.release();
         }

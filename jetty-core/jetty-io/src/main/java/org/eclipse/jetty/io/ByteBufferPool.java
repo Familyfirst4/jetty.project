@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -16,110 +16,218 @@ package org.eclipse.jetty.io;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 import org.eclipse.jetty.util.BufferUtil;
 
 /**
- * <p>A {@link ByteBuffer} pool.</p>
- * <p>Acquired buffers may be {@link #release(ByteBuffer) released} but they do not need to;
- * if they are released, they may be recycled and reused, otherwise they will be garbage
- * collected as usual.</p>
+ * <p>A pool for {@link RetainableByteBuffer} instances.</p>
+ * <p>{@link RetainableByteBuffer} that are {@link #acquire(int, boolean) acquired}
+ * <b>must</b> be released by calling {@link RetainableByteBuffer#release()}
+ * otherwise the memory they hold will be leaked.</p>
+ *
+ * <p><b>API NOTE</b></p>
+ * <p>This interface does not have a symmetric {@code release(RetainableByteBuffer)}
+ * method, because it will be confusing to use due to the fact that the acquired instance
+ * <em>is-a</em> {@link Retainable}.</p>
+ * <p>Imagine this (hypothetical) code sequence:</p>
+ * <pre>{@code
+ * RetainableByteBuffer buffer = pool.acquire(size, direct);
+ * buffer.retain();
+ * pool.release(buffer);
+ * }</pre>
+ * <p>The hypothetical call to {@code release(RetainableByteBuffer)} would appear to
+ * release the buffer to the pool, but in fact the buffer is retained one more time
+ * (and therefore still in use) and not really released to the pool.
+ * For this reason there is no {@code release(RetainableByteBuffer)} method.</p>
+ * <p>Therefore, in order to track acquire/release counts both the pool and the
+ * buffer returned by {@link #acquire(int, boolean)} must be wrapped, see
+ * {@link RetainableByteBuffer.Wrapper}</p>
  */
 public interface ByteBufferPool
 {
-    /**
-     * <p>Requests a {@link ByteBuffer} of the given size.</p>
-     * <p>The returned buffer may have a bigger capacity than the size being
-     * requested but it will have the limit set to the given size.</p>
-     *
-     * @param size the size of the buffer
-     * @param direct whether the buffer must be direct or not
-     * @return the requested buffer
-     * @see #release(ByteBuffer)
-     */
-    ByteBuffer acquire(int size, boolean direct);
+    ByteBufferPool NON_POOLING = new NonPooling();
+    ByteBufferPool.Sized SIZED_NON_POOLING = new Sized(ByteBufferPool.NON_POOLING);
 
     /**
-     * <p>Returns a {@link ByteBuffer}, usually obtained with {@link #acquire(int, boolean)}
-     * (but not necessarily), making it available for recycling and reuse.</p>
+     * <p>Acquires a {@link RetainableByteBuffer} from this pool.</p>
      *
-     * @param buffer the buffer to return
-     * @see #acquire(int, boolean)
+     * @param size The size of the buffer. The returned buffer will have at least this capacity.
+     * @param direct true if a direct memory buffer is needed, false otherwise.
+     * @return a {@link RetainableByteBuffer} with position and limit set to 0.
      */
-    void release(ByteBuffer buffer);
+    RetainableByteBuffer acquire(int size, boolean direct);
 
     /**
-     * <p>Removes a {@link ByteBuffer} that was previously obtained with {@link #acquire(int, boolean)}.</p>
-     * <p>The buffer will not be available for further reuse.</p>
-     *
-     * @param buffer the buffer to remove
-     * @see #acquire(int, boolean)
-     * @see #release(ByteBuffer)
+     * {@link RetainableByteBuffer#release() Release} the buffer in a way that will remove it from any pool that it may be in.
+     * If the buffer is not in a pool, calling this method is equivalent to calling {@link RetainableByteBuffer#release()}.
+     * Calling this method satisfies any contract that requires a call to {@link RetainableByteBuffer#release()}.
+     * @return {@code true} if a call to {@link RetainableByteBuffer#release()} would have returned {@code true}.
+     * @see RetainableByteBuffer#release()
+     * @deprecated This API is experimental and may be removed in future releases
      */
-    default void remove(ByteBuffer buffer)
+    @Deprecated
+    default boolean removeAndRelease(RetainableByteBuffer buffer)
     {
+        return buffer != null && buffer.release();
     }
 
     /**
-     * <p>Creates a new ByteBuffer of the given capacity and the given directness.</p>
-     *
-     * @param capacity the ByteBuffer capacity
-     * @param direct the ByteBuffer directness
-     * @return a newly allocated ByteBuffer
+     * <p>Removes all {@link RetainableByteBuffer#isRetained() non-retained}
+     * pooled instances from this pool.</p>
      */
-    default ByteBuffer newByteBuffer(int capacity, boolean direct)
+    void clear();
+
+    /**
+     * <p>A wrapper for {@link ByteBufferPool} instances.</p>
+     */
+    class Wrapper implements ByteBufferPool
     {
-        return direct ? BufferUtil.allocateDirect(capacity) : BufferUtil.allocate(capacity);
+        private final ByteBufferPool wrapped;
+
+        public Wrapper(ByteBufferPool wrapped)
+        {
+            this.wrapped = wrapped;
+        }
+
+        public ByteBufferPool getWrapped()
+        {
+            return wrapped;
+        }
+
+        @Override
+        public RetainableByteBuffer acquire(int size, boolean direct)
+        {
+            return getWrapped().acquire(size, direct);
+        }
+
+        @Override
+        public void clear()
+        {
+            getWrapped().clear();
+        }
     }
 
     /**
-     * Get this pool as a {@link RetainableByteBufferPool}, which supports reference counting of the
-     * buffers and possibly a more efficient lookup mechanism based on the {@link org.eclipse.jetty.util.Pool} class.
-     * @return This pool as a RetainableByteBufferPool.  The same instance is always returned by multiple calls to this method.
+     * A ByteBufferPool with an additional no-args {@link #acquire()} method to obtain a buffer of a
+     * preconfigured specific size and type.
      */
-    RetainableByteBufferPool asRetainableByteBufferPool();
-
-    class Lease
+    class Sized extends Wrapper
     {
-        private final ByteBufferPool byteBufferPool;
-        private final List<ByteBuffer> buffers;
-        private final List<Boolean> recycles;
+        private final boolean _direct;
+        private final int _size;
 
-        public Lease(ByteBufferPool byteBufferPool)
+        /**
+         * Create a sized pool for non direct buffers of a default size from a wrapped pool.
+         * @param wrapped The actual {@link ByteBufferPool}
+         */
+        public Sized(ByteBufferPool wrapped)
         {
-            this.byteBufferPool = byteBufferPool;
-            this.buffers = new ArrayList<>();
-            this.recycles = new ArrayList<>();
+            this(wrapped, false, -1);
         }
 
-        public ByteBuffer acquire(int capacity, boolean direct)
+        /**
+         * Create a sized pool for a give directness and size from a wrapped pool.
+         * @param wrapped The actual {@link ByteBufferPool}
+         * @param direct {@code true} for direct buffers.
+         * @param size The specified size in bytes of the buffer, or -1 for a default
+         */
+        public Sized(ByteBufferPool wrapped, boolean direct, int size)
         {
-            ByteBuffer buffer = byteBufferPool.acquire(capacity, direct);
-            BufferUtil.clearToFill(buffer);
-            return buffer;
+            super(Objects.requireNonNullElse(wrapped, NON_POOLING));
+            _direct = direct;
+            _size = size > 0 ? size : 4096;
         }
 
-        public void append(ByteBuffer buffer, boolean recycle)
+        public boolean isDirect()
+        {
+            return _direct;
+        }
+
+        public int getSize()
+        {
+            return _size;
+        }
+
+        /**
+         * @return A {@link RetainableByteBuffer} suitable for the specified preconfigured size and type.
+         */
+        public RetainableByteBuffer acquire()
+        {
+            return getWrapped().acquire(_size, _direct);
+        }
+    }
+
+    /**
+     * <p>A {@link ByteBufferPool} that does not pool its
+     * {@link RetainableByteBuffer}s.</p>
+     * <p>The returned {@code RetainableByteBuffer}s are reference
+     * counted.</p>
+     * <p>{@code RetainableByteBuffer}s returned by this class
+     * are suitable to be wrapped in other {@link Retainable}
+     * implementations that may delegate calls to
+     * {@link Retainable#retain()}.</p>
+     *
+     * @see RetainableByteBuffer#wrap(ByteBuffer)
+     */
+    class NonPooling implements ByteBufferPool
+    {
+        @Override
+        public RetainableByteBuffer acquire(int size, boolean direct)
+        {
+            return new Buffer(BufferUtil.allocate(size, direct));
+        }
+
+        @Override
+        public void clear()
+        {
+        }
+
+        private static class Buffer extends AbstractRetainableByteBuffer
+        {
+            private Buffer(ByteBuffer byteBuffer)
+            {
+                super(byteBuffer);
+                acquire();
+            }
+        }
+    }
+
+    /**
+     * <p>Accumulates a sequence of {@link RetainableByteBuffer} that
+     * are typically created during the generation of protocol bytes.</p>
+     * <p>{@code RetainableByteBuffer}s can be either
+     * {@link #append(RetainableByteBuffer) appended} to the sequence,
+     * or {@link #insert(int, RetainableByteBuffer) inserted} at a
+     * specific position in the sequence, and then
+     * {@link #release() released} when they are consumed.</p>
+     */
+    class Accumulator
+    {
+        private final List<RetainableByteBuffer> buffers = new ArrayList<>();
+        private final List<ByteBuffer> byteBuffers = new ArrayList<>();
+
+        public void append(RetainableByteBuffer buffer)
         {
             buffers.add(buffer);
-            recycles.add(recycle);
+            byteBuffers.add(buffer.getByteBuffer());
         }
 
-        public void insert(int index, ByteBuffer buffer, boolean recycle)
+        public void insert(int index, RetainableByteBuffer buffer)
         {
             buffers.add(index, buffer);
-            recycles.add(index, recycle);
+            byteBuffers.add(index, buffer.getByteBuffer());
         }
 
         public List<ByteBuffer> getByteBuffers()
         {
-            return buffers;
+            return byteBuffers;
         }
 
         public long getTotalLength()
         {
             long length = 0;
-            for (ByteBuffer buffer : buffers)
+            for (ByteBuffer buffer : byteBuffers)
             {
                 length += buffer.remaining();
             }
@@ -128,24 +236,14 @@ public interface ByteBufferPool
 
         public int getSize()
         {
-            return buffers.size();
+            return byteBuffers.size();
         }
 
-        public void recycle()
+        public void release()
         {
-            for (int i = 0; i < buffers.size(); ++i)
-            {
-                ByteBuffer buffer = buffers.get(i);
-                if (recycles.get(i))
-                    release(buffer);
-            }
+            buffers.forEach(RetainableByteBuffer::release);
             buffers.clear();
-            recycles.clear();
-        }
-
-        public void release(ByteBuffer buffer)
-        {
-            byteBufferPool.release(buffer);
+            byteBuffers.clear();
         }
     }
 }

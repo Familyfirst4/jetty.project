@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,25 +14,30 @@
 package org.eclipse.jetty.http2.tests;
 
 import java.nio.ByteBuffer;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-import org.eclipse.jetty.client.HttpRequest;
-import org.eclipse.jetty.client.api.ContentResponse;
-import org.eclipse.jetty.client.api.Result;
-import org.eclipse.jetty.client.util.BufferingResponseListener;
+import org.eclipse.jetty.client.BufferingResponseListener;
+import org.eclipse.jetty.client.ContentResponse;
+import org.eclipse.jetty.client.Result;
 import org.eclipse.jetty.http.HttpFields;
+import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpMethod;
 import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.http.HttpURI;
 import org.eclipse.jetty.http.HttpVersion;
 import org.eclipse.jetty.http.MetaData;
+import org.eclipse.jetty.http2.api.Session;
 import org.eclipse.jetty.http2.api.Stream;
 import org.eclipse.jetty.http2.api.server.ServerSessionListener;
 import org.eclipse.jetty.http2.frames.HeadersFrame;
 import org.eclipse.jetty.http2.frames.PushPromiseFrame;
 import org.eclipse.jetty.http2.frames.ResetFrame;
+import org.eclipse.jetty.http2.frames.SettingsFrame;
+import org.eclipse.jetty.io.Content;
 import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.Response;
@@ -42,6 +47,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class PushedResourcesTest extends AbstractTest
@@ -51,7 +57,7 @@ public class PushedResourcesTest extends AbstractTest
     {
         String pushPath = "/secondary";
         CountDownLatch latch = new CountDownLatch(1);
-        start(new ServerSessionListener.Adapter()
+        start(new ServerSessionListener()
         {
             @Override
             public Stream.Listener onNewStream(Stream stream, HeadersFrame frame)
@@ -64,24 +70,24 @@ public class PushedResourcesTest extends AbstractTest
                     public void succeeded(Stream pushStream)
                     {
                         // Just send the normal response and wait for the reset.
-                        MetaData.Response response = new MetaData.Response(HttpVersion.HTTP_2, HttpStatus.OK_200, HttpFields.EMPTY);
+                        MetaData.Response response = new MetaData.Response(HttpStatus.OK_200, null, HttpVersion.HTTP_2, HttpFields.EMPTY);
                         stream.headers(new HeadersFrame(stream.getId(), response, null, true), Callback.NOOP);
                     }
-                }, new Stream.Listener.Adapter()
+                }, new Stream.Listener()
                 {
                     @Override
-                    public void onReset(Stream stream, ResetFrame frame)
+                    public void onReset(Stream stream, ResetFrame frame, Callback callback)
                     {
                         latch.countDown();
+                        callback.succeeded();
                     }
                 });
                 return null;
             }
         });
 
-        HttpRequest request = (HttpRequest)httpClient.newRequest("localhost", connector.getLocalPort());
-        ContentResponse response = request
-            .pushListener((mainRequest, pushedRequest) -> null)
+        ContentResponse response = httpClient.newRequest("localhost", connector.getLocalPort())
+            .onPush((mainRequest, pushedRequest) -> null)
             .timeout(5, TimeUnit.SECONDS)
             .send();
 
@@ -102,12 +108,12 @@ public class PushedResourcesTest extends AbstractTest
 
         String path1 = "/secondary1";
         String path2 = "/secondary2";
-        start(new Handler.Processor()
+        start(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
-                String target = request.getPathInContext();
+                String target = Request.getPathInContext(request);
                 if (target.equals(path1))
                 {
                     response.write(true, ByteBuffer.wrap(pushBytes1), callback);
@@ -118,20 +124,20 @@ public class PushedResourcesTest extends AbstractTest
                 }
                 else
                 {
-                    MetaData.Request push1 = new MetaData.Request(null, HttpURI.build(request.getHttpURI()).path(path1), HttpVersion.HTTP_2, HttpFields.EMPTY);
+                    MetaData.Request push1 = new MetaData.Request("GET", HttpURI.build(request.getHttpURI()).path(path1), HttpVersion.HTTP_2, HttpFields.EMPTY);
                     request.push(push1);
-                    MetaData.Request push2 = new MetaData.Request(null, HttpURI.build(request.getHttpURI()).path(path2), HttpVersion.HTTP_2, HttpFields.EMPTY);
+                    MetaData.Request push2 = new MetaData.Request("GET", HttpURI.build(request.getHttpURI()).path(path2), HttpVersion.HTTP_2, HttpFields.EMPTY);
                     request.push(push2);
                     response.write(true, ByteBuffer.wrap(bytes), callback);
                 }
+                return true;
             }
         });
 
         CountDownLatch latch1 = new CountDownLatch(1);
         CountDownLatch latch2 = new CountDownLatch(1);
-        HttpRequest request = (HttpRequest)httpClient.newRequest("localhost", connector.getLocalPort());
-        ContentResponse response = request
-            .pushListener((mainRequest, pushedRequest) -> new BufferingResponseListener()
+        ContentResponse response = httpClient.newRequest("localhost", connector.getLocalPort())
+            .onPush((mainRequest, pushedRequest) -> new BufferingResponseListener()
             {
                 @Override
                 public void onComplete(Result result)
@@ -167,12 +173,12 @@ public class PushedResourcesTest extends AbstractTest
 
         String oldPath = "/old";
         String newPath = "/new";
-        start(new Handler.Processor()
+        start(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
-                String target = request.getPathInContext();
+                String target = Request.getPathInContext(request);
                 if (target.equals(oldPath))
                 {
                     Response.sendRedirect(request, response, callback, newPath);
@@ -183,16 +189,16 @@ public class PushedResourcesTest extends AbstractTest
                 }
                 else
                 {
-                    request.push(new MetaData.Request(null, HttpURI.build(request.getHttpURI()).path(oldPath), HttpVersion.HTTP_2, HttpFields.EMPTY));
+                    request.push(new MetaData.Request("GET", HttpURI.build(request.getHttpURI()).path(oldPath), HttpVersion.HTTP_2, HttpFields.EMPTY));
                     callback.succeeded();
                 }
+                return true;
             }
         });
 
         CountDownLatch latch = new CountDownLatch(1);
-        HttpRequest request = (HttpRequest)httpClient.newRequest("localhost", connector.getLocalPort());
-        ContentResponse response = request
-            .pushListener((mainRequest, pushedRequest) -> new BufferingResponseListener()
+        ContentResponse response = httpClient.newRequest("localhost", connector.getLocalPort())
+            .onPush((mainRequest, pushedRequest) -> new BufferingResponseListener()
             {
                 @Override
                 public void onComplete(Result result)
@@ -209,5 +215,120 @@ public class PushedResourcesTest extends AbstractTest
 
         assertEquals(HttpStatus.OK_200, response.getStatus());
         assertTrue(latch.await(5, TimeUnit.SECONDS));
+    }
+
+    @Test
+    public void testPushDisabled() throws Exception
+    {
+        String primaryResource = "/primary.html";
+        String secondaryResource = "/secondary.png";
+        String secondaryData = "SECONDARY";
+        start(new Handler.Abstract()
+        {
+            @Override
+            public boolean handle(Request request, Response response, Callback callback)
+            {
+                String requestURI = Request.getPathInContext(request);
+                if (requestURI.endsWith(primaryResource))
+                {
+                    assertFalse(request.getConnectionMetaData().isPushSupported());
+                    Content.Sink.write(response, true, "<html><head></head><body>PRIMARY</body></html>", callback);
+                }
+                else if (requestURI.endsWith(secondaryResource))
+                {
+                    Content.Sink.write(response, true, secondaryData, callback);
+                }
+                else
+                {
+                    callback.succeeded();
+                }
+                return true;
+            }
+        });
+
+        Session session = newClientSession(new Session.Listener()
+        {
+            @Override
+            public Map<Integer, Integer> onPreface(Session session)
+            {
+                Map<Integer, Integer> settings = new HashMap<>();
+                settings.put(SettingsFrame.ENABLE_PUSH, 0);
+                return settings;
+            }
+        });
+
+        // Request for the primary and secondary resource to build the cache.
+        HttpFields.Mutable primaryFields = HttpFields.build();
+        MetaData.Request primaryRequest = newRequest("GET", primaryResource, primaryFields);
+        String referrerURI = primaryRequest.getHttpURI().toString();
+        CountDownLatch warmupLatch = new CountDownLatch(1);
+        session.newStream(new HeadersFrame(primaryRequest, null, true), new Stream.Listener()
+        {
+            @Override
+            public void onDataAvailable(Stream stream)
+            {
+                Stream.Data data = stream.readData();
+                if (data == null)
+                {
+                    stream.demand();
+                    return;
+                }
+                data.release();
+                if (data.frame().isEndStream())
+                {
+                    // Request for the secondary resource.
+                    HttpFields.Mutable secondaryFields = HttpFields.build();
+                    secondaryFields.put(HttpHeader.REFERER, referrerURI);
+                    MetaData.Request secondaryRequest = newRequest("GET", secondaryResource, secondaryFields);
+                    session.newStream(new HeadersFrame(secondaryRequest, null, true), new Stream.Listener()
+                    {
+                        @Override
+                        public void onDataAvailable(Stream stream)
+                        {
+                            Stream.Data data = stream.readData();
+                            if (data == null)
+                            {
+                                stream.demand();
+                                return;
+                            }
+                            data.release();
+                            if (data.frame().isEndStream())
+                                warmupLatch.countDown();
+                        }
+                    });
+                }
+            }
+        });
+        assertTrue(warmupLatch.await(5, TimeUnit.SECONDS));
+
+        // Request again the primary resource, we should not get the secondary resource pushed.
+        primaryRequest = newRequest("GET", primaryResource, primaryFields);
+        CountDownLatch primaryResponseLatch = new CountDownLatch(1);
+        CountDownLatch pushLatch = new CountDownLatch(1);
+        session.newStream(new HeadersFrame(primaryRequest, null, true), new Promise.Adapter<>(), new Stream.Listener()
+        {
+            @Override
+            public Stream.Listener onPush(Stream stream, PushPromiseFrame frame)
+            {
+                pushLatch.countDown();
+                return null;
+            }
+
+            @Override
+            public void onDataAvailable(Stream stream)
+            {
+                Stream.Data data = stream.readData();
+                if (data == null)
+                {
+                    stream.demand();
+                    return;
+                }
+                data.release();
+                if (data.frame().isEndStream())
+                    primaryResponseLatch.countDown();
+            }
+        });
+        assertTrue(primaryResponseLatch.await(5, TimeUnit.SECONDS));
+        assertFalse(pushLatch.await(1, TimeUnit.SECONDS));
     }
 }

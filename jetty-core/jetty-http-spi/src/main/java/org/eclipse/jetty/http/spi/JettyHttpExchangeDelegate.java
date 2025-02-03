@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -19,6 +19,7 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.net.URI;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 
@@ -27,6 +28,8 @@ import com.sun.net.httpserver.HttpContext;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpPrincipal;
 import org.eclipse.jetty.http.HttpField;
+import org.eclipse.jetty.http.HttpHeader;
+import org.eclipse.jetty.http.QuotedCSV;
 import org.eclipse.jetty.io.Content;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.Response;
@@ -36,6 +39,24 @@ import org.eclipse.jetty.server.Response;
  */
 public class JettyHttpExchangeDelegate extends HttpExchange
 {
+    /**
+     * Set of headers that RFC9110 says will not have a value list
+     */
+    private static final EnumSet<HttpHeader> SINGLE_VALUE_HEADERS =
+        EnumSet.of(
+            HttpHeader.AUTHORIZATION,
+            HttpHeader.CONTENT_LENGTH,
+            HttpHeader.DATE,
+            HttpHeader.EXPIRES,
+            HttpHeader.HOST,
+            HttpHeader.IF_MODIFIED_SINCE,
+            HttpHeader.IF_UNMODIFIED_SINCE,
+            HttpHeader.IF_RANGE,
+            HttpHeader.LAST_MODIFIED,
+            HttpHeader.LOCATION,
+            HttpHeader.REFERER,
+            HttpHeader.RETRY_AFTER,
+            HttpHeader.USER_AGENT);
     private final HttpContext _httpContext;
 
     private final Request _request;
@@ -68,10 +89,23 @@ public class JettyHttpExchangeDelegate extends HttpExchange
 
         for (HttpField field : _request.getHeaders())
         {
-            if (field.getValue() == null)
+            String rawValue = field.getValue();
+            if (rawValue == null)
                 continue;
-            for (String value : field.getValues())
-                headers.add(field.getName(), value);
+
+            HttpHeader header = field.getHeader();
+
+            if (header == null || !SINGLE_VALUE_HEADERS.contains(header))
+            {
+                // Using raw QuotedCSV here to preserve quotes (which HttpField.getValues() doesn't do)
+                QuotedCSV quotedCSV = new QuotedCSV(true, rawValue);
+                for (String value : quotedCSV.getValues())
+                    headers.add(field.getName(), value);
+            }
+            else
+            {
+                headers.add(field.getName(), rawValue);
+            }
         }
         return headers;
     }
@@ -192,8 +226,11 @@ public class JettyHttpExchangeDelegate extends HttpExchange
     @Override
     public void setStreams(InputStream i, OutputStream o)
     {
-        _inputStream = i;
-        _outputStream = o;
+        assert _inputStream != null;
+        if (i != null)
+            _inputStream = i;
+        if (o != null)
+            _outputStream = o;
     }
 
     @Override

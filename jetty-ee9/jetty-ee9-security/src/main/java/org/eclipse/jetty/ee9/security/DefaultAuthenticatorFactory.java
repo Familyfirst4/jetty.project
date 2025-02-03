@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -18,7 +18,6 @@ import java.util.Collection;
 import jakarta.servlet.ServletContext;
 import org.eclipse.jetty.ee9.security.Authenticator.AuthConfiguration;
 import org.eclipse.jetty.ee9.security.authentication.BasicAuthenticator;
-import org.eclipse.jetty.ee9.security.authentication.ClientCertAuthenticator;
 import org.eclipse.jetty.ee9.security.authentication.ConfigurableSpnegoAuthenticator;
 import org.eclipse.jetty.ee9.security.authentication.DeferredAuthentication;
 import org.eclipse.jetty.ee9.security.authentication.DigestAuthenticator;
@@ -26,8 +25,9 @@ import org.eclipse.jetty.ee9.security.authentication.FormAuthenticator;
 import org.eclipse.jetty.ee9.security.authentication.LoginAuthenticator;
 import org.eclipse.jetty.ee9.security.authentication.SessionAuthentication;
 import org.eclipse.jetty.ee9.security.authentication.SslClientCertAuthenticator;
+import org.eclipse.jetty.security.IdentityService;
+import org.eclipse.jetty.security.LoginService;
 import org.eclipse.jetty.server.Server;
-import org.eclipse.jetty.util.security.Constraint;
 import org.eclipse.jetty.util.ssl.SslContextFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,7 +38,6 @@ import org.slf4j.LoggerFactory;
  * <li>{@link BasicAuthenticator}</li>
  * <li>{@link DigestAuthenticator}</li>
  * <li>{@link FormAuthenticator}</li>
- * <li>{@link ClientCertAuthenticator}</li>
  * <li>{@link SslClientCertAuthenticator}</li>
  * </ul>
  * All authenticators derived from {@link LoginAuthenticator} are
@@ -54,10 +53,9 @@ import org.slf4j.LoggerFactory;
  */
 public class DefaultAuthenticatorFactory implements Authenticator.Factory
 {
-
     private static final Logger LOG = LoggerFactory.getLogger(DefaultAuthenticatorFactory.class);
 
-    LoginService _loginService;
+    private LoginService _loginService;
 
     @Override
     public Authenticator getAuthenticator(Server server, ServletContext context, AuthConfiguration configuration, IdentityService identityService, LoginService loginService)
@@ -65,30 +63,25 @@ public class DefaultAuthenticatorFactory implements Authenticator.Factory
         String auth = configuration.getAuthMethod();
         Authenticator authenticator = null;
 
-        if (Constraint.__BASIC_AUTH.equalsIgnoreCase(auth))
+        if (Authenticator.BASIC_AUTH.equalsIgnoreCase(auth))
             authenticator = new BasicAuthenticator();
-        else if (Constraint.__DIGEST_AUTH.equalsIgnoreCase(auth))
+        else if (Authenticator.DIGEST_AUTH.equalsIgnoreCase(auth))
             authenticator = new DigestAuthenticator();
-        else if (Constraint.__FORM_AUTH.equalsIgnoreCase(auth))
+        else if (Authenticator.FORM_AUTH.equalsIgnoreCase(auth))
             authenticator = new FormAuthenticator();
-        else if (Constraint.__SPNEGO_AUTH.equalsIgnoreCase(auth))
+        else if (Authenticator.SPNEGO_AUTH.equalsIgnoreCase(auth))
             authenticator = new ConfigurableSpnegoAuthenticator();
-        else if (Constraint.__NEGOTIATE_AUTH.equalsIgnoreCase(auth)) // see Bug #377076
-            authenticator = new ConfigurableSpnegoAuthenticator(Constraint.__NEGOTIATE_AUTH);
-        if (Constraint.__CERT_AUTH.equalsIgnoreCase(auth) || Constraint.__CERT_AUTH2.equalsIgnoreCase(auth))
+        else if (Authenticator.NEGOTIATE_AUTH.equalsIgnoreCase(auth)) // see Bug #377076
+            authenticator = new ConfigurableSpnegoAuthenticator(Authenticator.NEGOTIATE_AUTH);
+        if (Authenticator.CERT_AUTH.equalsIgnoreCase(auth) || Authenticator.CERT_AUTH2.equalsIgnoreCase(auth))
         {
-            Collection<SslContextFactory> sslContextFactories = server.getBeans(SslContextFactory.class);
+            Collection<SslContextFactory.Server> sslContextFactories = server.getBeans(SslContextFactory.Server.class);
             if (sslContextFactories.size() != 1)
             {
                 if (sslContextFactories.size() > 1)
-                {
-                    LOG.info("Multiple SslContextFactory instances discovered. Directly configure a SslClientCertAuthenticator to use one.");
-                }
+                    LOG.info("Multiple SslContextFactory.Server instances discovered. Directly configure a SslClientCertAuthenticator to use one.");
                 else
-                {
-                    LOG.debug("No SslContextFactory instances discovered. Directly configure a SslClientCertAuthenticator to use one.");
-                }
-                authenticator = new ClientCertAuthenticator();
+                    LOG.debug("No SslContextFactory.Server instances discovered. Directly configure a SslClientCertAuthenticator to use one.");
             }
             else
             {
@@ -100,6 +93,7 @@ public class DefaultAuthenticatorFactory implements Authenticator.Factory
     }
 
     /**
+     * Get the loginService.
      * @return the loginService
      */
     public LoginService getLoginService()
@@ -108,6 +102,7 @@ public class DefaultAuthenticatorFactory implements Authenticator.Factory
     }
 
     /**
+     * Set the loginService to set.
      * @param loginService the loginService to set
      */
     public void setLoginService(LoginService loginService)

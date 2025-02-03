@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -18,7 +18,7 @@ module org.eclipse.jetty.session
     requires transitive org.slf4j;
 
     // Only required if using DatabaseAdaptor/JDBCSessionDataStore.
-    requires static java.sql;
+    requires static transitive java.sql;
     requires static java.naming;
 
     exports org.eclipse.jetty.session;

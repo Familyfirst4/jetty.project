@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -23,6 +23,7 @@ import java.util.Iterator;
 import java.util.ListIterator;
 import java.util.Locale;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.function.Supplier;
 
 import jakarta.servlet.ServletOutputStream;
@@ -34,10 +35,8 @@ import jakarta.servlet.http.HttpServletResponseWrapper;
 import jakarta.servlet.http.HttpSession;
 import org.eclipse.jetty.http.CookieCompliance;
 import org.eclipse.jetty.http.DateGenerator;
-import org.eclipse.jetty.http.HttpContent;
 import org.eclipse.jetty.http.HttpCookie;
 import org.eclipse.jetty.http.HttpCookie.SameSite;
-import org.eclipse.jetty.http.HttpCookie.SetCookieHttpField;
 import org.eclipse.jetty.http.HttpField;
 import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpGenerator;
@@ -50,8 +49,13 @@ import org.eclipse.jetty.http.HttpVersion;
 import org.eclipse.jetty.http.MetaData;
 import org.eclipse.jetty.http.MimeTypes;
 import org.eclipse.jetty.http.PreEncodedHttpField;
+import org.eclipse.jetty.http.content.HttpContent;
 import org.eclipse.jetty.io.RuntimeIOException;
-import org.eclipse.jetty.session.Session;
+import org.eclipse.jetty.io.WriteThroughWriter;
+import org.eclipse.jetty.server.Context;
+import org.eclipse.jetty.server.HttpCookieUtils;
+import org.eclipse.jetty.server.HttpCookieUtils.SetCookieHttpField;
+import org.eclipse.jetty.server.Session;
 import org.eclipse.jetty.session.SessionManager;
 import org.eclipse.jetty.util.AtomicBiInteger;
 import org.eclipse.jetty.util.Callback;
@@ -68,6 +72,25 @@ public class Response implements HttpServletResponse
     public static final int NO_CONTENT_LENGTH = -1;
     public static final int USE_KNOWN_CONTENT_LENGTH = -2;
 
+    /**
+     * String used in the {@code Comment} attribute of {@link Cookie}
+     * to support the {@code HttpOnly} attribute.
+     **/
+    protected static final String HTTP_ONLY_COMMENT = "__HTTP_ONLY__";
+    /**
+     * String used in the {@code Comment} attribute of {@link Cookie}
+     * to support the {@code Partitioned} attribute.
+     **/
+    protected static final String PARTITIONED_COMMENT = "__PARTITIONED__";
+    /**
+     * The strings used in the {@code Comment} attribute of {@link Cookie}
+     * to support the {@code SameSite} attribute.
+     **/
+    protected static final String SAME_SITE_COMMENT = "__SAME_SITE_";
+    protected static final String SAME_SITE_NONE_COMMENT = SAME_SITE_COMMENT + "NONE__";
+    protected static final String SAME_SITE_LAX_COMMENT = SAME_SITE_COMMENT + "LAX__";
+    protected static final String SAME_SITE_STRICT_COMMENT = SAME_SITE_COMMENT + "STRICT__";
+
     public enum OutputType
     {
         NONE, STREAM, WRITER
@@ -81,10 +104,10 @@ public class Response implements HttpServletResponse
     public static final String SET_INCLUDE_HEADER_PREFIX = "org.eclipse.jetty.server.include.";
 
     private final HttpChannel _channel;
-    private final HttpFields.Mutable _fields = HttpFields.build();
     private final AtomicBiInteger _errorSentAndIncludes = new AtomicBiInteger(); // hi is errorSent flag, lo is include count
     private final HttpOutput _out;
     private int _status = HttpStatus.OK_200;
+    private HttpFields.Mutable _fields;
     private String _reason;
     private Locale _locale;
     private MimeTypes.Type _mimeType;
@@ -132,6 +155,19 @@ public class Response implements HttpServletResponse
     private static final EnumSet<EncodingFrom> __localeOverride = EnumSet.of(EncodingFrom.NOT_SET, EncodingFrom.DEFAULT, EncodingFrom.INFERRED, EncodingFrom.SET_LOCALE);
     private static final EnumSet<EncodingFrom> __explicitCharset = EnumSet.of(EncodingFrom.SET_LOCALE, EncodingFrom.SET_CHARACTER_ENCODING, EncodingFrom.SET_CONTENT_TYPE);
 
+    public static Response getBaseResponse(ServletResponse servletResponse)
+    {
+        while (true)
+        {
+            if (servletResponse instanceof Response response)
+                return response;
+            if (servletResponse instanceof ServletResponseWrapper wrapper)
+                servletResponse = wrapper.getResponse();
+            else
+                return null;
+        }
+    }
+
     public Response(HttpChannel channel, HttpOutput out)
     {
         _channel = channel;
@@ -143,10 +179,15 @@ public class Response implements HttpServletResponse
         return _channel;
     }
 
+    protected void onResponse(HttpFields.Mutable headers)
+    {
+        _fields = headers;
+    }
+
     protected void recycle()
     {
         // _channel need not be recycled
-        _fields.clear();
+        _fields = null;
         _errorSentAndIncludes.set(0);
         _out.recycle();
         _status = HttpStatus.OK_200;
@@ -239,20 +280,13 @@ public class Response implements HttpServletResponse
             return cookie;
 
         //sameSite is not set, use the default configured for the context, if one exists
-        SameSite contextDefault = HttpCookie.getSameSiteDefault(_channel.getRequest().getContext().getCoreContext());
+        ContextHandler.APIContext apiContext = _channel.getRequest().getContext();
+        Context context = (apiContext == null) ? null : apiContext.getCoreContext();
+        SameSite contextDefault = HttpCookieUtils.getSameSiteDefault(context);
         if (contextDefault == null)
             return cookie; //no default set
 
-        return new HttpCookie(cookie.getName(),
-            cookie.getValue(),
-            cookie.getDomain(),
-            cookie.getPath(),
-            cookie.getMaxAge(),
-            cookie.isHttpOnly(),
-            cookie.isSecure(),
-            cookie.getComment(),
-            cookie.getVersion(),
-            contextDefault);
+        return HttpCookie.from(cookie, HttpCookie.SAME_SITE_ATTRIBUTE, contextDefault.getAttributeValue());
     }
 
     @Override
@@ -264,23 +298,7 @@ public class Response implements HttpServletResponse
             if (StringUtil.isBlank(cookie.getName()))
                 throw new IllegalArgumentException("Cookie.name cannot be blank/null");
 
-            String comment = cookie.getComment();
-            // HttpOnly was supported as a comment in cookie flags before the java.net.HttpCookie implementation so need to check that
-            boolean httpOnly = cookie.isHttpOnly() || HttpCookie.isHttpOnlyInComment(comment);
-            SameSite sameSite = HttpCookie.getSameSiteFromComment(comment);
-            comment = HttpCookie.getCommentWithoutAttributes(comment);
-
-            addCookie(new HttpCookie(
-                cookie.getName(),
-                cookie.getValue(),
-                cookie.getDomain(),
-                cookie.getPath(),
-                cookie.getMaxAge(),
-                httpOnly,
-                cookie.getSecure(),
-                comment,
-                cookie.getVersion(),
-                sameSite));
+            addCookie(new HttpCookieFacade(cookie));
         }
     }
 
@@ -299,31 +317,17 @@ public class Response implements HttpServletResponse
             if (field.getHeader() == HttpHeader.SET_COOKIE)
             {
                 CookieCompliance compliance = getHttpChannel().getHttpConfiguration().getResponseCookieCompliance();
-
-                HttpCookie oldCookie;
-                if (field instanceof SetCookieHttpField)
-                    oldCookie = ((SetCookieHttpField)field).getHttpCookie();
+                
+                if (field instanceof HttpCookieUtils.SetCookieHttpField)
+                {
+                    if (!HttpCookieUtils.match(((HttpCookieUtils.SetCookieHttpField)field).getHttpCookie(), cookie.getName(), cookie.getDomain(), cookie.getPath()))
+                        continue;
+                }
                 else
-                    oldCookie = new HttpCookie(field.getValue());
-
-                if (!cookie.getName().equals(oldCookie.getName()))
-                    continue;
-
-                if (cookie.getDomain() == null)
                 {
-                    if (oldCookie.getDomain() != null)
+                    if (!HttpCookieUtils.match(field.getValue(), cookie.getName(), cookie.getDomain(), cookie.getPath()))
                         continue;
                 }
-                else if (!cookie.getDomain().equalsIgnoreCase(oldCookie.getDomain()))
-                    continue;
-
-                if (cookie.getPath() == null)
-                {
-                    if (oldCookie.getPath() != null)
-                        continue;
-                }
-                else if (!cookie.getPath().equals(oldCookie.getPath()))
-                    continue;
 
                 i.set(new SetCookieHttpField(checkSameSite(cookie), compliance));
                 return;
@@ -343,7 +347,7 @@ public class Response implements HttpServletResponse
     public String encodeURL(String url)
     {
         final Request request = _channel.getRequest();
-        SessionManager sessionManager = request.getSessionManager();
+        SessionManager sessionManager = _channel.getCoreRequest().getSessionManager();
 
         if (sessionManager == null)
             return url;
@@ -356,7 +360,7 @@ public class Response implements HttpServletResponse
             path = (path == null ? "" : path);
             int port = uri.getPort();
             if (port < 0)
-                port = HttpScheme.getDefaultPort(uri.getScheme());
+                port = URIUtil.getDefaultPortForScheme(uri.getScheme());
 
             // Is it the same server?
             if (!request.getServerName().equalsIgnoreCase(uri.getHost()))
@@ -375,7 +379,7 @@ public class Response implements HttpServletResponse
             return null;
 
         // should not encode if cookies in evidence
-        if ((sessionManager.isUsingCookies() && request.isRequestedSessionIdFromCookie()) || !sessionManager.isUsingURLs())
+        if ((sessionManager.isUsingCookies() && request.isRequestedSessionIdFromCookie()) || !sessionManager.isUsingUriParameters())
         {
             int prefix = url.indexOf(sessionURLPrefix);
             if (prefix != -1)
@@ -400,7 +404,7 @@ public class Response implements HttpServletResponse
 
         // invalid session
         Session coreSession = Session.getSession(httpSession);
-        if (coreSession.isInvalid())
+        if (!coreSession.isValid())
             return url;
 
         String id = coreSession.getExtendedId();
@@ -429,12 +433,12 @@ public class Response implements HttpServletResponse
         if (suffix < 0)
         {
             return url +
-                ((HttpScheme.HTTPS.is(uri.getScheme()) || HttpScheme.HTTP.is(uri.getScheme())) && uri.getPath() == null ? "/" : "") + //if no path, insert the root path
+                ((HttpScheme.HTTPS.is(uri.getScheme()) || HttpScheme.HTTP.is(uri.getScheme())) && StringUtil.isEmpty(uri.getPath()) ? "/" : "") + //if no path, insert the root path
                 sessionURLPrefix + id;
         }
 
         return url.substring(0, suffix) +
-            ((HttpScheme.HTTPS.is(uri.getScheme()) || HttpScheme.HTTP.is(uri.getScheme())) && uri.getPath() == null ? "/" : "") + //if no path so insert the root path
+            ((HttpScheme.HTTPS.is(uri.getScheme()) || HttpScheme.HTTP.is(uri.getScheme())) && StringUtil.isEmpty(uri.getPath()) ? "/" : "") + //if no path so insert the root path
             sessionURLPrefix + id + url.substring(suffix);
     }
 
@@ -484,43 +488,30 @@ public class Response implements HttpServletResponse
 
         switch (code)
         {
-            case -1:
-                _channel.abort(new IOException(message));
-                break;
-            case HttpStatus.PROCESSING_102:
-                sendProcessing();
-                break;
-            case HttpStatus.EARLY_HINT_103:
-                sendEarlyHint();
-                break;
-            default:
-                _channel.getState().sendError(code, message);
-                break;
+            case -1 -> _channel.abort(new org.eclipse.jetty.server.Request.Handler.AbortException(message));
+            case HttpStatus.PROCESSING_102 -> sendProcessing();
+            case HttpStatus.EARLY_HINTS_103 -> sendEarlyHint();
+            default -> _channel.getState().sendError(code, message);
         }
     }
 
     /**
-     * Sends a 102-Processing response.
-     * If the request had an Expect header starting with 102, then
-     * a 102 response is sent. This indicates that the request still be processed and real response
-     * can still be sent.   This method is called by sendError if it is passed 102.
+     * Sends a 102 Processing interim response.
+     * This method is called by {@link #sendError(int)} if it is passed status code 102.
      *
      * @throws IOException if unable to send the 102 response
      * @see HttpServletResponse#sendError(int)
      */
     public void sendProcessing() throws IOException
     {
-        if (_channel.isExpecting102Processing() && !isCommitted())
-        {
-            _channel.sendResponse(HttpGenerator.PROGRESS_102_INFO, null, true);
-        }
+        if (!isCommitted())
+            _channel.send102Processing(_fields.asImmutable());
     }
 
     /**
-     * Sends a 103 Early Hint response.
-     *
-     * Send a 103 response as per <a href="https://datatracker.ietf.org/doc/html/rfc8297">RFC8297</a>
-     * This method is called by sendError if it is passed 103.
+     * Sends a 103 Early Hints interim response, as per
+     * <a href="https://datatracker.ietf.org/doc/html/rfc8297">RFC8297</a>.
+     * This method is called by {@link #sendError(int)} if it is passed status code 103.
      *
      * @throws IOException if unable to send the 103 response
      * @see jakarta.servlet.http.HttpServletResponse#sendError(int)
@@ -528,8 +519,7 @@ public class Response implements HttpServletResponse
     public void sendEarlyHint() throws IOException
     {
         if (!isCommitted())
-            _channel.sendResponse(new MetaData.Response(_channel.getRequest().getHttpVersion(), HttpStatus.EARLY_HINT_103,
-                _channel.getResponse()._fields.asImmutable()), null, true);
+            _channel.send103EarlyHints(_fields.asImmutable());
     }
 
     /**
@@ -588,14 +578,14 @@ public class Response implements HttpServletResponse
             if (location.startsWith("/"))
             {
                 // absolute in context
-                location = URIUtil.canonicalURI(location);
+                location = URIUtil.normalizePathQuery(location);
             }
             else
             {
                 // relative to request
                 String path = _channel.getRequest().getRequestURI();
                 String parent = (path.endsWith("/")) ? path : URIUtil.parentPath(path);
-                location = URIUtil.canonicalURI(URIUtil.addEncodedPaths(parent, location));
+                location = URIUtil.normalizePathQuery(URIUtil.addEncodedPaths(parent, location));
                 if (location != null && !location.startsWith("/"))
                     buf.append('/');
             }
@@ -626,9 +616,9 @@ public class Response implements HttpServletResponse
         {
             HttpHeader header = HttpHeader.CACHE.get(name);
             if (header == null)
-                _fields.putDateField(name, date);
+                _fields.putDate(name, date);
             else
-                _fields.putDateField(header, date);
+                _fields.putDate(header, date);
         }
     }
 
@@ -744,7 +734,7 @@ public class Response implements HttpServletResponse
     {
         if (isMutable())
         {
-            _fields.putLongField(name, value);
+            _fields.put(name, value);
             if (HttpHeader.CONTENT_LENGTH.is(name))
                 _contentLength = value;
         }
@@ -764,7 +754,7 @@ public class Response implements HttpServletResponse
     @Override
     public void setStatus(int sc)
     {
-        if (sc <= 0)
+        if (sc < 100 || sc > 999)
             throw new IllegalArgumentException();
         if (isMutable())
         {
@@ -785,7 +775,7 @@ public class Response implements HttpServletResponse
 
     public void setStatusWithReason(int sc, String message)
     {
-        if (sc <= 0)
+        if (sc < 100 || sc > 999)
             throw new IllegalArgumentException();
         if (isMutable())
         {
@@ -820,13 +810,16 @@ public class Response implements HttpServletResponse
         if (_mimeType != null && _mimeType.isCharsetAssumed())
             return _mimeType.getCharsetString();
 
+        // Get MimeTypes from context
+        MimeTypes mimeTypes = _channel.getRequest().getCoreRequest().getContext().getMimeTypes();
+
         // Try charset assumed from content type (assumed charsets are not added to content type header).
-        encoding = MimeTypes.getCharsetAssumedFromContentType(_contentType);
+        encoding = mimeTypes.getCharsetAssumedFromContentType(_contentType);
         if (encoding != null)
             return encoding;
 
         // Try char set inferred from content type.
-        encoding = MimeTypes.getCharsetInferredFromContentType(_contentType);
+        encoding = mimeTypes.getCharsetInferredFromContentType(_contentType);
         if (encoding != null)
         {
             if (setContentType)
@@ -848,7 +841,7 @@ public class Response implements HttpServletResponse
         }
 
         // Fallback to last resort iso-8859-1.
-        encoding = StringUtil.__ISO_8859_1;
+        encoding = MimeTypes.ISO_8859_1;
         if (setContentType)
             setCharacterEncoding(encoding, EncodingFrom.DEFAULT);
         return encoding;
@@ -895,15 +888,15 @@ public class Response implements HttpServletResponse
             String encoding = getCharacterEncoding(true);
             Locale locale = getLocale();
             if (_writer != null && _writer.isFor(locale, encoding))
+            {
                 _writer.reopen();
+            }
             else
             {
-                if (StringUtil.__ISO_8859_1.equalsIgnoreCase(encoding))
-                    _writer = new ResponseWriter(new Iso88591HttpWriter(_out), locale, encoding);
-                else if (StringUtil.__UTF8.equalsIgnoreCase(encoding))
-                    _writer = new ResponseWriter(new Utf8HttpWriter(_out), locale, encoding);
-                else
-                    _writer = new ResponseWriter(new EncodingHttpWriter(_out, encoding), locale, encoding);
+                // We must use an specialized Writer here as we rely on the non cached characters
+                // in the writer implementation for flush and completion operations.
+                WriteThroughWriter outputStreamWriter = WriteThroughWriter.newWriter(_out, encoding);
+                _writer = new ResponseWriter(outputStreamWriter, locale, encoding);
             }
 
             // Set the output type at the end, because setCharacterEncoding() checks for it.
@@ -928,7 +921,7 @@ public class Response implements HttpServletResponse
                 throw new IllegalArgumentException("setContentLength(" + len + ") when already written " + written);
 
             _contentLength = len;
-            _fields.putLongField(HttpHeader.CONTENT_LENGTH, len);
+            _fields.put(HttpHeader.CONTENT_LENGTH, len);
             if (isAllContentWritten(written))
             {
                 try
@@ -947,7 +940,7 @@ public class Response implements HttpServletResponse
             if (written > 0)
                 throw new IllegalArgumentException("setContentLength(0) when already written " + written);
             _contentLength = len;
-            _fields.put(HttpHeader.CONTENT_LENGTH, "0");
+            _fields.put(HttpFields.CONTENT_LENGTH_0);
         }
         else
         {
@@ -993,9 +986,8 @@ public class Response implements HttpServletResponse
     public void completeOutput(Callback callback)
     {
         if (_outputType == OutputType.WRITER)
-            _writer.complete(callback);
-        else
-            _out.complete(callback);
+            _writer.markAsClosed();
+        _out.complete(callback);
     }
 
     public long getLongContentLength()
@@ -1011,7 +1003,7 @@ public class Response implements HttpServletResponse
         if (isCommitted() || !isMutable())
             return;
         _contentLength = len;
-        _fields.putLongField(HttpHeader.CONTENT_LENGTH.toString(), len);
+        _fields.put(HttpHeader.CONTENT_LENGTH, len);
     }
 
     @Override
@@ -1053,7 +1045,7 @@ public class Response implements HttpServletResponse
         else
         {
             _encodingFrom = from;
-            _characterEncoding = HttpGenerator.__STRICT ? encoding : StringUtil.normalizeCharset(encoding);
+            _characterEncoding = HttpGenerator.__STRICT ? encoding : MimeTypes.normalizeCharset(encoding);
             if (_mimeType != null)
             {
                 _contentType = _mimeType.getBaseType().asString() + ";charset=" + _characterEncoding;
@@ -1207,14 +1199,15 @@ public class Response implements HttpServletResponse
         }
 
         // recreate session cookies
+        ContextHandler.CoreContextRequest coreRequest =  getHttpChannel().getCoreRequest();
         Request request = getHttpChannel().getRequest();
         HttpSession httpSession = request.getSession(false);
         if (httpSession != null && httpSession.isNew())
         {
-            SessionManager sessionManager = request.getSessionManager();
-            if (sessionManager != null && httpSession instanceof Session.APISession apiSession)
+            SessionManager sessionManager = coreRequest.getSessionManager();
+            if (sessionManager != null)
             {
-                HttpCookie cookie = sessionManager.getSessionCookie(apiSession.getCoreSession(), request.getContextPath(), request.isSecure());
+                HttpCookie cookie = sessionManager.getSessionCookie(coreRequest.getManagedSession(), request.isSecure());
                 if (cookie != null)
                     addCookie(cookie);
             }
@@ -1252,7 +1245,6 @@ public class Response implements HttpServletResponse
                 case LAST_MODIFIED:
                 case EXPIRES:
                 case ETAG:
-                case DATE:
                 case VARY:
                     i.remove();
                     continue;
@@ -1297,32 +1289,15 @@ public class Response implements HttpServletResponse
     {
         if (isCommitted())
             throw new IllegalStateException("Committed");
-        if (getHttpChannel().getRequest().getHttpVersion().ordinal() <= HttpVersion.HTTP_1_0.ordinal())
-            throw new IllegalStateException("Trailers not supported");
-        this._trailers = new HttpFieldsSupplier(trailers);
+        HttpVersion version = getHttpChannel().getRequest().getHttpVersion();
+        if (version == null || version.compareTo(HttpVersion.HTTP_1_1) < 0)
+            throw new IllegalStateException("Trailers not supported in " + version);
+        setTrailers(new HttpFieldsSupplier(trailers));
     }
 
     protected MetaData.Response newResponseMetaData()
     {
-        return new MetaData.Response(_channel.getRequest().getHttpVersion(), getStatus(), getReason(), _fields, getLongContentLength(), getTrailers());
-    }
-
-    /**
-     * Get the MetaData.Response committed for this response.
-     * This may differ from the meta data in this response for
-     * exceptional responses (eg 4xx and 5xx responses generated
-     * by the container) and the committedMetaData should be used
-     * for logging purposes.
-     *
-     * @return The committed MetaData or a {@link #newResponseMetaData()}
-     * if not yet committed.
-     */
-    public MetaData.Response getCommittedMetaData()
-    {
-        MetaData.Response meta = _channel.getCommittedMetaData();
-        if (meta == null)
-            return newResponseMetaData();
-        return meta;
+        return new MetaData.Response(getStatus(), getReason(), _channel.getRequest().getHttpVersion(), _channel.getCoreResponse().getHeaders(), getLongContentLength(), getTrailers());
     }
 
     @Override
@@ -1413,7 +1388,7 @@ public class Response implements HttpServletResponse
         }
         else if (contentLength > NO_CONTENT_LENGTH)
         {
-            _fields.putLongField(HttpHeader.CONTENT_LENGTH, contentLength);
+            _fields.put(HttpHeader.CONTENT_LENGTH, contentLength);
             _contentLength = contentLength;
         }
 
@@ -1447,7 +1422,7 @@ public class Response implements HttpServletResponse
 
     public static void putHeaders(HttpServletResponse response, HttpContent content, long contentLength, boolean etag)
     {
-        long lml = content.getLastModified().getLongValue();
+        long lml = content.getResource().lastModified().toEpochMilli();
         if (lml >= 0)
             response.setDateHeader(HttpHeader.LAST_MODIFIED.asString(), lml);
 
@@ -1516,6 +1491,169 @@ public class Response implements HttpServletResponse
         public Supplier<Map<String, String>> getSupplier()
         {
             return _supplier;
+        }
+    }
+
+    protected static class HttpCookieFacade implements HttpCookie
+    {
+        private final Cookie _cookie;
+        private final String _comment;
+        private final boolean _httpOnly;
+        private final SameSite _sameSite;
+        private final boolean _partitioned;
+
+        public HttpCookieFacade(Cookie cookie)
+        {
+            _cookie = cookie;
+            String comment = cookie.getComment();
+            // HttpOnly was supported as a comment in cookie flags before the Cookie implementation so need to check that.
+            _httpOnly = cookie.isHttpOnly() || isHttpOnlyInComment(comment);
+            _sameSite = getSameSiteFromComment(comment);
+            _partitioned = isPartitionedInComment(comment);
+            _comment = getCommentWithoutAttributes(comment);
+        }
+
+        @Override
+        public String getComment()
+        {
+            return _comment;
+        }
+
+        @Override
+        public String getDomain()
+        {
+            return _cookie.getDomain();
+        }
+
+        @Override
+        public long getMaxAge()
+        {
+            return _cookie.getMaxAge();
+        }
+
+        @Override
+        public String getPath()
+        {
+            return _cookie.getPath();
+        }
+
+        @Override
+        public boolean isSecure()
+        {
+            return _cookie.getSecure();
+        }
+
+        @Override
+        public String getName()
+        {
+            return _cookie.getName();
+        }
+
+        @Override
+        public String getValue()
+        {
+            return _cookie.getValue();
+        }
+
+        @Override
+        public int getVersion()
+        {
+            return _cookie.getVersion();
+        }
+
+        @Override
+        public SameSite getSameSite()
+        {
+            return _sameSite;
+        }
+
+        @Override
+        public boolean isHttpOnly()
+        {
+            return _httpOnly;
+        }
+
+        @Override
+        public boolean isPartitioned()
+        {
+            return _partitioned;
+        }
+
+        @Override
+        public Map<String, String> getAttributes()
+        {
+            Map<String, String> attributes = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+            attributes.put(COMMENT_ATTRIBUTE, _comment);
+            attributes.put(DOMAIN_ATTRIBUTE, getDomain());
+            if (_httpOnly)
+                attributes.put(HTTP_ONLY_ATTRIBUTE, Boolean.TRUE.toString());
+            if (_cookie.getMaxAge() >= 0)
+                attributes.put(MAX_AGE_ATTRIBUTE, Long.toString(getMaxAge()));
+            attributes.put(PATH_ATTRIBUTE, getPath());
+            if (_sameSite != null)
+                attributes.put(SAME_SITE_ATTRIBUTE, _sameSite.getAttributeValue());
+            if (isSecure())
+                attributes.put(SECURE_ATTRIBUTE, Boolean.TRUE.toString());
+            if (isPartitioned())
+                attributes.put(PARTITIONED_ATTRIBUTE, Boolean.TRUE.toString());
+            return attributes;
+        }
+
+        @Override
+        public int hashCode()
+        {
+            return HttpCookie.hashCode(this);
+        }
+
+        @Override
+        public boolean equals(Object obj)
+        {
+            return HttpCookie.equals(this, obj);
+        }
+
+        @Override
+        public String toString()
+        {
+            return HttpCookie.toString(this);
+        }
+
+        private static boolean isHttpOnlyInComment(String comment)
+        {
+            return comment != null && comment.contains(HTTP_ONLY_COMMENT);
+        }
+
+        protected static boolean isPartitionedInComment(String comment)
+        {
+            return comment != null && comment.contains(PARTITIONED_COMMENT);
+        }
+
+        protected static SameSite getSameSiteFromComment(String comment)
+        {
+            if (comment == null)
+                return null;
+            if (comment.contains(SAME_SITE_STRICT_COMMENT))
+                return SameSite.STRICT;
+            if (comment.contains(SAME_SITE_LAX_COMMENT))
+                return SameSite.LAX;
+            if (comment.contains(SAME_SITE_NONE_COMMENT))
+                return SameSite.NONE;
+            return null;
+        }
+
+        protected static String getCommentWithoutAttributes(String comment)
+        {
+            if (comment == null)
+                return null;
+
+            String strippedComment = comment.trim();
+
+            strippedComment = StringUtil.strip(strippedComment, HTTP_ONLY_COMMENT);
+            strippedComment = StringUtil.strip(strippedComment, PARTITIONED_COMMENT);
+            strippedComment = StringUtil.strip(strippedComment, SAME_SITE_NONE_COMMENT);
+            strippedComment = StringUtil.strip(strippedComment, SAME_SITE_LAX_COMMENT);
+            strippedComment = StringUtil.strip(strippedComment, SAME_SITE_STRICT_COMMENT);
+
+            return strippedComment.isEmpty() ? null : strippedComment;
         }
     }
 }

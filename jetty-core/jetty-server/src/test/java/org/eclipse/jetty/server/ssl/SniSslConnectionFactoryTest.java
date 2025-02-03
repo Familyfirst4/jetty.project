@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,12 +13,13 @@
 
 package org.eclipse.jetty.server.ssl;
 
-import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
@@ -96,34 +97,28 @@ public class SniSslConnectionFactoryTest
         SecureRequestCustomizer secureRequestCustomizer = new SecureRequestCustomizer();
         httpConfiguration.addCustomizer(secureRequestCustomizer);
 
-        Handler.Wrapper xCertHandler = new Handler.Wrapper()
+        Handler.Singleton xCertHandler = new Handler.Wrapper()
         {
             @Override
-            public Request.Processor handle(Request request) throws Exception
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
             {
-                Request.Processor processor = getHandler().handle(request);
-                if (processor == null)
-                    return null;
-                return (ignored, response, callback) ->
-                {
-                    EndPoint endPoint = request.getConnectionMetaData().getConnection().getEndPoint();
-                    SslConnection.DecryptedEndPoint sslEndPoint = (SslConnection.DecryptedEndPoint)endPoint;
-                    SslConnection sslConnection = sslEndPoint.getSslConnection();
-                    SSLEngine sslEngine = sslConnection.getSSLEngine();
-                    SSLSession session = sslEngine.getSession();
-                    for (Certificate c : session.getLocalCertificates())
-                        response.getHeaders().add("X-CERT", ((X509Certificate)c).getSubjectDN().toString());
-                    processor.process(request, response, callback);
-                };
+                EndPoint endPoint = request.getConnectionMetaData().getConnection().getEndPoint();
+                SslConnection.SslEndPoint sslEndPoint = (SslConnection.SslEndPoint)endPoint;
+                SslConnection sslConnection = sslEndPoint.getSslConnection();
+                SSLEngine sslEngine = sslConnection.getSSLEngine();
+                SSLSession session = sslEngine.getSession();
+                for (Certificate c : session.getLocalCertificates())
+                    response.getHeaders().add("X-CERT", ((X509Certificate)c).getSubjectDN().toString());
+                return getHandler().handle(request, response, callback);
             }
         };
 
         SslContextFactory.Server sslContextFactory = new SslContextFactory.Server();
         config.accept(sslContextFactory, secureRequestCustomizer);
 
-        File keystoreFile = sslContextFactory.getKeyStoreResource().getFile();
-        if (!keystoreFile.exists())
-            throw new FileNotFoundException(keystoreFile.getAbsolutePath());
+        Path keystoreFile = sslContextFactory.getKeyStoreResource().getPath();
+        if (!Files.exists(keystoreFile))
+            throw new FileNotFoundException(keystoreFile.toAbsolutePath().toString());
 
         sslContextFactory.setKeyStorePassword("storepwd");
 
@@ -132,15 +127,16 @@ public class SniSslConnectionFactoryTest
             new HttpConnectionFactory(httpConfiguration));
         _server.addConnector(_connector);
         _server.setHandler(xCertHandler);
-        xCertHandler.setHandler(new Handler.Processor()
+        xCertHandler.setHandler(new Handler.Abstract.NonBlocking()
         {
             @Override
-            public void process(Request request, Response response, Callback callback) throws Exception
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
             {
                 response.setStatus(200);
-                response.getHeaders().put("X-URL", request.getPathInContext());
+                response.getHeaders().put("X-URL", Request.getPathInContext(request));
                 response.getHeaders().put("X-HOST", Request.getServerName(request));
                 callback.succeeded();
+                return true;
             }
         });
 
@@ -158,15 +154,20 @@ public class SniSslConnectionFactoryTest
     {
         start((ssl, customizer) ->
         {
-            // Disable the host check because this keystore has no CN and no SAN.
+            // Disable the host check because this keystore has no CN and a SAN only for www.example.com.
             ssl.setKeyStorePath("src/test/resources/keystore_sni_nowild.p12");
             customizer.setSniHostCheck(false);
         });
 
+        // This request won't match any CN or SAN, so the "default" certificate will be returned.
         String response = getResponse("www.acme.org", null);
         assertThat(response, Matchers.containsString("X-HOST: www.acme.org"));
-        assertThat(response, Matchers.containsString("X-CERT: OU=default"));
+        // The JDK implementation may return aliases in random order, so the
+        // "default" certificate could be any of the two present in the KeyStore.
+        assertThat(response, Matchers.either(Matchers.containsString("X-CERT: OU=default"))
+                .or(Matchers.containsString("X-CERT: OU=example")));
 
+        // This request matches a SAN in the KeyStore.
         response = getResponse("www.example.com", null);
         assertThat(response, Matchers.containsString("X-HOST: www.example.com"));
         assertThat(response, Matchers.containsString("X-CERT: OU=example"));

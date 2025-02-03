@@ -1,5 +1,5 @@
 <?xml version="1.0"  encoding="ISO-8859-1"?>
-<!DOCTYPE Configure PUBLIC "-//Jetty//Configure//EN" "https://www.eclipse.org/jetty/configure_9_3.dtd">
+<!DOCTYPE Configure PUBLIC "-//Jetty//Configure//EN" "https://jetty.org/configure_9_3.dtd">
 
 <!-- ==================================================================
 Configure and deploy the test web application in $(jetty.home)/webapps/test
@@ -11,19 +11,25 @@ directory, additional configuration may be specified and hot deployments
 detected.
 ===================================================================== -->
 
-<Configure class="org.eclipse.jetty.ee9.webapp.WebAppContext">
+<Configure id="webapp" class="org.eclipse.jetty.ee9.webapp.WebAppContext">
 
   <Set name="contextPath">/test</Set>
+
+  <Call name="getResourceFactory">
+    <Call id="realmResource" name="newResource">
+      <Arg><SystemProperty name="jetty.home" default="."/>/test-standard-realm.properties</Arg>
+    </Call>
+  </Call>
 
   <Get name="securityHandler">
     <Set name="loginService">
       <New class="org.eclipse.jetty.security.HashLoginService">
         <Set name="name">Test Realm</Set>        
-        <Set name="config"><SystemProperty name="jetty.home" default="."/>/test-standard-realm.properties</Set>
+        <Set name="config"><Ref refid="realmResource"/></Set>
       </New>
     </Set>
     <Set name="authenticator">
-      <New class="org.eclipse.jetty.security.authentication.FormAuthenticator">
+      <New class="org.eclipse.jetty.ee9.security.authentication.FormAuthenticator">
         <Set name="alwaysSaveUri">true</Set>
       </New>
     </Set>

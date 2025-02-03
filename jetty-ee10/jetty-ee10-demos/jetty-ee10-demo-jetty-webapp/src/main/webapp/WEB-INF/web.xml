@@ -2,11 +2,11 @@
 <web-app 
    xmlns="https://jakarta.ee/xml/ns/jakartaee"
    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-   xsi:schemaLocation="https://jakarta.ee/xml/ns/jakartaee https://jakarta.ee/xml/ns/jakartaee/web-app_5_0.xsd"
+   xsi:schemaLocation="https://jakarta.ee/xml/ns/jakartaee https://jakarta.ee/xml/ns/jakartaee/web-app_6_0.xsd"
    metadata-complete="false"
-   version="5.0"> 
+   version="6.0">
 
-  <display-name>Test WebApp</display-name>
+  <display-name>EE10 Demo Jetty WebApp</display-name>
   
   <context-param>
     <param-name>org.eclipse.jetty.server.context.ManagedAttributes</param-name>
@@ -17,16 +17,6 @@
   <listener>
     <listener-class>org.example.TestListener</listener-class>
   </listener>
-
-  <filter>
-    <filter-name>PushFilter</filter-name>
-    <filter-class>org.eclipse.jetty.ee10.servlets.PushCacheFilter</filter-class>
-    <async-supported>true</async-supported>
-  </filter>  
-  <filter-mapping>
-    <filter-name>PushFilter</filter-name>
-    <url-pattern>/*</url-pattern>
-  </filter-mapping>
 
   <filter>
     <filter-name>QoSFilter</filter-name>
@@ -122,18 +112,6 @@
   </servlet-mapping>
   
   <servlet>
-    <servlet-name>CGI</servlet-name>
-    <servlet-class>org.eclipse.jetty.ee10.servlets.CGI</servlet-class>
-    <load-on-startup>1</load-on-startup>
-    <async-supported>true</async-supported>
-  </servlet>
-  
-  <servlet-mapping>
-    <servlet-name>CGI</servlet-name>
-    <url-pattern>/cgi-bin/*</url-pattern>
-  </servlet-mapping>
-  
-  <servlet>
     <servlet-name>Chat</servlet-name>
     <servlet-class>org.example.ChatServlet</servlet-class>
     <load-on-startup>1</load-on-startup>
@@ -153,7 +131,7 @@
 
   <servlet-mapping>
     <servlet-name>WSChat</servlet-name>
-    <url-pattern>/ws/*</url-pattern>
+    <url-pattern>/jetty.websocket/*</url-pattern>
   </servlet-mapping>
   
   

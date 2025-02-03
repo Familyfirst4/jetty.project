@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,15 +13,16 @@
 
 package org.eclipse.jetty.ee10.quickstart;
 
+import java.io.Closeable;
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 
 import jakarta.servlet.ServletContext;
 import org.eclipse.jetty.ee10.annotations.AnnotationConfiguration;
-import org.eclipse.jetty.ee10.annotations.ServletContainerInitializersStarter;
-import org.eclipse.jetty.ee10.plus.annotation.ContainerInitializer;
 import org.eclipse.jetty.ee10.servlet.ServletContainerInitializerHolder;
 import org.eclipse.jetty.ee10.servlet.ServletMapping;
 import org.eclipse.jetty.ee10.webapp.DefaultsDescriptor;
@@ -29,9 +30,13 @@ import org.eclipse.jetty.ee10.webapp.Descriptor;
 import org.eclipse.jetty.ee10.webapp.IterativeDescriptorProcessor;
 import org.eclipse.jetty.ee10.webapp.MetaInfConfiguration;
 import org.eclipse.jetty.ee10.webapp.WebAppContext;
+import org.eclipse.jetty.util.IO;
 import org.eclipse.jetty.util.QuotedStringTokenizer;
 import org.eclipse.jetty.util.StringUtil;
+import org.eclipse.jetty.util.resource.AttributeNormalizer;
 import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
+import org.eclipse.jetty.util.resource.Resources;
 import org.eclipse.jetty.xml.XmlParser;
 
 /**
@@ -39,10 +44,11 @@ import org.eclipse.jetty.xml.XmlParser;
  *
  * Handle  extended elements for quickstart-web.xml
  */
-public class QuickStartDescriptorProcessor extends IterativeDescriptorProcessor
+public class QuickStartDescriptorProcessor extends IterativeDescriptorProcessor implements Closeable
 {
-
     private String _originAttributeName = null;
+    // possibly mounted resources that need to be cleaned up eventually
+    private ResourceFactory.Closeable _resourceFactory = ResourceFactory.closeable();
 
     /**
      *
@@ -70,6 +76,13 @@ public class QuickStartDescriptorProcessor extends IterativeDescriptorProcessor
     public void end(WebAppContext context, Descriptor descriptor)
     {
         _originAttributeName = null;
+    }
+
+    @Override
+    public void close()
+    {
+        IO.close(_resourceFactory);
+        _resourceFactory = null;
     }
 
     /**
@@ -123,123 +136,84 @@ public class QuickStartDescriptorProcessor extends IterativeDescriptorProcessor
         // extract values
         switch (name)
         {
-            case QuickStartGeneratorConfiguration.ORIGIN:
+            case QuickStartGeneratorConfiguration.ORIGIN ->
             {
                 //value already contains what we need
-                break;
             }
-            case ServletContext.ORDERED_LIBS:
-            case AnnotationConfiguration.CONTAINER_INITIALIZERS:
-            case MetaInfConfiguration.METAINF_TLDS:
-            case MetaInfConfiguration.METAINF_RESOURCES:
+            case ServletContext.ORDERED_LIBS, AnnotationConfiguration.CONTAINER_INITIALIZERS, MetaInfConfiguration.METAINF_TLDS, MetaInfConfiguration.METAINF_RESOURCES ->
             {
                 context.removeAttribute(name);
 
-                QuotedStringTokenizer tok = new QuotedStringTokenizer(value, ",");
-                while (tok.hasMoreElements())
+                for (Iterator<String> i = QuotedStringTokenizer.CSV.tokenize(value); i.hasNext();)
                 {
-                    values.add(tok.nextToken().trim());
+                    String token = i.next();
+                    values.add(token);
                 }
-
-                break;
             }
-            default:
-                values.add(value);
+            default -> values.add(value);
         }
 
-        AttributeNormalizer normalizer = new AttributeNormalizer(context.getResourceBase());
+        AttributeNormalizer normalizer = new AttributeNormalizer(context.getBaseResource());
         // handle values
         switch (name)
         {
-            case QuickStartGeneratorConfiguration.ORIGIN:
-            {
+            case QuickStartGeneratorConfiguration.ORIGIN ->
                 context.setAttribute(QuickStartGeneratorConfiguration.ORIGIN, value);
-                break;
-            }
-            case ServletContext.ORDERED_LIBS:
+
+            case ServletContext.ORDERED_LIBS ->
             {
                 List<Object> libs = new ArrayList<>();
                 Object o = context.getAttribute(ServletContext.ORDERED_LIBS);
                 if (o instanceof Collection<?>)
                     libs.addAll((Collection<?>)o);
                 libs.addAll(values);
-                if (libs.size() > 0)
+                if (!libs.isEmpty())
                     context.setAttribute(ServletContext.ORDERED_LIBS, libs);
-
-                break;
             }
-
-            case AnnotationConfiguration.CONTAINER_INITIALIZERS:
+            case AnnotationConfiguration.CONTAINER_INITIALIZERS ->
             {
                 for (String s : values)
                 {
-                    visitServletContainerInitializerHolder(context, 
+                    visitServletContainerInitializerHolder(context,
                         ServletContainerInitializerHolder.fromString(Thread.currentThread().getContextClassLoader(), s));
                 }
-                break;
             }
-
-            case MetaInfConfiguration.METAINF_TLDS:
+            case MetaInfConfiguration.METAINF_TLDS ->
             {
                 List<Object> tlds = new ArrayList<>();
                 Object o = context.getAttribute(MetaInfConfiguration.METAINF_TLDS);
                 if (o instanceof Collection<?>)
                     tlds.addAll((Collection<?>)o);
+
                 for (String i : values)
                 {
-                    Resource r = Resource.newResource(normalizer.expand(i));
-                    if (r.exists())
-                        tlds.add(r.getURI().toURL());
-                    else
-                        throw new IllegalArgumentException("TLD not found: " + r);
+                    String entry = normalizer.expand(i);
+                    tlds.add(context.getResourceFactory().newResource(entry).getURI().toURL());
                 }
 
                 //empty list signals that tlds were prescanned but none found.
                 //a missing METAINF_TLDS attribute means that prescanning was not done.
                 context.setAttribute(MetaInfConfiguration.METAINF_TLDS, tlds);
-                break;
             }
-
-            case MetaInfConfiguration.METAINF_RESOURCES:
+            case MetaInfConfiguration.METAINF_RESOURCES ->
             {
-                for (String i : values)
+                List<URI> uris = values.stream()
+                    .map(normalizer::expand)
+                    .map(context.getResourceFactory()::newResource)
+                    .map(Resource::getURI)
+                    .toList();
+
+                for (URI uri : uris)
                 {
-                    Resource r = Resource.newResource(normalizer.expand(i));
-                    if (r.exists())
-                        visitMetaInfResource(context, r);
-                    else
+                    Resource r = _resourceFactory.newResource(uri);
+                    if (Resources.missing(r))
                         throw new IllegalArgumentException("Resource not found: " + r);
+                    visitMetaInfResource(context, r);
                 }
-                break;
             }
-
-            default:
-        }
-    }
-
-    @Deprecated
-    public void visitContainerInitializer(WebAppContext context, ContainerInitializer containerInitializer)
-    {
-        if (containerInitializer == null)
-            return;
-
-        //add the ContainerInitializer to the list of container initializers
-        List<ContainerInitializer> containerInitializers = (List<ContainerInitializer>)context.getAttribute(AnnotationConfiguration.CONTAINER_INITIALIZERS);
-        if (containerInitializers == null)
-        {
-            containerInitializers = new ArrayList<ContainerInitializer>();
-            context.setAttribute(AnnotationConfiguration.CONTAINER_INITIALIZERS, containerInitializers);
-        }
-
-        containerInitializers.add(containerInitializer);
-
-        //Ensure a bean is set up on the context that will invoke the ContainerInitializers as the context starts
-        ServletContainerInitializersStarter starter = (ServletContainerInitializersStarter)context.getAttribute(AnnotationConfiguration.CONTAINER_INITIALIZER_STARTER);
-        if (starter == null)
-        {
-            starter = new ServletContainerInitializersStarter(context);
-            context.setAttribute(AnnotationConfiguration.CONTAINER_INITIALIZER_STARTER, starter);
-            context.addBean(starter, true);
+            default ->
+            {
+            }
         }
     }
     
@@ -261,20 +235,15 @@ public class QuickStartDescriptorProcessor extends IterativeDescriptorProcessor
         Collection<Resource> metaInfResources = (Collection<Resource>)context.getAttribute(MetaInfConfiguration.METAINF_RESOURCES);
         if (metaInfResources == null)
         {
-            metaInfResources = new HashSet<Resource>();
+            metaInfResources = new HashSet<>();
             context.setAttribute(MetaInfConfiguration.METAINF_RESOURCES, metaInfResources);
         }
         metaInfResources.add(dir);
+
         //also add to base resource of webapp
-        Resource[] collection = new Resource[metaInfResources.size() + 1];
-        int i = 0;
-        collection[i++] = context.getResourceBase();
-        for (Resource resource : metaInfResources)
-        {
-            collection[i++] = resource;
-        }
-        
-        //TODO: need to reinstate multiple resources as base of webapp
-        //context.setBaseResource(new ResourceCollection(collection));
+        List<Resource> collection = new ArrayList<>();
+        collection.add(context.getBaseResource());
+        collection.addAll(metaInfResources);
+        context.setBaseResource(ResourceFactory.combine(collection));
     }
 }

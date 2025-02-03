@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -15,14 +15,16 @@ package org.eclipse.jetty.rewrite.handler;
 
 import java.io.IOException;
 
-import org.eclipse.jetty.server.Request;
-
 /**
  * <p>If this rule matches, terminates the processing of other rules, allowing
  * the request to be processed by the handlers after the {@link RewriteHandler}.</p>
  */
 public class TerminatingPatternRule extends PatternRule
 {
+    public TerminatingPatternRule()
+    {
+    }
+
     public TerminatingPatternRule(String pattern)
     {
         super(pattern);
@@ -35,7 +37,7 @@ public class TerminatingPatternRule extends PatternRule
     }
 
     @Override
-    protected Request.WrapperProcessor apply(Request.WrapperProcessor input) throws IOException
+    protected Handler apply(Handler input) throws IOException
     {
         return input;
     }

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -19,8 +19,6 @@ import org.eclipse.jetty.ee10.webapp.MetaInfConfiguration;
 import org.eclipse.jetty.ee10.webapp.WebAppConfiguration;
 import org.eclipse.jetty.ee10.webapp.WebInfConfiguration;
 import org.eclipse.jetty.ee10.webapp.WebXmlConfiguration;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * <p>Websocket Configuration</p>
@@ -30,17 +28,17 @@ import org.slf4j.LoggerFactory;
  */
 public class JettyWebSocketConfiguration extends AbstractConfiguration
 {
-    private static final Logger LOG = LoggerFactory.getLogger(JettyWebSocketConfiguration.class);
-
     public JettyWebSocketConfiguration()
     {
-        addDependencies(WebXmlConfiguration.class, MetaInfConfiguration.class, WebInfConfiguration.class, FragmentConfiguration.class);
-        addDependents("org.eclipse.jetty.ee10.annotations.AnnotationConfiguration", WebAppConfiguration.class.getName());
-
-        protectAndExpose("org.eclipse.jetty.ee10.websocket.api.");
-        protectAndExpose("org.eclipse.jetty.ee10.websocket.server.");
-        protectAndExpose("org.eclipse.jetty.ee10.websocket.servlet."); // For WebSocketUpgradeFilter
-        hide("org.eclipse.jetty.server.internal.");
-        hide("org.eclipse.jetty.server.config.");
+        super(new Builder()
+            .addDependencies(WebXmlConfiguration.class, MetaInfConfiguration.class, WebInfConfiguration.class, FragmentConfiguration.class)
+            .addDependents("org.eclipse.jetty.ee10.annotations.AnnotationConfiguration", WebAppConfiguration.class.getName())
+            .protectAndExpose("org.eclipse.jetty.websocket.api.")
+            .protectAndExpose("org.eclipse.jetty.websocket.server.")
+            .protectAndExpose("org.eclipse.jetty.ee10.websocket.server.")
+            .protectAndExpose("org.eclipse.jetty.ee10.websocket.servlet.") // For WebSocketUpgradeFilter
+            .hide("org.eclipse.jetty.websocket.server.internal.")
+            .hide("org.eclipse.jetty.ee10.websocket.server.internal.")
+            .hide("org.eclipse.jetty.ee10.websocket.server.config."));
     }
 }

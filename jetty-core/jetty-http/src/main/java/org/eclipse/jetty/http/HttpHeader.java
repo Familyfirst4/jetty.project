@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,13 +14,13 @@
 package org.eclipse.jetty.http;
 
 import java.nio.ByteBuffer;
+import java.util.EnumSet;
 
 import org.eclipse.jetty.util.Index;
 import org.eclipse.jetty.util.StringUtil;
 
 public enum HttpHeader
 {
-
     /**
      * General Fields.
      */
@@ -40,12 +40,14 @@ public enum HttpHeader
      * Entity Fields.
      */
     ALLOW("Allow"),
+    CONTENT_DISPOSITION("Content-Disposition"),
     CONTENT_ENCODING("Content-Encoding"),
     CONTENT_LANGUAGE("Content-Language"),
     CONTENT_LENGTH("Content-Length"),
     CONTENT_LOCATION("Content-Location"),
     CONTENT_MD5("Content-MD5"),
     CONTENT_RANGE("Content-Range"),
+    CONTENT_TRANSFER_ENCODING("Content-Transfer-Encoding"),
     CONTENT_TYPE("Content-Type"),
     EXPIRES("Expires"),
     LAST_MODIFIED("Last-Modified"),
@@ -57,6 +59,8 @@ public enum HttpHeader
     ACCEPT_CHARSET("Accept-Charset"),
     ACCEPT_ENCODING("Accept-Encoding"),
     ACCEPT_LANGUAGE("Accept-Language"),
+    ACCESS_CONTROL_REQUEST_HEADERS("Access-Control-Request-Headers"),
+    ACCESS_CONTROL_REQUEST_METHOD("Access-Control-Request-Method"),
     AUTHORIZATION("Authorization"),
     EXPECT("Expect"),
     FORWARDED("Forwarded"),
@@ -85,6 +89,12 @@ public enum HttpHeader
      * Response Fields.
      */
     ACCEPT_RANGES("Accept-Ranges"),
+    ACCESS_CONTROL_ALLOW_ORIGIN("Access-Control-Allow-Origin"),
+    ACCESS_CONTROL_ALLOW_METHODS("Access-Control-Allow-Methods"),
+    ACCESS_CONTROL_ALLOW_HEADERS("Access-Control-Allow-Headers"),
+    ACCESS_CONTROL_MAX_AGE("Access-Control-Max-Age"),
+    ACCESS_CONTROL_ALLOW_CREDENTIALS("Access-Control-Allow-Credentials"),
+    ACCESS_CONTROL_EXPOSE_HEADERS("Access-Control-Expose-Headers"),
     AGE("Age"),
     ALT_SVC("Alt-Svc"),
     ETAG("ETag"),
@@ -94,6 +104,7 @@ public enum HttpHeader
     RETRY_AFTER("Retry-After"),
     SERVER("Server"),
     SERVLET_ENGINE("Servlet-Engine"),
+    TIMING_ALLOW_ORIGIN("Timing-Allow-Origin"),
     VARY("Vary"),
     WWW_AUTHENTICATE("WWW-Authenticate"),
 
@@ -130,6 +141,18 @@ public enum HttpHeader
     C_PATH(":path", true),
     C_STATUS(":status", true),
     C_PROTOCOL(":protocol");
+
+    public static final EnumSet<HttpHeader> CONTENT_HEADERS;
+    public static final EnumSet<HttpHeader> CONTENT_HEADERS_304;
+
+    static
+    {
+        CONTENT_HEADERS = EnumSet.of(
+            CONTENT_TYPE, CONTENT_LENGTH, CONTENT_ENCODING, CONTENT_LANGUAGE, CONTENT_RANGE, CONTENT_MD5, CONTENT_LOCATION, TRANSFER_ENCODING, CACHE_CONTROL, LAST_MODIFIED, EXPIRES, VARY, ETAG
+        );
+        CONTENT_HEADERS_304 = EnumSet.copyOf(CONTENT_HEADERS);
+        CONTENT_HEADERS_304.remove(ETAG);
+    }
 
     public static final Index<HttpHeader> CACHE = new Index.Builder<HttpHeader>()
         .caseSensitive(false)
@@ -180,7 +203,7 @@ public enum HttpHeader
 
     public boolean is(String s)
     {
-        return _string.equalsIgnoreCase(s);
+        return StringUtil.asciiEqualsIgnoreCase(_string, s);
     }
 
     /**

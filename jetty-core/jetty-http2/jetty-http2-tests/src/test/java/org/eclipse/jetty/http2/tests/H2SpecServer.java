@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,10 +14,17 @@
 package org.eclipse.jetty.http2.tests;
 
 import org.eclipse.jetty.http2.server.HTTP2CServerConnectionFactory;
+import org.eclipse.jetty.io.Content;
+import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.HttpConfiguration;
 import org.eclipse.jetty.server.HttpConnectionFactory;
+import org.eclipse.jetty.server.Request;
+import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
+import org.eclipse.jetty.util.Callback;
+
+import static java.nio.charset.StandardCharsets.UTF_8;
 
 /**
  * HTTP/2 server to run the 'h2spec' tool against.
@@ -38,6 +45,19 @@ public class H2SpecServer
         ServerConnector connector = new ServerConnector(server, http, h2c);
         connector.setPort(port);
         server.addConnector(connector);
+
+        // H2Spec requires the server to read the request
+        // content and respond with 200 and some content.
+        server.setHandler(new Handler.Abstract()
+        {
+            @Override
+            public boolean handle(Request request, Response response, Callback callback)
+            {
+                Content.Source.consumeAll(request, Callback.NOOP);
+                response.write(true, UTF_8.encode("hello"), callback);
+                return true;
+            }
+        });
 
         server.start();
     }

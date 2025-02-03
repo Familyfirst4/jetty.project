@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,20 +13,23 @@
 
 package org.eclipse.jetty.deploy;
 
+import java.nio.file.Path;
 import java.util.Collection;
 import java.util.Set;
 
 import org.eclipse.jetty.deploy.test.XmlConfiguredJetty;
+import org.eclipse.jetty.server.Deployable;
 import org.eclipse.jetty.server.handler.ContextHandlerCollection;
 import org.eclipse.jetty.toolchain.test.jupiter.WorkDir;
 import org.eclipse.jetty.toolchain.test.jupiter.WorkDirExtension;
 import org.eclipse.jetty.util.component.Environment;
 import org.hamcrest.Matchers;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.contains;
+import static org.hamcrest.Matchers.endsWith;
 import static org.hamcrest.Matchers.is;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -34,7 +37,6 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 @ExtendWith(WorkDirExtension.class)
 public class DeploymentManagerTest
 {
-    public WorkDir testdir;
 
     @Test
     public void testReceiveApp() throws Exception
@@ -52,7 +54,7 @@ public class DeploymentManagerTest
         depman.start();
 
         // Trigger new App
-        mockProvider.findWebapp("foo-webapp-1.war");
+        mockProvider.createWebapp("foo-webapp-1.war");
 
         // Test app tracking
         Collection<App> apps = depman.getApps();
@@ -60,9 +62,11 @@ public class DeploymentManagerTest
         assertEquals(1, apps.size(), "Expected App Count");
 
         // Test app get
-        App actual = depman.getAppByOriginId("mock-foo-webapp-1.war");
+        App app = apps.stream().findFirst().orElse(null);
+        assertNotNull(app);
+        App actual = depman.getApp(app.getPath());
         assertNotNull(actual, "Should have gotten app (by id)");
-        assertEquals("mock-foo-webapp-1.war", actual.getFilename(), "Should have gotten app (by id)");
+        assertThat(actual.getPath().toString(), endsWith("mock-foo-webapp-1.war"));
     }
 
     @Test
@@ -115,7 +119,7 @@ public class DeploymentManagerTest
             @Override
             public String getEnvironmentName()
             {
-                return "ee12";
+                return "ee10";
             }
         });
         assertThat(depman.getDefaultEnvironmentName(), is("ee12"));
@@ -126,20 +130,39 @@ public class DeploymentManagerTest
             @Override
             public String getEnvironmentName()
             {
-                return "ee12";
+                return "somethingElse";
             }
         });
         assertThat(depman.getDefaultEnvironmentName(), is("ee12"));
+
+        Environment.ensure("other");
+        depman.addAppProvider(new MockAppProvider()
+        {
+            @Override
+            public String getEnvironmentName()
+            {
+                return "other";
+            }
+        });
+
+        assertThat(depman.getAppProviders().stream().map(AppProvider::getEnvironmentName).sorted(Deployable.ENVIRONMENT_COMPARATOR).toList(),
+            contains(
+                "other",
+                "somethingElse",
+                "ee7",
+                "ee10",
+                "ee12"
+                ));
     }
 
     @Test
-    @Disabled // TODO
-    public void testXmlConfigured() throws Exception
+    public void testXmlConfigured(WorkDir workDir) throws Exception
     {
+        Path testdir = workDir.getEmptyPathDir();
         XmlConfiguredJetty jetty = null;
         try
         {
-            jetty = new XmlConfiguredJetty(testdir.getEmptyPathDir());
+            jetty = new XmlConfiguredJetty(testdir);
             jetty.addConfiguration("jetty.xml");
             jetty.addConfiguration("jetty-http.xml");
             jetty.addConfiguration("jetty-deploymgr-contexts.xml");

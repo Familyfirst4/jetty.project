@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -32,24 +32,20 @@ import java.util.zip.InflaterInputStream;
 import org.eclipse.jetty.http.HttpTester;
 import org.eclipse.jetty.server.HttpConfiguration;
 import org.eclipse.jetty.server.handler.gzip.GzipHandler;
-import org.eclipse.jetty.toolchain.test.FS;
 import org.eclipse.jetty.toolchain.test.IO;
-import org.eclipse.jetty.toolchain.test.MavenTestingUtils;
-import org.eclipse.jetty.util.TypeUtil;
+import org.eclipse.jetty.toolchain.test.jupiter.WorkDir;
+import org.eclipse.jetty.toolchain.test.jupiter.WorkDirExtension;
+import org.eclipse.jetty.util.StringUtil;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 
+@ExtendWith(WorkDirExtension.class)
 public abstract class AbstractGzipTest
 {
     protected static final int DEFAULT_OUTPUT_BUFFER_SIZE = new HttpConfiguration().getOutputBufferSize();
 
-    protected Path workDir;
-
-    public AbstractGzipTest()
-    {
-        workDir = MavenTestingUtils.getTargetTestingPath(this.getClass().getName());
-        FS.ensureEmpty(workDir);
-    }
+    protected WorkDir workDir;
 
     protected FilterInputStream newContentEncodingFilterInputStream(String contentEncoding, InputStream inputStream) throws IOException
     {
@@ -85,7 +81,8 @@ public abstract class AbstractGzipTest
             metadata.uncompressedContent = uncompressedStream.toByteArray();
             metadata.uncompressedSize = metadata.uncompressedContent.length;
             // Odd toUpperCase is because TypeUtil.toHexString is mixed case results!??
-            metadata.uncompressedSha1Sum = TypeUtil.toHexString(digest.digest()).toUpperCase(Locale.ENGLISH);
+            byte[] b = digest.digest();
+            metadata.uncompressedSha1Sum = StringUtil.toHexString(b).toUpperCase(Locale.ENGLISH);
             return metadata;
         }
     }

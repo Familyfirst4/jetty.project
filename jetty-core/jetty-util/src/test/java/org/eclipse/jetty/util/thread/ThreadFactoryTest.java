@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -18,7 +18,7 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
-import org.eclipse.jetty.util.MultiException;
+import org.eclipse.jetty.util.ExceptionUtil;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -38,38 +38,31 @@ public class ThreadFactoryTest
 
             int testThreads = 2000;
             CountDownLatch threadsLatch = new CountDownLatch(testThreads);
-            MultiException mex = new MultiException();
+            final ExceptionUtil.MultiException multiException = new ExceptionUtil.MultiException();
 
             for (int i = 0; i < testThreads; i++)
             {
-                qtp.execute(() ->
+                qtp.execute(() -> multiException.callAndCatch(() ->
                 {
-                    try
+                    TimeUnit.MILLISECONDS.sleep(ThreadLocalRandom.current().nextInt(20, 500));
+                    Thread thread = Thread.currentThread();
+
+                    if (!thread.getName().startsWith("My-"))
                     {
-                        TimeUnit.MILLISECONDS.sleep(ThreadLocalRandom.current().nextInt(20, 500));
-                        Thread thread = Thread.currentThread();
-
-                        if (!thread.getName().startsWith("My-"))
-                        {
-                            mex.add(new AssertionError("Thread " + thread.getName() + " does not start with 'My-'"));
-                        }
-
-                        if (!thread.getThreadGroup().getName().equalsIgnoreCase("my-group"))
-                        {
-                            mex.add(new AssertionError("Thread Group " + thread.getThreadGroup().getName() + " is not 'my-group'"));
-                        }
-
-                        threadsLatch.countDown();
+                        multiException.add(new AssertionError("Thread " + thread.getName() + " does not start with 'My-'"));
                     }
-                    catch (InterruptedException e)
+
+                    if (!thread.getThreadGroup().getName().equalsIgnoreCase("my-group"))
                     {
-                        e.printStackTrace();
+                        multiException.add(new AssertionError("Thread Group " + thread.getThreadGroup().getName() + " is not 'my-group'"));
                     }
-                });
+
+                    threadsLatch.countDown();
+                }));
             }
 
             assertTrue(threadsLatch.await(5, TimeUnit.SECONDS), "Did not see all tasks finish");
-            mex.ifExceptionThrow();
+            multiException.ifExceptionThrow();
         }
         finally
         {

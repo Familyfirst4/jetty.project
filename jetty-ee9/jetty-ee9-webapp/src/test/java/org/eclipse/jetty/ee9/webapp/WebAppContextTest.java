@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,13 +14,19 @@
 package org.eclipse.jetty.ee9.webapp;
 
 import java.io.File;
+import java.net.URI;
 import java.net.URL;
+import java.nio.file.FileSystem;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -28,6 +34,8 @@ import jakarta.servlet.GenericServlet;
 import jakarta.servlet.ServletContext;
 import jakarta.servlet.ServletRequest;
 import jakarta.servlet.ServletResponse;
+import org.eclipse.jetty.ee.WebAppClassLoading;
+import org.eclipse.jetty.ee9.nested.ContextHandler;
 import org.eclipse.jetty.ee9.servlet.ErrorPageErrorHandler;
 import org.eclipse.jetty.ee9.servlet.ServletContextHandler;
 import org.eclipse.jetty.http.HttpStatus;
@@ -40,17 +48,25 @@ import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.server.handler.ContextHandlerCollection;
 import org.eclipse.jetty.toolchain.test.FS;
+import org.eclipse.jetty.toolchain.test.MavenPaths;
 import org.eclipse.jetty.toolchain.test.MavenTestingUtils;
 import org.eclipse.jetty.toolchain.test.jupiter.WorkDir;
 import org.eclipse.jetty.toolchain.test.jupiter.WorkDirExtension;
+import org.eclipse.jetty.util.FileID;
+import org.eclipse.jetty.util.IO;
+import org.eclipse.jetty.util.URIUtil;
 import org.eclipse.jetty.util.component.LifeCycle;
-import org.eclipse.jetty.util.resource.PathResource;
+import org.eclipse.jetty.util.resource.FileSystemPool;
 import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
+import org.eclipse.jetty.util.resource.Resources;
 import org.hamcrest.Matchers;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.parallel.Isolated;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -59,26 +75,70 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.contains;
+import static org.hamcrest.Matchers.containsInAnyOrder;
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.empty;
+import static org.hamcrest.Matchers.endsWith;
+import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.notNullValue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@Isolated
 @ExtendWith(WorkDirExtension.class)
 public class WebAppContextTest
 {
     public static final Logger LOG = LoggerFactory.getLogger(WebAppContextTest.class);
-    public WorkDir workDir;
     private final List<Object> lifeCycles = new ArrayList<>();
+
+    @BeforeEach
+    public void beforeEach()
+    {
+        assertThat(FileSystemPool.INSTANCE.mounts(), empty());
+    }
 
     @AfterEach
     public void tearDown()
     {
         lifeCycles.forEach(LifeCycle::stop);
         Configurations.cleanKnown();
+        assertThat(FileSystemPool.INSTANCE.mounts(), empty());
+    }
+
+    /**
+     * Create a webapp as a war on the fly.
+     *
+     * @param tempDir the directory into which the war will be generated
+     * @param name the name of the war
+     * @return the Path of the generated war
+     *
+     * @throws Exception if the war cannot be created
+     */
+    private Path createWar(Path tempDir, String name) throws Exception
+    {
+        // Create war on the fly
+        Path testWebappDir = MavenTestingUtils.getTargetPath("test-classes/webapp");
+        assertTrue(Files.exists(testWebappDir));
+        Path warFile = tempDir.resolve(name);
+
+        Map<String, String> env = new HashMap<>();
+        env.put("create", "true");
+
+        URI uri = URI.create("jar:" + warFile.toUri().toASCIIString());
+        // Use ZipFS so that we can create paths that are just "/"
+        try (FileSystem zipfs = FileSystems.newFileSystem(uri, env))
+        {
+            Path root = zipfs.getPath("/");
+            IO.copyDir(testWebappDir, root);
+        }
+
+        return warFile;
     }
 
     private Server newServer()
@@ -107,6 +167,67 @@ public class WebAppContextTest
         WebAppContext wac = new WebAppContext();
         wac.setResourceBase(MavenTestingUtils.getTargetTestingDir().getAbsolutePath());
         server.setHandler(wac);
+
+        //test that an empty default-context-path defaults to root
+        wac.setDescriptor(webXmlEmptyPath.getAbsolutePath());
+        server.start();
+        assertEquals("/", wac.getContextPath());
+
+        server.stop();
+
+        //test web-default.xml value is used
+        wac.setDescriptor(null);
+        wac.setDefaultsDescriptor(webDefaultXml.getAbsolutePath());
+        server.start();
+        assertEquals("/one", wac.getContextPath());
+
+        server.stop();
+
+        //test web.xml value is used
+        wac.setDescriptor(webXml.getAbsolutePath());
+        server.start();
+        assertEquals("/two", wac.getContextPath());
+
+        server.stop();
+
+        //test override-web.xml value is used
+        wac.setOverrideDescriptor(overrideWebXml.getAbsolutePath());
+        server.start();
+        assertEquals("/three", wac.getContextPath());
+
+        server.stop();
+
+        //test that explicitly set context path is used instead
+        wac.setContextPath("/foo");
+        server.start();
+        assertEquals("/foo", wac.getContextPath());
+    }
+
+    @Test
+    public void nestedContextHandlerTest() throws Exception
+    {
+        Server server = newServer();
+        File webXml = MavenTestingUtils.getTargetFile("test-classes/web-with-default-context-path.xml");
+        File webXmlEmptyPath = MavenTestingUtils.getTargetFile("test-classes/web-with-empty-default-context-path.xml");
+        File webDefaultXml = MavenTestingUtils.getTargetFile("test-classes/web-default-with-default-context-path.xml");
+        File overrideWebXml = MavenTestingUtils.getTargetFile("test-classes/override-web-with-default-context-path.xml");
+        assertNotNull(webXml);
+        assertNotNull(webDefaultXml);
+        assertNotNull(overrideWebXml);
+        assertNotNull(webXmlEmptyPath);
+
+        WebAppContext wac = new WebAppContext();
+        wac.setResourceBase(MavenTestingUtils.getTargetTestingDir().getAbsolutePath());
+
+        // Put WebAppContext inside another nested ContextHandler.
+        ContextHandler contextHandler = new ContextHandler("/", wac);
+        server.setHandler(contextHandler);
+
+        // All components should be started even the webapp context CoreContextHandler.
+        assertNotNull(contextHandler.getServer());
+        assertNotNull(contextHandler.getCoreContextHandler().getServer());
+        assertNotNull(wac.getServer());
+        assertNotNull(wac.getCoreContextHandler().getServer());
 
         //test that an empty default-context-path defaults to root
         wac.setDescriptor(webXmlEmptyPath.getAbsolutePath());
@@ -186,6 +307,7 @@ public class WebAppContextTest
         expectedConfigurations.add("org.eclipse.jetty.ee9.webapp.WebXmlConfiguration");
         expectedConfigurations.add("org.eclipse.jetty.ee9.webapp.MetaInfConfiguration");
         expectedConfigurations.add("org.eclipse.jetty.ee9.webapp.FragmentConfiguration");
+        expectedConfigurations.add("org.eclipse.jetty.ee9.webapp.JaasConfiguration");
         expectedConfigurations.add("org.eclipse.jetty.ee9.webapp.WebAppConfiguration");
         expectedConfigurations.add("org.eclipse.jetty.ee9.webapp.JettyWebXmlConfiguration");
 
@@ -218,8 +340,8 @@ public class WebAppContextTest
         server.start();
 
         ServletContext ctx = context.getServletContext();
-        assertNotNull(ctx.getRealPath("/doesnotexist"));
-        assertNotNull(ctx.getRealPath("/doesnotexist/"));
+        assertNull(ctx.getRealPath("/doesnotexist"));
+        assertNull(ctx.getRealPath("/doesnotexist/"));
     }
 
     /**
@@ -232,7 +354,7 @@ public class WebAppContextTest
     public void testContextWhiteList() throws Exception
     {
         Server server = newServer();
-        Handler.Collection handlers = new Handler.Collection();
+        Handler.Sequence handlers = new Handler.Sequence();
         WebAppContext contextA = new WebAppContext(".", "/A");
 
         contextA.addServlet(ServletA.class, "/s");
@@ -256,9 +378,9 @@ public class WebAppContextTest
     }
 
     @Test
-    public void testAlias() throws Exception
+    public void testAlias(WorkDir workDir) throws Exception
     {
-        Path tempDir = workDir.getEmptyPathDir().resolve("dir");
+        Path tempDir = workDir.getEmptyPathDir();
         FS.ensureEmpty(tempDir);
 
         Path webinf = tempDir.resolve("WEB-INF");
@@ -271,12 +393,15 @@ public class WebAppContextTest
         FS.touch(someClass);
 
         WebAppContext context = new WebAppContext();
-        context.setBaseResource(new PathResource(tempDir));
+        context.setBaseResource(context.getResourceFactory().newResource(tempDir));
 
         context.setResourceAlias("/WEB-INF/classes/", "/classes/");
 
-        assertTrue(Resource.newResource(context.getServletContext().getResource("/WEB-INF/classes/SomeClass.class")).exists());
-        assertTrue(Resource.newResource(context.getServletContext().getResource("/classes/SomeClass.class")).exists());
+        try (ResourceFactory.Closeable resourceFactory = ResourceFactory.closeable())
+        {
+            assertTrue(resourceFactory.newResource(context.getServletContext().getResource("/WEB-INF/classes/SomeClass.class")).exists());
+            assertTrue(resourceFactory.newResource(context.getServletContext().getResource("/classes/SomeClass.class")).exists());
+        }
     }
 
     @Test
@@ -294,22 +419,19 @@ public class WebAppContextTest
     {
         Server server = newServer();
 
-        Handler.Collection handlers = new Handler.Collection();
-        server.setHandler(handlers);
-
         ContextHandlerCollection contexts = new ContextHandlerCollection();
-        handlers.addHandler(contexts);
+        server.setHandler(contexts);
 
         WebAppContext context = new WebAppContext();
         Path testWebapp = MavenTestingUtils.getTargetPath("test-classes/webapp");
-        context.setBaseResource(new PathResource(testWebapp));
+        context.setBaseResource(context.getResourceFactory().newResource(testWebapp));
         context.setContextPath("/");
 
         contexts.addHandler(context);
 
         LocalConnector connector = new LocalConnector(server);
         server.addConnector(connector);
-        connector.getConnectionFactory(HttpConnectionFactory.class).getHttpConfiguration().setUriCompliance(UriCompliance.RFC3986);
+        connector.getConnectionFactory(HttpConnectionFactory.class).getHttpConfiguration().setUriCompliance(UriCompliance.UNSAFE);
 
         server.start();
 
@@ -358,15 +480,12 @@ public class WebAppContextTest
         server.addConnector(connector);
         connector.getConnectionFactory(HttpConnectionFactory.class).getHttpConfiguration().setUriCompliance(UriCompliance.LEGACY);
 
-        Handler.Collection handlers = new Handler.Collection();
-        server.setHandler(handlers);
-
         ContextHandlerCollection contexts = new ContextHandlerCollection();
-        handlers.addHandler(contexts);
+        server.setHandler(contexts);
 
         WebAppContext context = new WebAppContext();
         Path testWebapp = MavenTestingUtils.getTargetPath("test-classes/webapp");
-        context.setBaseResource(new PathResource(testWebapp));
+        context.setBaseResource(context.getResourceFactory().newResource(testWebapp));
         context.setContextPath("/");
         contexts.addHandler(context);
 
@@ -381,15 +500,14 @@ public class WebAppContextTest
     {
         Server server = newServer();
 
-        Handler.Collection handlers = new Handler.Collection();
-        server.setHandler(handlers);
-
         ContextHandlerCollection contexts = new ContextHandlerCollection();
-        handlers.addHandler(contexts);
+        server.setHandler(contexts);
 
         WebAppContext context = new WebAppContext();
-        Path testWebapp = MavenTestingUtils.getTargetPath("test-classes/webapp");
-        context.setBaseResource(new PathResource(testWebapp));
+        Path testWebapp = MavenPaths.findTestResourceDir("webapp");
+        Resource testWebappResource = context.getResourceFactory().newResource(testWebapp);
+        assertTrue(Resources.isReadableDirectory(testWebappResource));
+        context.setBaseResource(testWebappResource);
         context.setContextPath("/");
 
         contexts.addHandler(context);
@@ -399,7 +517,12 @@ public class WebAppContextTest
 
         server.start();
 
-        String rawResponse = connector.getResponse("GET http://localhost:8080 HTTP/1.1\r\nHost: localhost:8080\r\nConnection: close\r\n\r\n");
+        String rawResponse = connector.getResponse("""
+            GET http://localhost:8080 HTTP/1.1\r
+            Host: localhost:8080\r
+            Connection: close\r
+            \r
+            """);
         HttpTester.Response response = HttpTester.parseResponse(rawResponse);
         assertThat("Response OK", response.getStatus(), is(HttpStatus.OK_200));
     }
@@ -409,17 +532,14 @@ public class WebAppContextTest
     {
         Server server = newServer();
 
-        Handler.Collection handlers = new Handler.Collection();
-        server.setHandler(handlers);
-
         ContextHandlerCollection contexts = new ContextHandlerCollection();
-        handlers.addHandler(contexts);
+        server.setHandler(contexts);
 
         WebAppContext context = new WebAppContext(null, null, null, null, null, new ErrorPageErrorHandler(),
             ServletContextHandler.NO_SESSIONS | ServletContextHandler.NO_SECURITY);
         context.setContextPath("/");
         Path testWebapp = MavenTestingUtils.getTargetPath("test-classes/webapp");
-        context.setBaseResource(new PathResource(testWebapp));
+        context.setBaseResource(context.getResourceFactory().newResource(testWebapp));
         contexts.addHandler(context);
 
         LocalConnector connector = new LocalConnector(server);
@@ -448,26 +568,152 @@ public class WebAppContextTest
     }
 
     @Test
-    public void testBaseResourceAbsolutePath() throws Exception
+    public void testBaseResourceAbsolutePath(WorkDir workDir) throws Exception
     {
         Server server = newServer();
 
         WebAppContext context = new WebAppContext();
         context.setContextPath("/");
 
-        Path warPath = MavenTestingUtils.getTargetPath("test-classes/wars/dump.war");
+        Path warPath = createWar(workDir.getEmptyPathDir(), "test.war");
         warPath = warPath.toAbsolutePath();
         assertTrue(warPath.isAbsolute(), "Path should be absolute: " + warPath);
         // Use String reference to war
         // On Unix / Linux this should have no issue.
-        // On Windows with fully qualified paths such as "E:\mybase\webapps\dump.war" the
+        // On Windows with fully qualified paths such as "E:\mybase\webapps\test.war" the
         // resolution of the Resource can trigger various URI issues with the "E:" portion of the provided String.
-        context.setResourceBase(warPath.toString());
+        context.setBaseResourceAsString(warPath.toString());
 
         server.setHandler(context);
         server.start();
 
         assertTrue(context.isAvailable(), "WebAppContext should be available");
+    }
+
+    @Test
+    public void testGetResourceFromCollection() throws Exception
+    {
+        Server server = newServer();
+
+        WebAppContext context = new WebAppContext();
+        context.setContextPath("/");
+        context.setBaseResource(ResourceFactory.combine(
+            context.getResourceFactory().newResource(MavenPaths.findTestResourceDir("wars/layer0/")),
+            context.getResourceFactory().newResource(MavenPaths.findTestResourceDir("wars/layer1/"))));
+        server.setHandler(context);
+        server.start();
+
+        ServletContext servletContext = context.getServletContext();
+        assertThat(servletContext.getResource("/WEB-INF/zero.xml"), notNullValue());
+        assertThat(servletContext.getResource("/WEB-INF/one.xml"), notNullValue());
+    }
+
+    @Test
+    public void testGetResourcePathsFromCollection() throws Exception
+    {
+        Server server = newServer();
+
+        WebAppContext context = new WebAppContext();
+        context.setContextPath("/");
+        context.setBaseResource(ResourceFactory.combine(
+            context.getResourceFactory().newResource(MavenPaths.findTestResourceDir("wars/layer0/")),
+            context.getResourceFactory().newResource(MavenPaths.findTestResourceDir("wars/layer1/"))));
+        server.setHandler(context);
+        server.start();
+
+        ServletContext servletContext = context.getServletContext();
+        assertThat(servletContext.getResourcePaths("/WEB-INF/"), containsInAnyOrder("/WEB-INF/zero.xml", "/WEB-INF/one.xml"));
+    }
+
+    @Test
+    public void testGetResourcePathsWithDirsFromCollection() throws Exception
+    {
+        Server server = newServer();
+
+        WebAppContext context = new WebAppContext();
+        context.setContextPath("/");
+        context.setBaseResource(ResourceFactory.combine(
+            context.getResourceFactory().newResource(MavenPaths.findTestResourceDir("wars/layer0/")),
+            context.getResourceFactory().newResource(MavenPaths.findTestResourceDir("wars/layer1/")),
+            context.getResourceFactory().newResource(MavenPaths.findTestResourceDir("wars/with_dirs/"))
+        ));
+        server.setHandler(context);
+        server.start();
+
+        ServletContext servletContext = context.getServletContext();
+        Set<String> results = servletContext.getResourcePaths("/WEB-INF/");
+        String[] expected = {
+            "/WEB-INF/zero.xml",
+            "/WEB-INF/one.xml",
+            "/WEB-INF/bar/",
+            "/WEB-INF/foo/"
+        };
+        assertThat(results, containsInAnyOrder(expected));
+    }
+
+    @Test
+    @Disabled("There is extra decoding of the nested-reserved paths that is getting in the way")
+    public void testGetResourcePaths() throws Exception
+    {
+        Server server = newServer();
+        LocalConnector connector = new LocalConnector(server);
+        server.addConnector(connector);
+
+        Path warRoot = MavenPaths.findTestResourceDir("webapp-with-resources");
+        assertTrue(Files.isDirectory(warRoot), "Unable to find directory: " + warRoot);
+        WebAppContext context = new WebAppContext();
+        Resource warResource = context.getResourceFactory().newResource(warRoot);
+        context.setWarResource(warResource);
+        context.setContextPath("/");
+        server.setHandler(context);
+        server.start();
+
+        ServletContext servletContext = context.getServletContext();
+
+        Set<String> resourcePaths = servletContext.getResourcePaths("/");
+        String[] expected = {
+            "/WEB-INF/",
+            "/nested-reserved-!#\\\\$%&()*+,:=?@[]-meta-inf-resource.txt",
+            };
+        assertThat(resourcePaths.size(), is(2));
+        assertThat(resourcePaths, containsInAnyOrder(expected));
+
+        String realPath = servletContext.getRealPath("/");
+        assertThat(realPath, notNullValue());
+        assertThat(servletContext.getRealPath("/WEB-INF/"), endsWith("/WEB-INF/"));
+        // TODO the following assertion fails because of a bug in the JDK (see JDK-8311079 and MountedPathResourceTest.testJarFileResourceAccessBackSlash())
+        //assertThat(servletContext.getRealPath(resourcePaths.get(1)), endsWith("/nested-reserved-!#\\\\$%&()*+,:=?@[]-meta-inf-resource.txt"));
+
+        assertThat(servletContext.getResource("/WEB-INF/"), notNullValue());
+        // TODO the following assertion fails because of a bug in the JDK (see JDK-8311079 and MountedPathResourceTest.testJarFileResourceAccessBackSlash())
+        //assertThat(servletContext.getResource("/nested-reserved-!#\\\\$%&()*+,:=?@[]-meta-inf-resource.txt"), notNullValue());
+
+        HttpTester.Response response1 = HttpTester.parseResponse(connector.getResponse("""
+            GET /resource HTTP/1.1\r
+            Host: local\r
+            Connection: close\r
+            \r
+            """));
+
+        assertThat(response1.getStatus(), is(HttpStatus.OK_200));
+        assertThat(response1.getContent(), containsString("/WEB-INF"));
+        assertThat(response1.getContent(), containsString("/WEB-INF/lib"));
+        assertThat(response1.getContent(), containsString("/WEB-INF/lib/odd-resource.jar"));
+        assertThat(response1.getContent(), containsString("/nested-reserved-!#\\\\$%&()*+,:=?@[]-meta-inf-resource.txt"));
+
+        HttpTester.Response response2 = HttpTester.parseResponse(connector.getResponse("""
+            GET /real HTTP/1.1\r
+            Host: local\r
+            Connection: close\r
+            \r
+            """));
+
+        assertThat(response2.getStatus(), is(HttpStatus.OK_200));
+        assertThat(response2.getContent(), containsString("/WEB-INF"));
+        assertThat(response2.getContent(), containsString("/WEB-INF/lib"));
+        assertThat(response2.getContent(), containsString("/WEB-INF/lib/odd-resource.jar"));
+        // TODO the following assertion fails because of a bug in the JDK (see JDK-8311079 and MountedPathResourceTest.testJarFileResourceAccessBackSlash())
+        //assertThat(response2.getContent(), containsString("/nested-reserved-!#\\\\$%&()*+,:=?@[]-meta-inf-resource.txt"));
     }
 
     public static Stream<Arguments> extraClasspathGlob()
@@ -496,12 +742,16 @@ public class WebAppContextTest
     @MethodSource("extraClasspathGlob")
     public void testExtraClasspathGlob(String description, String extraClasspathGlobReference) throws Exception
     {
+        Path testPath = MavenPaths.targetTestDir("testExtraClasspathGlob");
+        FS.ensureDirExists(testPath);
+        FS.ensureEmpty(testPath);
+
         Server server = newServer();
 
         WebAppContext context = new WebAppContext();
         context.setContextPath("/");
-        Path warPath = MavenTestingUtils.getTargetPath("test-classes/wars/dump.war");
-        context.setBaseResource(new PathResource(warPath));
+        Path warPath = createWar(testPath, "test.war");
+        context.setBaseResource(context.getResourceFactory().newResource(warPath));
         context.setExtraClasspath(extraClasspathGlobReference);
 
         server.setHandler(context);
@@ -516,39 +766,33 @@ public class WebAppContextTest
         WebAppClassLoader webAppClassLoader = (WebAppClassLoader)contextClassLoader;
         Path extLibsDir = MavenTestingUtils.getTargetPath("test-classes/ext");
         extLibsDir = extLibsDir.toAbsolutePath();
-        List<Path> expectedPaths;
+
+        List<URI> expectedUris;
         try (Stream<Path> s = Files.list(extLibsDir))
         {
-            expectedPaths = s
+            expectedUris = s
                 .filter(Files::isRegularFile)
-                .filter((path) -> path.toString().endsWith(".jar"))
+                .filter(FileID::isLibArchive)
+                .sorted(Comparator.naturalOrder())
+                .map(Path::toUri)
+                .map(URIUtil::toJarFileUri)
                 .collect(Collectors.toList());
         }
-        List<Path> actualPaths = new ArrayList<>();
+        List<URI> actualURIs = new ArrayList<>();
         for (URL url : webAppClassLoader.getURLs())
         {
-            actualPaths.add(Paths.get(url.toURI()));
+            actualURIs.add(url.toURI());
         }
-        assertThat("[" + description + "] WebAppClassLoader.urls.length", actualPaths.size(), is(expectedPaths.size()));
-        for (Path expectedPath : expectedPaths)
-        {
-            boolean found = false;
-            for (Path actualPath : actualPaths)
-            {
-                if (Files.isSameFile(actualPath, expectedPath))
-                {
-                    found = true;
-                }
-            }
-            assertTrue(found, "[" + description + "] Not able to find expected jar in WebAppClassLoader: " + expectedPath);
-        }
+        assertThat("[" + description + "] WebAppClassLoader.urls.length", actualURIs.size(), is(expectedUris.size()));
+
+        assertThat(actualURIs, contains(expectedUris.toArray()));
     }
 
     public static Stream<Arguments> extraClasspathDir()
     {
         List<Arguments> references = new ArrayList<>();
 
-        Path extLibs = MavenTestingUtils.getTargetPath("test-classes/ext");
+        Path extLibs = MavenPaths.findTestResourceDir("ext");
         extLibs = extLibs.toAbsolutePath();
 
         // Absolute reference with trailing slash
@@ -563,7 +807,7 @@ public class WebAppContextTest
         // This will be in the String form similar to "src/test/resources/ext/" (with trailing slash)
         references.add(Arguments.of(relativeExtLibsDir + File.separator));
 
-        // This will be in the String form similar to "src/test/resources/ext/" (without trailing slash)
+        // This will be in the String form similar to "src/test/resources/ext" (without trailing slash)
         references.add(Arguments.of(relativeExtLibsDir));
 
         return references.stream();
@@ -576,12 +820,16 @@ public class WebAppContextTest
     @MethodSource("extraClasspathDir")
     public void testExtraClasspathDir(String extraClassPathReference) throws Exception
     {
+        Path testPath = MavenPaths.targetTestDir("testExtraClasspathDir");
+        FS.ensureDirExists(testPath);
+        FS.ensureEmpty(testPath);
+
         Server server = newServer();
 
         WebAppContext context = new WebAppContext();
         context.setContextPath("/");
-        Path warPath = MavenTestingUtils.getTargetPath("test-classes/wars/dump.war");
-        context.setBaseResource(new PathResource(warPath));
+        Path warPath = createWar(testPath, "test.war");
+        context.setBaseResource(context.getResourceFactory().newResource(warPath));
 
         context.setExtraClasspath(extraClassPathReference);
 
@@ -597,8 +845,73 @@ public class WebAppContextTest
         WebAppClassLoader webAppClassLoader = (WebAppClassLoader)contextClassLoader;
         URL[] urls = webAppClassLoader.getURLs();
         assertThat("URLs", urls.length, is(1));
-        Path extLibs = MavenTestingUtils.getTargetPath("test-classes/ext");
+        Path extLibs = MavenPaths.findTestResourceDir("ext");
         extLibs = extLibs.toAbsolutePath();
         assertThat("URL[0]", urls[0].toURI(), is(extLibs.toUri()));
+    }
+
+    @Test
+    public void testAddServerClasses() throws Exception
+    {
+        Server server = newServer();
+
+        String testPattern = "org.eclipse.jetty.ee9.webapp.test.";
+
+        WebAppContext.addServerClasses(server, testPattern);
+
+        WebAppContext context = new WebAppContext();
+        context.setContextPath("/");
+        Path testPath = MavenPaths.targetTestDir("testAddServerClasses");
+        FS.ensureDirExists(testPath);
+        FS.ensureEmpty(testPath);
+        Path warPath = createWar(testPath, "test.war");
+        context.setBaseResource(context.getResourceFactory().newResource(warPath));
+
+        // Add test for old/original API (replaced with getHiddenClassMatcher() in ee10)
+        context.getServerClassMatcher().add("org.deprecated.api.");
+
+        server.setHandler(context);
+        server.start();
+
+        List<String> serverClasses = List.of(context.getServerClasses());
+        assertThat("Should have environment specific test pattern", serverClasses, hasItem(testPattern));
+        assertThat("Should have pattern from defaults", serverClasses, hasItem("org.eclipse.jetty."));
+        assertThat("Should have pattern from JaasConfiguration", serverClasses, hasItem("-org.eclipse.jetty.security.jaas."));
+        for (String defaultServerClass: WebAppClassLoading.DEFAULT_HIDDEN_CLASSES)
+            assertThat("Should have default patterns", serverClasses, hasItem(defaultServerClass));
+        assertThat("deprecated API", serverClasses, hasItem("org.deprecated.api."));
+    }
+
+    @Test
+    public void testAddSystemClasses() throws Exception
+    {
+        Server server = newServer();
+
+        String testPattern = "org.eclipse.jetty.ee9.webapp.test.";
+
+        WebAppContext.addSystemClasses(server, testPattern);
+
+        WebAppContext context = new WebAppContext();
+        context.setContextPath("/");
+        Path testPath = MavenPaths.targetTestDir("testAddServerClasses");
+        FS.ensureDirExists(testPath);
+        FS.ensureEmpty(testPath);
+        Path warPath = createWar(testPath, "test.war");
+        context.setBaseResource(context.getResourceFactory().newResource(warPath));
+
+        // Add test for old/original API (replaced with getProtectedClassMatcher() in ee10)
+        context.getSystemClassMatcher().add("org.deprecated.api.");
+
+        server.setHandler(context);
+        server.start();
+
+        List<String> systemClasses = List.of(context.getSystemClasses());
+        assertThat("Should have environment specific test pattern", systemClasses, hasItem(testPattern));
+        assertThat("Should have pattern from defaults", systemClasses, hasItem("javax."));
+        assertThat("Should have pattern from defaults", systemClasses, hasItem("jakarta."));
+        assertThat("Should have pattern from JaasConfiguration", systemClasses, hasItem("org.eclipse.jetty.security.jaas."));
+        for (String defaultSystemClass : WebAppClassLoading.DEFAULT_PROTECTED_CLASSES)
+            assertThat("Should have default patterns", systemClasses, hasItem(defaultSystemClass));
+        assertThat("deprecated API", systemClasses, hasItem("org.deprecated.api."));
     }
 }
