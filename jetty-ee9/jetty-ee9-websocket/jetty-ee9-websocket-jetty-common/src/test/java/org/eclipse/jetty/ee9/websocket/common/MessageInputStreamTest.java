@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -25,33 +25,26 @@ import org.eclipse.jetty.util.BufferUtil;
 import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.FutureCallback;
 import org.eclipse.jetty.util.IO;
+import org.eclipse.jetty.websocket.core.CoreSession;
 import org.eclipse.jetty.websocket.core.Frame;
 import org.eclipse.jetty.websocket.core.OpCode;
-import org.eclipse.jetty.websocket.core.internal.messages.MessageInputStream;
-import org.junit.jupiter.api.AfterEach;
+import org.eclipse.jetty.websocket.core.messages.MessageInputStream;
 import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeout;
 
 public class MessageInputStreamTest
 {
-    public TestableLeakTrackingBufferPool bufferPool = new TestableLeakTrackingBufferPool("Test");
-
-    @AfterEach
-    public void afterEach()
-    {
-        bufferPool.assertNoLeaks();
-    }
-
     @Test
     public void testBasicAppendRead() throws IOException
     {
         assertTimeout(Duration.ofMillis(5000), () ->
         {
-            try (MessageInputStream stream = new MessageInputStream())
+            try (MessageInputStream stream = new MessageInputStream(new CoreSession.Empty()))
             {
                 // Append a single message (simple, short)
                 Frame frame = new Frame(OpCode.TEXT);
@@ -72,7 +65,7 @@ public class MessageInputStreamTest
     @Test
     public void testMultipleReadsIntoSingleByteArray() throws IOException
     {
-        try (MessageInputStream stream = new MessageInputStream())
+        try (MessageInputStream stream = new MessageInputStream(new CoreSession.Empty()))
         {
             // Append a single message (simple, short)
             Frame frame = new Frame(OpCode.TEXT);
@@ -104,7 +97,7 @@ public class MessageInputStreamTest
     {
         assertTimeout(Duration.ofMillis(5000), () ->
         {
-            try (MessageInputStream stream = new MessageInputStream())
+            try (MessageInputStream stream = new MessageInputStream(new CoreSession.Empty()))
             {
                 final AtomicBoolean hadError = new AtomicBoolean(false);
                 final CountDownLatch startLatch = new CountDownLatch(1);
@@ -149,7 +142,7 @@ public class MessageInputStreamTest
     {
         assertTimeout(Duration.ofMillis(5000), () ->
         {
-            try (MessageInputStream stream = new MessageInputStream())
+            try (MessageInputStream stream = new MessageInputStream(new CoreSession.Empty()))
             {
                 final AtomicBoolean hadError = new AtomicBoolean(false);
 
@@ -184,7 +177,7 @@ public class MessageInputStreamTest
     {
         assertTimeout(Duration.ofMillis(5000), () ->
         {
-            try (MessageInputStream stream = new MessageInputStream())
+            try (MessageInputStream stream = new MessageInputStream(new CoreSession.Empty()))
             {
                 final AtomicBoolean hadError = new AtomicBoolean(false);
 
@@ -230,7 +223,7 @@ public class MessageInputStreamTest
     {
         assertTimeout(Duration.ofMillis(5000), () ->
         {
-            try (MessageInputStream stream = new MessageInputStream())
+            try (MessageInputStream stream = new MessageInputStream(new CoreSession.Empty()))
             {
                 // Append parts of message
                 Frame msg1 = new Frame(OpCode.BINARY).setPayload("Hello ").setFin(false);
@@ -257,7 +250,7 @@ public class MessageInputStreamTest
     {
         assertTimeout(Duration.ofMillis(5000), () ->
         {
-            try (MessageInputStream stream = new MessageInputStream())
+            try (MessageInputStream stream = new MessageInputStream(new CoreSession.Empty()))
             {
                 // Append parts of message
                 Frame msg1 = new Frame(OpCode.BINARY).setPayload("Hello ").setFin(false);
@@ -278,5 +271,24 @@ public class MessageInputStreamTest
                 assertThat("Message", message, is("Hello World"));
             }
         });
+    }
+
+    @Test
+    public void testReadSingleByteIsNotSigned() throws Exception
+    {
+        try (MessageInputStream stream = new MessageInputStream(new CoreSession.Empty()))
+        {
+            // Byte must be greater than 127.
+            int theByte = 200;
+            // Append a single message (simple, short)
+            Frame frame = new Frame(OpCode.BINARY);
+            frame.setPayload(new byte[]{(byte)theByte});
+            frame.setFin(true);
+            stream.accept(frame, Callback.NOOP);
+
+            // Single byte read must not return a signed byte.
+            int read = stream.read();
+            assertEquals(theByte, read);
+        }
     }
 }

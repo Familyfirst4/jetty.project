@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -24,15 +24,18 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.eclipse.jetty.ee10.servlet.ServletContextHandler;
 import org.eclipse.jetty.ee10.servlet.ServletContextRequest;
+import org.eclipse.jetty.ee10.servlet.ServletContextResponse;
 import org.eclipse.jetty.ee10.websocket.server.internal.DelegatedServerUpgradeRequest;
 import org.eclipse.jetty.ee10.websocket.server.internal.DelegatedServerUpgradeResponse;
 import org.eclipse.jetty.ee10.websocket.server.internal.JettyServerFrameHandlerFactory;
 import org.eclipse.jetty.ee10.websocket.servlet.WebSocketUpgradeFilter;
+import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.server.handler.ContextHandler;
-import org.eclipse.jetty.util.Blocking;
 import org.eclipse.jetty.util.Callback;
+import org.eclipse.jetty.util.FutureCallback;
 import org.eclipse.jetty.websocket.core.Configuration;
 import org.eclipse.jetty.websocket.core.WebSocketComponents;
+import org.eclipse.jetty.websocket.core.WebSocketConstants;
 import org.eclipse.jetty.websocket.core.server.FrameHandlerFactory;
 import org.eclipse.jetty.websocket.core.server.ServerUpgradeRequest;
 import org.eclipse.jetty.websocket.core.server.ServerUpgradeResponse;
@@ -97,7 +100,7 @@ public abstract class JettyWebSocketServlet extends HttpServlet
     private static final Logger LOG = LoggerFactory.getLogger(JettyWebSocketServlet.class);
     private final CustomizedWebSocketServletFactory customizer = new CustomizedWebSocketServletFactory();
 
-    private WebSocketMappings mapping;
+    private WebSocketMappings mappings;
     private WebSocketComponents components;
 
     /**
@@ -111,6 +114,7 @@ public abstract class JettyWebSocketServlet extends HttpServlet
     protected abstract void configure(JettyWebSocketServletFactory factory);
 
     /**
+     * Get the instance of {@link FrameHandlerFactory} to be used to create the FrameHandler.
      * @return the instance of {@link FrameHandlerFactory} to be used to create the FrameHandler
      */
     private FrameHandlerFactory getFactory()
@@ -129,7 +133,7 @@ public abstract class JettyWebSocketServlet extends HttpServlet
         {
             ServletContextHandler context = ServletContextHandler.getServletContextHandler(getServletContext());
             components = WebSocketServerComponents.getWebSocketComponents(context);
-            mapping = new WebSocketMappings(components);
+            mappings = new WebSocketMappings(components);
 
             String max = getInitParameter("idleTimeout");
             if (max == null)
@@ -176,28 +180,43 @@ public abstract class JettyWebSocketServlet extends HttpServlet
     }
 
     @Override
+    public void destroy()
+    {
+        mappings.clear();
+        super.destroy();
+    }
+
+    @Override
     protected void service(HttpServletRequest req, HttpServletResponse resp)
         throws ServletException, IOException
     {
-        ServletContextRequest request = ServletContextRequest.getBaseRequest(req);
-        if (request == null)
-            throw new IllegalStateException("Base Request not available");
+        ServletContextRequest request = ServletContextRequest.getServletContextRequest(req);
+        ServletContextResponse response = request.getServletContextResponse();
 
-        // provide a null default customizer the customizer will be on the negotiator in the mapping
-        try (Blocking.Callback callback = Blocking.callback())
+        // Do preliminary check before proceeding to attempt an upgrade.
+        if (mappings.getHandshaker().isWebSocketUpgradeRequest(request))
         {
-            if (mapping.upgrade(request, request.getResponse(), callback, null))
+            // provide a null default customizer the customizer will be on the negotiator in the mapping
+            FutureCallback callback = new FutureCallback();
+            try
             {
-                callback.block();
-                return;
+                // Set the wrapped req and resp as attributes on the ServletContext Request/Response, so they
+                // are accessible when websocket-core calls back the Jetty WebSocket creator.
+                request.setAttribute(WebSocketConstants.WEBSOCKET_WRAPPED_REQUEST_ATTRIBUTE, req);
+                request.setAttribute(WebSocketConstants.WEBSOCKET_WRAPPED_RESPONSE_ATTRIBUTE, resp);
+
+                if (mappings.upgrade(request, response, callback, null))
+                {
+                    callback.block();
+                    return;
+                }
+            }
+            finally
+            {
+                request.removeAttribute(WebSocketConstants.WEBSOCKET_WRAPPED_REQUEST_ATTRIBUTE);
+                request.removeAttribute(WebSocketConstants.WEBSOCKET_WRAPPED_RESPONSE_ATTRIBUTE);
             }
         }
-
-        // If we reach this point, it means we had an incoming request to upgrade
-        // but it was either not a proper websocket upgrade, or it was possibly rejected
-        // due to incoming request constraints (controlled by WebSocketCreator)
-        if (resp.isCommitted())
-            return;
 
         // Handle normally
         super.service(req, resp);
@@ -214,7 +233,7 @@ public abstract class JettyWebSocketServlet extends HttpServlet
         @Override
         public void addMapping(String pathSpec, JettyWebSocketCreator creator)
         {
-            mapping.addMapping(WebSocketMappings.parsePathSpec(pathSpec), new WrappedJettyCreator(creator), getFactory(), this);
+            mappings.addMapping(WebSocketMappings.parsePathSpec(pathSpec), new WrappedJettyCreator(creator), getFactory(), this);
         }
 
         @Override
@@ -238,7 +257,7 @@ public abstract class JettyWebSocketServlet extends HttpServlet
                 }
                 catch (Throwable t)
                 {
-                    t.printStackTrace();
+                    LOG.warn("Failed to construct new Endpoint", t);
                     return null;
                 }
             };
@@ -255,7 +274,7 @@ public abstract class JettyWebSocketServlet extends HttpServlet
         @Override
         public JettyWebSocketCreator getMapping(String pathSpec)
         {
-            WebSocketCreator creator = mapping.getWebSocketCreator(WebSocketMappings.parsePathSpec(pathSpec));
+            WebSocketCreator creator = mappings.getWebSocketCreator(WebSocketMappings.parsePathSpec(pathSpec));
             if (creator instanceof WrappedJettyCreator)
                 return ((WrappedJettyCreator)creator).getJettyWebSocketCreator();
             return null;
@@ -264,18 +283,12 @@ public abstract class JettyWebSocketServlet extends HttpServlet
         @Override
         public boolean removeMapping(String pathSpec)
         {
-            return mapping.removeMapping(WebSocketMappings.parsePathSpec(pathSpec));
+            return mappings.removeMapping(WebSocketMappings.parsePathSpec(pathSpec));
         }
     }
 
-    private static class WrappedJettyCreator implements WebSocketCreator
+    private record WrappedJettyCreator(JettyWebSocketCreator creator) implements WebSocketCreator
     {
-        private final JettyWebSocketCreator creator;
-
-        private WrappedJettyCreator(JettyWebSocketCreator creator)
-        {
-            this.creator = creator;
-        }
 
         private JettyWebSocketCreator getJettyWebSocketCreator()
         {
@@ -283,17 +296,28 @@ public abstract class JettyWebSocketServlet extends HttpServlet
         }
 
         @Override
-        public Object createWebSocket(ServerUpgradeRequest req, ServerUpgradeResponse resp, Callback callback)
+        public Object createWebSocket(ServerUpgradeRequest upgradeRequest, ServerUpgradeResponse upgradeResponse, Callback callback)
         {
+            DelegatedServerUpgradeRequest request = new DelegatedServerUpgradeRequest(upgradeRequest);
+            DelegatedServerUpgradeResponse response = new DelegatedServerUpgradeResponse(upgradeResponse);
             try
             {
-                Object webSocket = creator.createWebSocket(new DelegatedServerUpgradeRequest(req), new DelegatedServerUpgradeResponse(resp));
-                callback.succeeded();
+                Object webSocket = creator.createWebSocket(request, response);
+                if (webSocket == null)
+                    callback.succeeded();
                 return webSocket;
             }
             catch (Throwable t)
             {
-                callback.failed(t);
+                try
+                {
+                    response.sendError(HttpStatus.INTERNAL_SERVER_ERROR_500, "Could not create WebSocket endpoint");
+                    callback.succeeded();
+                }
+                catch (Throwable x)
+                {
+                    callback.failed(x);
+                }
                 return null;
             }
         }

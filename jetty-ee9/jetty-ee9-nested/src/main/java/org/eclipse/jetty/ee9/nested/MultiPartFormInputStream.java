@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -28,24 +28,30 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.EnumSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.stream.Collectors;
 
 import jakarta.servlet.MultipartConfigElement;
 import jakarta.servlet.ServletInputStream;
 import jakarta.servlet.http.Part;
+import org.eclipse.jetty.http.ComplianceViolation;
+import org.eclipse.jetty.http.HttpField;
+import org.eclipse.jetty.http.MultiPartCompliance;
 import org.eclipse.jetty.util.BufferUtil;
 import org.eclipse.jetty.util.ByteArrayOutputStream2;
-import org.eclipse.jetty.util.MultiException;
+import org.eclipse.jetty.util.ExceptionUtil;
 import org.eclipse.jetty.util.MultiMap;
 import org.eclipse.jetty.util.QuotedStringTokenizer;
 import org.eclipse.jetty.util.StringUtil;
 import org.eclipse.jetty.util.thread.AutoLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.eclipse.jetty.ee9.nested.ContextHandler.DEFAULT_MAX_FORM_KEYS;
 
 /**
  * MultiPartInputStream
@@ -77,7 +83,7 @@ import org.slf4j.LoggerFactory;
  * }</pre>
  * @see <a href="https://tools.ietf.org/html/rfc7578">https://tools.ietf.org/html/rfc7578</a>
  */
-public class MultiPartFormInputStream
+public class MultiPartFormInputStream implements MultiPart.Parser
 {
     private enum State
     {
@@ -89,42 +95,28 @@ public class MultiPartFormInputStream
     }
 
     private static final Logger LOG = LoggerFactory.getLogger(MultiPartFormInputStream.class);
+    private static final QuotedStringTokenizer QUOTED_STRING_TOKENIZER = QuotedStringTokenizer.builder().delimiters(";").ignoreOptionalWhiteSpace().allowEscapeOnlyForQuotes().allowEmbeddedQuotes().build();
 
     private final AutoLock _lock = new AutoLock();
     private final MultiMap<Part> _parts = new MultiMap<>();
-    private final EnumSet<NonCompliance> _nonComplianceWarnings = EnumSet.noneOf(NonCompliance.class);
+    private final List<ComplianceViolation.Event> _nonComplianceWarnings = new ArrayList<>();
     private final InputStream _in;
     private final MultipartConfigElement _config;
     private final File _contextTmpDir;
     private final String _contentType;
+    private final int _maxParts;
+    private int _numParts = 0;
     private volatile Throwable _err;
     private volatile Path _tmpDir;
-    private volatile boolean _deleteOnExit;
     private volatile boolean _writeFilesWithFilenames;
     private volatile int _bufferSize = 16 * 1024;
     private State state = State.UNPARSED;
 
-    public enum NonCompliance
-    {
-        TRANSFER_ENCODING("https://tools.ietf.org/html/rfc7578#section-4.7");
-
-        final String _rfcRef;
-
-        NonCompliance(String rfcRef)
-        {
-            _rfcRef = rfcRef;
-        }
-
-        public String getURL()
-        {
-            return _rfcRef;
-        }
-    }
-
     /**
      * @return an EnumSet of non compliances with the RFC that were accepted by this parser
      */
-    public EnumSet<NonCompliance> getNonComplianceWarnings()
+    @Override
+    public List<ComplianceViolation.Event> getNonComplianceWarnings()
     {
         return _nonComplianceWarnings;
     }
@@ -380,9 +372,21 @@ public class MultiPartFormInputStream
      * @param in Request input stream
      * @param contentType Content-Type header
      * @param config MultipartConfigElement
-     * @param contextTmpDir jakarta.servlet.context.tempdir
+     * @param contextTmpDir {@value jakarta.servlet.ServletContext#TEMPDIR}
      */
     public MultiPartFormInputStream(InputStream in, String contentType, MultipartConfigElement config, File contextTmpDir)
+    {
+        this(in, contentType, config, contextTmpDir, DEFAULT_MAX_FORM_KEYS);
+    }
+
+    /**
+     * @param in Request input stream
+     * @param contentType Content-Type header
+     * @param config MultipartConfigElement
+     * @param contextTmpDir {@value jakarta.servlet.ServletContext#TEMPDIR}
+     * @param maxParts the maximum number of parts that can be parsed from the multipart content (0 for no parts allowed, -1 for unlimited parts).
+     */
+    public MultiPartFormInputStream(InputStream in, String contentType, MultipartConfigElement config, File contextTmpDir, int maxParts)
     {
         // Must be a multipart request.
         _contentType = contentType;
@@ -391,6 +395,7 @@ public class MultiPartFormInputStream
 
         _contextTmpDir =  (contextTmpDir != null) ? contextTmpDir : new File(System.getProperty("java.io.tmpdir"));
         _config = (config != null) ? config : new MultipartConfigElement(_contextTmpDir.getAbsolutePath());
+        _maxParts = maxParts;
 
         if (in instanceof ServletInputStream)
         {
@@ -456,7 +461,7 @@ public class MultiPartFormInputStream
 
     private void delete()
     {
-        MultiException err = null;
+        Throwable err = null;
         for (List<Part> parts : _parts.values())
         {
             for (Part p : parts)
@@ -467,16 +472,12 @@ public class MultiPartFormInputStream
                 }
                 catch (Exception e)
                 {
-                    if (err == null)
-                        err = new MultiException();
-                    err.add(e);
+                    err = ExceptionUtil.combine(err, e);
                 }
             }
         }
         _parts.clear();
-
-        if (err != null)
-            err.ifExceptionThrowRuntime();
+        ExceptionUtil.ifExceptionThrowUnchecked(err);
     }
 
     /**
@@ -485,6 +486,7 @@ public class MultiPartFormInputStream
      * @return the parts
      * @throws IOException if unable to get the parts
      */
+    @Override
     public Collection<Part> getParts() throws IOException
     {
         parse();
@@ -499,6 +501,7 @@ public class MultiPartFormInputStream
      * @return the parts
      * @throws IOException if unable to get the part
      */
+    @Override
     public Part getPart(String name) throws IOException
     {
         parse();
@@ -574,7 +577,7 @@ public class MultiPartFormInputStream
             {
                 int bend = _contentType.indexOf(";", bstart);
                 bend = (bend < 0 ? _contentType.length() : bend);
-                contentTypeBoundary = QuotedStringTokenizer.unquote(value(_contentType.substring(bstart, bend)).trim());
+                contentTypeBoundary = HttpField.PARAMETER_TOKENIZER.unquote(value(_contentType.substring(bstart, bend)).trim());
             }
 
             parser = new MultiPartParser(new Handler(), contentTypeBoundary);
@@ -629,7 +632,7 @@ public class MultiPartFormInputStream
             if (parser.getState() != MultiPartParser.State.END)
             {
                 if (parser.getState() == MultiPartParser.State.PREAMBLE)
-                    _err = new IOException("Missing initial multi part boundary");
+                    _err = new IOException("Missing content for multipart request");
                 else
                     _err = new IOException("Incomplete Multipart");
             }
@@ -696,12 +699,12 @@ public class MultiPartFormInputStream
             else if (key.equalsIgnoreCase("content-type"))
                 contentType = value;
 
-            // Transfer encoding is not longer considers as it is deprecated as per
+            // Content Transfer encoding is no longer considered as it is deprecated as per
             // https://tools.ietf.org/html/rfc7578#section-4.7
             if (key.equalsIgnoreCase("content-transfer-encoding"))
             {
                 if (!"8bit".equalsIgnoreCase(value) && !"binary".equalsIgnoreCase(value))
-                    _nonComplianceWarnings.add(NonCompliance.TRANSFER_ENCODING);
+                    _nonComplianceWarnings.add(new ComplianceViolation.Event(MultiPartCompliance.RFC7578, MultiPartCompliance.Violation.CONTENT_TRANSFER_ENCODING, value));
             }
         }
 
@@ -722,12 +725,11 @@ public class MultiPartFormInputStream
                     throw new IOException("Missing content-disposition");
                 }
 
-                QuotedStringTokenizer tok = new QuotedStringTokenizer(contentDisposition, ";", false, true);
                 String name = null;
                 String filename = null;
-                while (tok.hasMoreTokens())
+                for (Iterator<String> i = QUOTED_STRING_TOKENIZER.tokenize(contentDisposition); i.hasNext();)
                 {
-                    String t = tok.nextToken().trim();
+                    String t = i.next();
                     String tl = StringUtil.asciiToLowerCase(t);
                     if (tl.startsWith("form-data"))
                         formData = true;
@@ -813,6 +815,9 @@ public class MultiPartFormInputStream
         public void startPart()
         {
             reset();
+            _numParts++;
+            if (_maxParts >= 0 && _numParts > _maxParts)
+                throw new IllegalStateException(String.format("Form with too many keys [%d > %d]", _numParts, _maxParts));
         }
 
         @Override
@@ -873,7 +878,7 @@ public class MultiPartFormInputStream
     {
         int idx = nameEqualsValue.indexOf('=');
         String value = nameEqualsValue.substring(idx + 1).trim();
-        return QuotedStringTokenizer.unquoteOnly(value);
+        return HttpField.PARAMETER_TOKENIZER.unquote(value);
     }
 
     private static String filenameValue(String nameEqualsValue)
@@ -895,14 +900,11 @@ public class MultiPartFormInputStream
             return value;
         }
         else
-            // unquote the string, but allow any backslashes that don't
-            // form a valid escape sequence to remain as many browsers
-            // even on *nix systems will not escape a filename containing
-            // backslashes
-            return QuotedStringTokenizer.unquoteOnly(value, true);
+            return HttpField.PARAMETER_TOKENIZER.unquote(value);
     }
 
     /**
+     * Get the size of buffer used to read data from the input stream.
      * @return the size of buffer used to read data from the input stream
      */
     public int getBufferSize()
@@ -911,6 +913,7 @@ public class MultiPartFormInputStream
     }
 
     /**
+     * Set the size of buffer used to read data from the input stream.
      * @param bufferSize the size of buffer used to read data from the input stream
      */
     public void setBufferSize(int bufferSize)

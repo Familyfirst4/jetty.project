@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -31,17 +31,16 @@ import org.eclipse.jetty.ee9.nested.Authentication;
 import org.eclipse.jetty.ee9.nested.Authentication.User;
 import org.eclipse.jetty.ee9.nested.Request;
 import org.eclipse.jetty.ee9.nested.Response;
-import org.eclipse.jetty.ee9.nested.UserIdentity;
 import org.eclipse.jetty.ee9.security.ServerAuthException;
 import org.eclipse.jetty.ee9.security.UserAuthentication;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpHeaderValue;
 import org.eclipse.jetty.http.HttpMethod;
 import org.eclipse.jetty.http.MimeTypes;
-import org.eclipse.jetty.util.MultiMap;
+import org.eclipse.jetty.security.UserIdentity;
+import org.eclipse.jetty.util.Fields;
 import org.eclipse.jetty.util.StringUtil;
 import org.eclipse.jetty.util.URIUtil;
-import org.eclipse.jetty.util.security.Constraint;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -128,7 +127,7 @@ public class FormAuthenticator extends LoginAuthenticator
     @Override
     public String getAuthMethod()
     {
-        return Constraint.__FORM_AUTH;
+        return FORM_AUTH;
     }
 
     private void setLoginPage(String path)
@@ -242,7 +241,7 @@ public class FormAuthenticator extends LoginAuthenticator
 
         String uri = request.getRequestURI();
         if (uri == null)
-            uri = URIUtil.SLASH;
+            uri = "/";
 
         mandatory |= isJSecurityCheck(uri);
         if (!mandatory)
@@ -275,7 +274,7 @@ public class FormAuthenticator extends LoginAuthenticator
                         {
                             nuri = request.getContextPath();
                             if (nuri.length() == 0)
-                                nuri = URIUtil.SLASH;
+                                nuri = "/";
                         }
                         formAuth = new FormAuthentication(getAuthMethod(), user);
                     }
@@ -341,11 +340,11 @@ public class FormAuthenticator extends LoginAuthenticator
 
                             if (jUri.equals(buf.toString()))
                             {
-                                MultiMap<String> jPost = (MultiMap<String>)session.getAttribute(__J_POST);
+                                Fields jPost = (Fields)session.getAttribute(__J_POST);
                                 if (jPost != null)
                                 {
                                     LOG.debug("auth rePOST {}->{}", authentication, jUri);
-                                    baseRequest.setContentParameters(jPost);
+                                    baseRequest.setContentFields(jPost);
                                 }
                                 session.removeAttribute(__J_URI);
                                 session.removeAttribute(__J_METHOD);
@@ -380,7 +379,7 @@ public class FormAuthenticator extends LoginAuthenticator
 
                     if (MimeTypes.Type.FORM_ENCODED.is(req.getContentType()) && HttpMethod.POST.is(request.getMethod()))
                     {
-                        MultiMap<String> formParameters = new MultiMap<>();
+                        Fields formParameters = new Fields(true);
                         baseRequest.extractFormParameters(formParameters);
                         session.setAttribute(__J_POST, formParameters);
                     }

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -22,11 +22,12 @@ import java.util.HashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.UnaryOperator;
 
 import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpVersion;
 import org.eclipse.jetty.http.MetaData;
+import org.eclipse.jetty.http2.ErrorCode;
+import org.eclipse.jetty.http2.HTTP2Session;
 import org.eclipse.jetty.http2.api.Session;
 import org.eclipse.jetty.http2.api.Stream;
 import org.eclipse.jetty.http2.api.server.ServerSessionListener;
@@ -34,9 +35,7 @@ import org.eclipse.jetty.http2.frames.GoAwayFrame;
 import org.eclipse.jetty.http2.frames.HeadersFrame;
 import org.eclipse.jetty.http2.frames.PrefaceFrame;
 import org.eclipse.jetty.http2.frames.SettingsFrame;
-import org.eclipse.jetty.http2.internal.ErrorCode;
-import org.eclipse.jetty.http2.internal.HTTP2Session;
-import org.eclipse.jetty.http2.internal.parser.Parser;
+import org.eclipse.jetty.http2.parser.Parser;
 import org.eclipse.jetty.io.ByteBufferPool;
 import org.eclipse.jetty.io.RuntimeIOException;
 import org.eclipse.jetty.util.BufferUtil;
@@ -53,7 +52,7 @@ public class CloseTest extends AbstractServerTest
     {
         final CountDownLatch closeLatch = new CountDownLatch(1);
         final AtomicReference<Session> sessionRef = new AtomicReference<>();
-        startServer(new ServerSessionListener.Adapter()
+        startServer(new ServerSessionListener()
         {
             @Override
             public Stream.Listener onNewStream(Stream stream, HeadersFrame frame)
@@ -61,7 +60,7 @@ public class CloseTest extends AbstractServerTest
                 try
                 {
                     sessionRef.set(stream.getSession());
-                    MetaData.Response response = new MetaData.Response(HttpVersion.HTTP_2, 200, HttpFields.EMPTY);
+                    MetaData.Response response = new MetaData.Response(200, null, HttpVersion.HTTP_2, HttpFields.EMPTY);
                     // Reply with HEADERS.
                     stream.headers(new HeadersFrame(stream.getId(), response, null, true), Callback.NOOP);
                     closeLatch.await(5, TimeUnit.SECONDS);
@@ -74,21 +73,22 @@ public class CloseTest extends AbstractServerTest
             }
         });
 
-        ByteBufferPool.Lease lease = new ByteBufferPool.Lease(byteBufferPool);
-        generator.control(lease, new PrefaceFrame());
-        generator.control(lease, new SettingsFrame(new HashMap<>(), false));
+        ByteBufferPool.Accumulator accumulator = new ByteBufferPool.Accumulator();
+        generator.control(accumulator, new PrefaceFrame());
+        generator.control(accumulator, new SettingsFrame(new HashMap<>(), false));
         MetaData.Request metaData = newRequest("GET", HttpFields.EMPTY);
-        generator.control(lease, new HeadersFrame(1, metaData, null, true));
+        generator.control(accumulator, new HeadersFrame(1, metaData, null, true));
 
         try (Socket client = new Socket("localhost", connector.getLocalPort()))
         {
             OutputStream output = client.getOutputStream();
-            for (ByteBuffer buffer : lease.getByteBuffers())
+            for (ByteBuffer buffer : accumulator.getByteBuffers())
             {
                 output.write(BufferUtil.toArray(buffer));
             }
 
-            Parser parser = new Parser(byteBufferPool, new Parser.Listener.Adapter()
+            Parser parser = new Parser(bufferPool, 8192);
+            parser.init(new Parser.Listener()
             {
                 @Override
                 public void onHeaders(HeadersFrame frame)
@@ -105,8 +105,7 @@ public class CloseTest extends AbstractServerTest
                         throw new RuntimeIOException(x);
                     }
                 }
-            }, 4096, 8192);
-            parser.init(UnaryOperator.identity());
+            });
 
             parseResponse(client, parser);
 
@@ -123,29 +122,29 @@ public class CloseTest extends AbstractServerTest
     public void testClientSendsGoAwayButDoesNotCloseConnectionServerCloses() throws Exception
     {
         final AtomicReference<Session> sessionRef = new AtomicReference<>();
-        startServer(new ServerSessionListener.Adapter()
+        startServer(new ServerSessionListener()
         {
             @Override
             public Stream.Listener onNewStream(Stream stream, HeadersFrame frame)
             {
                 sessionRef.set(stream.getSession());
-                MetaData.Response response = new MetaData.Response(HttpVersion.HTTP_2, 200, HttpFields.EMPTY);
+                MetaData.Response response = new MetaData.Response(200, null, HttpVersion.HTTP_2, HttpFields.EMPTY);
                 stream.headers(new HeadersFrame(stream.getId(), response, null, true), Callback.NOOP);
                 return null;
             }
         });
 
-        ByteBufferPool.Lease lease = new ByteBufferPool.Lease(byteBufferPool);
-        generator.control(lease, new PrefaceFrame());
-        generator.control(lease, new SettingsFrame(new HashMap<>(), false));
+        ByteBufferPool.Accumulator accumulator = new ByteBufferPool.Accumulator();
+        generator.control(accumulator, new PrefaceFrame());
+        generator.control(accumulator, new SettingsFrame(new HashMap<>(), false));
         MetaData.Request metaData = newRequest("GET", HttpFields.EMPTY);
-        generator.control(lease, new HeadersFrame(1, metaData, null, true));
-        generator.control(lease, new GoAwayFrame(1, ErrorCode.NO_ERROR.code, "OK".getBytes(StandardCharsets.UTF_8)));
+        generator.control(accumulator, new HeadersFrame(1, metaData, null, true));
+        generator.control(accumulator, new GoAwayFrame(1, ErrorCode.NO_ERROR.code, "OK".getBytes(StandardCharsets.UTF_8)));
 
         try (Socket client = new Socket("localhost", connector.getLocalPort()))
         {
             OutputStream output = client.getOutputStream();
-            for (ByteBuffer buffer : lease.getByteBuffers())
+            for (ByteBuffer buffer : accumulator.getByteBuffers())
             {
                 output.write(BufferUtil.toArray(buffer));
             }
@@ -153,7 +152,8 @@ public class CloseTest extends AbstractServerTest
             // Don't close the connection; the server should close.
 
             final CountDownLatch responseLatch = new CountDownLatch(1);
-            Parser parser = new Parser(byteBufferPool, new Parser.Listener.Adapter()
+            Parser parser = new Parser(bufferPool, 8192);
+            parser.init(new Parser.Listener()
             {
                 @Override
                 public void onHeaders(HeadersFrame frame)
@@ -162,8 +162,7 @@ public class CloseTest extends AbstractServerTest
                     // HEADERS, the server is able to send us the response.
                     responseLatch.countDown();
                 }
-            }, 4096, 8192);
-            parser.init(UnaryOperator.identity());
+            });
 
             parseResponse(client, parser);
 
@@ -187,14 +186,14 @@ public class CloseTest extends AbstractServerTest
     {
         final long idleTimeout = 1000;
         final AtomicReference<Session> sessionRef = new AtomicReference<>();
-        startServer(new ServerSessionListener.Adapter()
+        startServer(new ServerSessionListener()
         {
             @Override
             public Stream.Listener onNewStream(Stream stream, HeadersFrame frame)
             {
                 stream.setIdleTimeout(10 * idleTimeout);
                 sessionRef.set(stream.getSession());
-                MetaData.Response response = new MetaData.Response(HttpVersion.HTTP_2, 200, HttpFields.EMPTY);
+                MetaData.Response response = new MetaData.Response(200, null, HttpVersion.HTTP_2, HttpFields.EMPTY);
                 stream.headers(new HeadersFrame(stream.getId(), response, null, true), Callback.NOOP);
                 stream.getSession().close(ErrorCode.NO_ERROR.code, "OK", Callback.NOOP);
                 return null;
@@ -202,23 +201,24 @@ public class CloseTest extends AbstractServerTest
         });
         connector.setIdleTimeout(idleTimeout);
 
-        ByteBufferPool.Lease lease = new ByteBufferPool.Lease(byteBufferPool);
-        generator.control(lease, new PrefaceFrame());
-        generator.control(lease, new SettingsFrame(new HashMap<>(), false));
+        ByteBufferPool.Accumulator accumulator = new ByteBufferPool.Accumulator();
+        generator.control(accumulator, new PrefaceFrame());
+        generator.control(accumulator, new SettingsFrame(new HashMap<>(), false));
         MetaData.Request metaData = newRequest("GET", HttpFields.EMPTY);
-        generator.control(lease, new HeadersFrame(1, metaData, null, true));
+        generator.control(accumulator, new HeadersFrame(1, metaData, null, true));
 
         try (Socket client = new Socket("localhost", connector.getLocalPort()))
         {
             OutputStream output = client.getOutputStream();
-            for (ByteBuffer buffer : lease.getByteBuffers())
+            for (ByteBuffer buffer : accumulator.getByteBuffers())
             {
                 output.write(BufferUtil.toArray(buffer));
             }
 
             final CountDownLatch responseLatch = new CountDownLatch(1);
             final CountDownLatch closeLatch = new CountDownLatch(1);
-            Parser parser = new Parser(byteBufferPool, new Parser.Listener.Adapter()
+            Parser parser = new Parser(bufferPool, 8192);
+            parser.init(new Parser.Listener()
             {
                 @Override
                 public void onHeaders(HeadersFrame frame)
@@ -231,8 +231,7 @@ public class CloseTest extends AbstractServerTest
                 {
                     closeLatch.countDown();
                 }
-            }, 4096, 8192);
-            parser.init(UnaryOperator.identity());
+            });
 
             parseResponse(client, parser);
 

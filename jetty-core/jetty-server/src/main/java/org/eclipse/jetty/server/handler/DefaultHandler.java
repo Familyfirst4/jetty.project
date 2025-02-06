@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,11 +14,12 @@
 package org.eclipse.jetty.server.handler;
 
 import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.io.OutputStreamWriter;
-import java.net.URL;
 import java.nio.ByteBuffer;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 
 import org.eclipse.jetty.http.DateGenerator;
 import org.eclipse.jetty.http.HttpField;
@@ -27,6 +28,7 @@ import org.eclipse.jetty.http.HttpMethod;
 import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.http.MimeTypes;
 import org.eclipse.jetty.http.PreEncodedHttpField;
+import org.eclipse.jetty.io.IOResources;
 import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.Response;
@@ -35,8 +37,10 @@ import org.eclipse.jetty.util.BufferUtil;
 import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.IO;
 import org.eclipse.jetty.util.StringUtil;
+import org.eclipse.jetty.util.TypeUtil;
 import org.eclipse.jetty.util.URIUtil;
 import org.eclipse.jetty.util.annotation.ManagedAttribute;
+import org.eclipse.jetty.util.annotation.Name;
 import org.eclipse.jetty.util.resource.Resource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -51,32 +55,58 @@ import static java.nio.charset.StandardCharsets.UTF_8;
  * For requests to '/' a 404 with a list of known contexts is served.
  * For all other requests a normal 404 is served.
  */
-public class DefaultHandler extends Handler.Processor
+public class DefaultHandler extends Handler.Abstract
 {
     private static final Logger LOG = LoggerFactory.getLogger(DefaultHandler.class);
 
-    final long _faviconModifiedMs = (System.currentTimeMillis() / 1000) * 1000L;
-    final HttpField _faviconModified = new PreEncodedHttpField(HttpHeader.LAST_MODIFIED, DateGenerator.formatDate(_faviconModifiedMs));
-    final ByteBuffer _favicon;
-    boolean _serveIcon = true;
-    boolean _showContexts = true;
+    private final long _faviconModifiedMs = (System.currentTimeMillis() / 1000) * 1000L;
+    private final HttpField _faviconModified = new PreEncodedHttpField(HttpHeader.LAST_MODIFIED, DateGenerator.formatDate(_faviconModifiedMs));
+    private ByteBuffer _favicon;
+    private boolean _serveFavIcon = true;
+    private boolean _showContexts = true;
 
     public DefaultHandler()
     {
-        String faviconRef = "/org/eclipse/jetty/favicon.ico";
+        this(true, true);
+    }
+
+    public DefaultHandler(@Name("serveFavIcon") boolean serveFavIcon, @Name("showContexts")boolean showContexts)
+    {
+        super(InvocationType.NON_BLOCKING);
+        _serveFavIcon = serveFavIcon;
+        _showContexts = showContexts;
+    }
+
+    @Override
+    public void setServer(Server server)
+    {
+        super.setServer(server);
+        if (server != null)
+            initFavIcon();
+    }
+
+    private void initFavIcon()
+    {
+        if (_favicon != null)
+            return;
+
+        Server server = Objects.requireNonNull(getServer());
+
         byte[] favbytes = null;
         try
         {
-            URL fav = getClass().getResource(faviconRef);
-            if (fav != null)
+            Resource faviconRes = server.getDefaultFavicon();
+            if (faviconRes != null)
             {
-                Resource r = Resource.newResource(fav);
-                favbytes = IO.readBytes(r.getInputStream());
+                try (InputStream is = IOResources.asInputStream(faviconRes))
+                {
+                    favbytes = IO.readBytes(is);
+                }
             }
         }
         catch (Exception e)
         {
-            LOG.warn("Unable to find default favicon: {}", faviconRef, e);
+            LOG.warn("Unable to find default favicon", e);
         }
         finally
         {
@@ -85,12 +115,12 @@ public class DefaultHandler extends Handler.Processor
     }
 
     @Override
-    public void process(Request request, Response response, Callback callback) throws Exception
+    public boolean handle(Request request, Response response, Callback callback) throws Exception
     {
         String method = request.getMethod();
 
         // little cheat for common request
-        if (isServeIcon() && _favicon != null && HttpMethod.GET.is(method) && request.getPathInContext().equals("/favicon.ico"))
+        if (isServeFavIcon() && _favicon != null && HttpMethod.GET.is(method) && Request.getPathInContext(request).equals("/favicon.ico"))
         {
             ByteBuffer content = BufferUtil.EMPTY_BUFFER;
             if (_faviconModifiedMs > 0 && request.getHeaders().getDateField(HttpHeader.IF_MODIFIED_SINCE) == _faviconModifiedMs)
@@ -99,19 +129,19 @@ public class DefaultHandler extends Handler.Processor
             {
                 response.setStatus(HttpStatus.OK_200);
                 response.getHeaders().put(HttpHeader.CONTENT_TYPE, "image/x-icon");
-                response.getHeaders().putLongField(HttpHeader.CONTENT_LENGTH, _favicon.remaining());
+                response.getHeaders().put(HttpHeader.CONTENT_LENGTH, _favicon.remaining());
                 response.getHeaders().add(_faviconModified);
                 response.getHeaders().put(HttpHeader.CACHE_CONTROL.toString(), "max-age=360000,public");
                 content = _favicon.slice();
             }
             response.write(true, content, callback);
-            return;
+            return true;
         }
 
-        if (!isShowContexts() || !HttpMethod.GET.is(method) || !request.getPathInContext().equals("/"))
+        if (!isShowContexts() || !HttpMethod.GET.is(method) || !Request.getPathInContext(request).equals("/"))
         {
             Response.writeError(request, response, callback, HttpStatus.NOT_FOUND_404, null);
-            return;
+            return true;
         }
 
         response.setStatus(HttpStatus.NOT_FOUND_404);
@@ -185,31 +215,33 @@ public class DefaultHandler extends Handler.Processor
             }
 
             writer.append("</tbody></table><hr/>\n");
-            writer.append("<a href=\"https://eclipse.org/jetty\"><img alt=\"icon\" src=\"/favicon.ico\"/></a>&nbsp;");
-            writer.append("<a href=\"https://eclipse.org/jetty\">Powered by Eclipse Jetty:// Server</a><hr/>\n");
+            writer.append("<a href=\"https://jetty.org\"><img alt=\"icon\" src=\"/favicon.ico\"/></a>&nbsp;");
+            writer.append("<a href=\"https://jetty.org\">Powered by Eclipse Jetty:// Server</a><hr/>\n");
             writer.append("</body>\n</html>\n");
             writer.flush();
             ByteBuffer content = BufferUtil.toBuffer(outputStream.toByteArray());
-            response.getHeaders().putLongField(HttpHeader.CONTENT_LENGTH, content.remaining());
+            response.getHeaders().put(HttpHeader.CONTENT_LENGTH, content.remaining());
             response.write(true, content, callback);
+            return true;
         }
     }
 
     /**
      * @return Returns true if the handle can server the jetty favicon.ico
      */
-    @ManagedAttribute("True if the favicon.ico should be served")
-    public boolean isServeIcon()
+    @ManagedAttribute("True if the favicon.ico is served")
+    public boolean isServeFavIcon()
     {
-        return _serveIcon;
+        return _serveFavIcon;
     }
 
     /**
-     * @param serveIcon true if the handle can server the jetty favicon.ico
+     * Set true if the handle can server the jetty favicon.ico.
+     * @param serveFavIcon true if the handle can server the jetty favicon.ico
      */
-    public void setServeIcon(boolean serveIcon)
+    public void setServeFavIcon(boolean serveFavIcon)
     {
-        _serveIcon = serveIcon;
+        _serveFavIcon = serveFavIcon;
     }
 
     @ManagedAttribute("True if the contexts should be shown in the default 404 page")
@@ -221,5 +253,12 @@ public class DefaultHandler extends Handler.Processor
     public void setShowContexts(boolean show)
     {
         _showContexts = show;
+    }
+
+    @Override
+    public String toString()
+    {
+        String name = TypeUtil.toShortName(getClass());
+        return String.format("%s@%x{showContext=%b,favIcon=%b,%s}", name, hashCode(), _showContexts, _serveFavIcon, getState());
     }
 }

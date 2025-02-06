@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -96,7 +96,7 @@ public class WebServletAnnotation extends DiscoveredAnnotation
             urlPatternList.add(ServletPathSpec.normalize(p));
         }
 
-        String servletName = (annotation.name().equals("") ? clazz.getName() : annotation.name());
+        String servletName = (annotation.name().isEmpty() ? clazz.getName() : annotation.name());
 
         MetaData metaData = _context.getMetaData();
         ServletMapping mapping = null; //the new mapping
@@ -122,7 +122,7 @@ public class WebServletAnnotation extends DiscoveredAnnotation
         {
             //No servlet of this name has already been defined, either by a descriptor
             //or another annotation (which would be impossible).
-            Source source = new Source(Source.Origin.ANNOTATION, clazz.getName());
+            Source source = new Source(Source.Origin.ANNOTATION, clazz);
 
             holder = _context.getServletHandler().newServletHolder(source);
             holder.setHeldClass(clazz);
@@ -183,7 +183,7 @@ public class WebServletAnnotation extends DiscoveredAnnotation
             //about processing these url mappings
             if (existingMappings.isEmpty() || !containsNonDefaultMappings(existingMappings))
             {
-                mapping = new ServletMapping(new Source(Source.Origin.ANNOTATION, clazz.getName()));
+                mapping = new ServletMapping(new Source(Source.Origin.ANNOTATION, clazz));
                 mapping.setServletName(servletName);
                 mapping.setPathSpecs(LazyList.toStringArray(urlPatternList));
                 _context.getMetaData().setOrigin(servletName + ".servlet.mapping." + Long.toHexString(mapping.hashCode()), annotation, clazz);

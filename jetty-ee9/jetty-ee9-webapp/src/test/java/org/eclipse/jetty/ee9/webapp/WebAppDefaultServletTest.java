@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,7 +13,6 @@
 
 package org.eclipse.jetty.ee9.webapp;
 
-import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -25,7 +24,6 @@ import org.eclipse.jetty.server.LocalConnector;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.toolchain.test.jupiter.WorkDir;
 import org.eclipse.jetty.toolchain.test.jupiter.WorkDirExtension;
-import org.eclipse.jetty.util.resource.PathResource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -40,56 +38,41 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 @ExtendWith(WorkDirExtension.class)
 public class WebAppDefaultServletTest
 {
-    public WorkDir workDir;
+    public Path directoryPath;
     private Server server;
     private LocalConnector connector;
 
     @BeforeEach
-    public void prepareServer() throws Exception
+    public void prepareServer(WorkDir workDir) throws Exception
     {
+        directoryPath = workDir.getEmptyPathDir();
         server = new Server();
         connector = new LocalConnector(server);
-        connector.getConnectionFactory(HttpConnectionFactory.class).getHttpConfiguration().setUriCompliance(UriCompliance.RFC3986);
+        connector.getConnectionFactory(HttpConnectionFactory.class).getHttpConfiguration().setUriCompliance(UriCompliance.UNSAFE);
         server.addConnector(connector);
 
-        Path directoryPath = workDir.getEmptyPathDir();
         Path welcomeResource = directoryPath.resolve("index.html");
-        try (OutputStream output = Files.newOutputStream(welcomeResource))
-        {
-            output.write("<h1>welcome page</h1>".getBytes(StandardCharsets.UTF_8));
-        }
+        Files.writeString(welcomeResource, "<h1>welcome page</h1>", StandardCharsets.UTF_8);
 
         Path otherResource = directoryPath.resolve("other.html");
-        try (OutputStream output = Files.newOutputStream(otherResource))
-        {
-            output.write("<h1>other resource</h1>".getBytes(StandardCharsets.UTF_8));
-        }
+        Files.writeString(otherResource, "<h1>other resource</h1>", StandardCharsets.UTF_8);
 
         Path hiddenDirectory = directoryPath.resolve("WEB-INF");
         Files.createDirectories(hiddenDirectory);
         Path hiddenResource = hiddenDirectory.resolve("one.js");
-        try (OutputStream output = Files.newOutputStream(hiddenResource))
-        {
-            output.write("this is confidential".getBytes(StandardCharsets.UTF_8));
-        }
+        Files.writeString(hiddenResource, "this is confidential", StandardCharsets.UTF_8);
 
         // Create directory to trick resource service.
         Path hackPath = directoryPath.resolve("%57EB-INF/one.js#/");
         Files.createDirectories(hackPath);
-        try (OutputStream output = Files.newOutputStream(hackPath.resolve("index.html")))
-        {
-            output.write("this content does not matter".getBytes(StandardCharsets.UTF_8));
-        }
+        Files.writeString(hackPath.resolve("index.html"), "this content does not matter", StandardCharsets.UTF_8);
 
         Path standardHashDir = directoryPath.resolve("welcome#");
         Files.createDirectories(standardHashDir);
-        try (OutputStream output = Files.newOutputStream(standardHashDir.resolve("index.html")))
-        {
-            output.write("standard hash dir welcome".getBytes(StandardCharsets.UTF_8));
-        }
+        Files.writeString(standardHashDir.resolve("index.html"), "standard hash dir welcome", StandardCharsets.UTF_8);
 
         WebAppContext context = new WebAppContext();
-        context.setBaseResource(new PathResource(directoryPath));
+        context.setBaseResource(context.getResourceFactory().newResource(directoryPath));
         context.setContextPath("/");
         server.setHandler(context);
         server.start();

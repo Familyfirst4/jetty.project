@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -16,13 +16,13 @@ package org.eclipse.jetty.nosql;
 import java.util.HashSet;
 import java.util.Set;
 
-import org.eclipse.jetty.session.AbstractSessionDataStore;
+import org.eclipse.jetty.session.ObjectStreamSessionDataStore;
 import org.eclipse.jetty.session.SessionData;
 
 /**
  * NoSqlSessionDataStore
  */
-public abstract class NoSqlSessionDataStore extends AbstractSessionDataStore
+public abstract class NoSqlSessionDataStore extends ObjectStreamSessionDataStore
 {
 
     public class NoSqlSessionData extends SessionData
@@ -62,7 +62,7 @@ public abstract class NoSqlSessionDataStore extends AbstractSessionDataStore
 
         public Set<String> getAllAttributeNames()
         {
-            return new HashSet<String>(_attributes.keySet());
+            return new HashSet<>(_attributes.keySet());
         }
     }
 

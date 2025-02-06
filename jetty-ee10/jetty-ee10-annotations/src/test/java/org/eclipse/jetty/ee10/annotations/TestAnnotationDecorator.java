@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,16 +13,23 @@
 
 package org.eclipse.jetty.ee10.annotations;
 
-import org.eclipse.jetty.ee10.plus.annotation.LifeCycleCallbackCollection;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
 import org.eclipse.jetty.ee10.servlet.ServletHolder;
 import org.eclipse.jetty.ee10.servlet.Source;
 import org.eclipse.jetty.ee10.webapp.MetaData;
 import org.eclipse.jetty.ee10.webapp.WebAppContext;
 import org.eclipse.jetty.ee10.webapp.WebDescriptor;
+import org.eclipse.jetty.plus.annotation.LifeCycleCallbackCollection;
+import org.eclipse.jetty.toolchain.test.jupiter.WorkDir;
+import org.eclipse.jetty.toolchain.test.jupiter.WorkDirExtension;
 import org.eclipse.jetty.util.DecoratedObjectFactory;
-import org.eclipse.jetty.util.resource.EmptyResource;
+import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
 import org.eclipse.jetty.xml.XmlParser;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -30,13 +37,15 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@ExtendWith(WorkDirExtension.class)
 public class TestAnnotationDecorator
 {
+
     public class TestWebDescriptor extends WebDescriptor
     {
-        public TestWebDescriptor(MetaData.Complete metadata)
+        public TestWebDescriptor(Resource xml, MetaData.Complete metadata)
         {
-            super(EmptyResource.INSTANCE);
+            super(xml);
             _metaDataComplete = metadata;
         }
 
@@ -74,12 +83,14 @@ public class TestAnnotationDecorator
     }
 
     @Test
-    public void testAnnotationDecorator() throws Exception
+    public void testAnnotationDecorator(WorkDir workDir) throws Exception
     {
-        assertThrows(NullPointerException.class, () ->
-        {
-            new AnnotationDecorator(null);
-        });
+        Path docroot = workDir.getEmptyPathDir();
+        Path dummyDescriptor = docroot.resolve("dummy.xml");
+        Files.createFile(dummyDescriptor);
+        Resource dummyResource = ResourceFactory.root().newResource(dummyDescriptor);
+
+        assertThrows(NullPointerException.class, () -> new AnnotationDecorator(null));
 
         WebAppContext context = new WebAppContext();
         AnnotationDecorator decorator = new AnnotationDecorator(context);
@@ -94,9 +105,9 @@ public class TestAnnotationDecorator
         context.removeAttribute(LifeCycleCallbackCollection.LIFECYCLE_CALLBACK_COLLECTION);
 
         //test with BaseHolder metadata, should not introspect with metdata-complete==true
-        context.getMetaData().setWebDescriptor(new TestWebDescriptor(MetaData.Complete.True));
+        context.getMetaData().setWebDescriptor(new TestWebDescriptor(dummyResource, MetaData.Complete.True));
         assertTrue(context.getMetaData().isMetaDataComplete());
-        ServletHolder holder = new ServletHolder(new Source(Source.Origin.DESCRIPTOR, ""));
+        ServletHolder holder = new ServletHolder(new Source(Source.Origin.DESCRIPTOR));
         holder.setHeldClass(ServletE.class);
         context.getServletHandler().addServlet(holder);
         DecoratedObjectFactory.associateInfo(holder);
@@ -110,7 +121,7 @@ public class TestAnnotationDecorator
         context.removeAttribute(LifeCycleCallbackCollection.LIFECYCLE_CALLBACK_COLLECTION);
 
         //test with BaseHolder metadata, should introspect with metadata-complete==false
-        context.getMetaData().setWebDescriptor(new TestWebDescriptor(MetaData.Complete.False));
+        context.getMetaData().setWebDescriptor(new TestWebDescriptor(dummyResource, MetaData.Complete.False));
         DecoratedObjectFactory.associateInfo(holder);
         decorator = new AnnotationDecorator(context);
         decorator.decorate(servlet);

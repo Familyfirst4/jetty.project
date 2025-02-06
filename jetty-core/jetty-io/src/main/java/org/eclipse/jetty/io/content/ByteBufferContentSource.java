@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -23,10 +23,15 @@ import org.eclipse.jetty.io.Content;
 import org.eclipse.jetty.util.thread.AutoLock;
 import org.eclipse.jetty.util.thread.SerializedInvoker;
 
+/**
+ * <p>A {@link Content.Source} backed by one or more {@link ByteBuffer}s.
+ * The buffers passed in the constructor are made available as {@link Content.Chunk}s
+ * via {@link #read()}. Any calls to {@link #demand(Runnable)} are immediately satisfied.</p>
+ */
 public class ByteBufferContentSource implements Content.Source
 {
     private final AutoLock lock = new AutoLock();
-    private final SerializedInvoker invoker = new SerializedInvoker();
+    private final SerializedInvoker invoker = new SerializedInvoker(ByteBufferContentSource.class);
     private final long length;
     private final Collection<ByteBuffer> byteBuffers;
     private Iterator<ByteBuffer> iterator;
@@ -70,11 +75,14 @@ public class ByteBufferContentSource implements Content.Source
                 return terminated = Content.Chunk.EOF;
             buffer = iterator.next().slice();
             last = !iterator.hasNext();
+            if (last)
+                terminated = Content.Chunk.EOF;
         }
         return Content.Chunk.from(buffer, last);
     }
 
-    protected boolean rewind()
+    @Override
+    public boolean rewind()
     {
         try (AutoLock ignored = lock.lock())
         {
@@ -130,5 +138,7 @@ public class ByteBufferContentSource implements Content.Source
                 return;
             terminated = Content.Chunk.from(failure);
         }
+        // Demands are always serviced immediately so there is no
+        // need to ask the invoker to run invokeDemandCallback here.
     }
 }

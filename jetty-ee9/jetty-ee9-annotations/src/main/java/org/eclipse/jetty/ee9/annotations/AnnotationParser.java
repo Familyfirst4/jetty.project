@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,28 +13,23 @@
 
 package org.eclipse.jetty.ee9.annotations;
 
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
-import java.net.URL;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
-import java.util.Collection;
-import java.util.List;
-import java.util.Locale;
+import java.util.Collections;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-import org.eclipse.jetty.util.JavaVersion;
-import org.eclipse.jetty.util.Loader;
-import org.eclipse.jetty.util.MultiException;
-import org.eclipse.jetty.util.MultiReleaseJarFile;
+import org.eclipse.jetty.util.ExceptionUtil;
+import org.eclipse.jetty.util.FileID;
 import org.eclipse.jetty.util.StringUtil;
-import org.eclipse.jetty.util.TypeUtil;
 import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
 import org.objectweb.asm.AnnotationVisitor;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassVisitor;
@@ -70,14 +65,15 @@ public class AnnotationParser
     /**
      * Map of classnames scanned and the first location from which scan occurred
      */
-    protected Map<String, Resource> _parsedClassNames = new ConcurrentHashMap<>();
-    private final int _javaPlatform;
+    protected Map<String, URI> _parsedClassNames = new ConcurrentHashMap<>();
     private final int _asmVersion;
 
     /**
      * Determine the runtime version of asm.
      *
      * @return the {@link org.objectweb.asm.Opcodes} ASM value matching the runtime version of asm.
+     * TODO: can this be a jetty-util utility method to allow reuse across ee#?
+     * TODO: we should probably keep ASM centralized, as it's not EE specific, but Java Runtime specific behavior to keep up to date
      */
     private static int asmVersion()
     {
@@ -95,7 +91,7 @@ public class AnnotationParser
             .map(Integer::parseInt)
             .max(Integer::compareTo);
 
-        if (!asmVersion.isPresent())
+        if (asmVersion.isEmpty())
             throw new IllegalStateException("Invalid " + Opcodes.class.getName());
 
         int asmFieldId = asmVersion.get();
@@ -323,19 +319,19 @@ public class AnnotationParser
     /**
      * Signature for all handlers that respond to parsing class files.
      */
-    public static interface Handler
+    public interface Handler
     {
-        public void handle(ClassInfo classInfo);
+        void handle(ClassInfo classInfo);
 
-        public void handle(MethodInfo methodInfo);
+        void handle(MethodInfo methodInfo);
 
-        public void handle(FieldInfo fieldInfo);
+        void handle(FieldInfo fieldInfo);
 
-        public void handle(ClassInfo info, String annotationName);
+        void handle(ClassInfo info, String annotationName);
 
-        public void handle(MethodInfo info, String annotationName);
+        void handle(MethodInfo info, String annotationName);
 
-        public void handle(FieldInfo info, String annotationName);
+        void handle(FieldInfo info, String annotationName);
     }
 
     /**
@@ -526,191 +522,17 @@ public class AnnotationParser
 
     public AnnotationParser()
     {
-        this(JavaVersion.VERSION.getPlatform());
+        this(ASM_VERSION);
     }
 
     /**
-     * @param javaPlatform The target java version or 0 for the current runtime.
+     * @param asmVersion The target asm version or 0 for the internal version.
      */
-    public AnnotationParser(int javaPlatform)
+    public AnnotationParser(int asmVersion)
     {
-        _asmVersion = ASM_VERSION;
-        if (javaPlatform == 0)
-            javaPlatform = JavaVersion.VERSION.getPlatform();
-        _javaPlatform = javaPlatform;
-    }
-
-    public AnnotationParser(int javaPlatform, int asmVersion)
-    {
-        if (javaPlatform == 0)
-            javaPlatform = JavaVersion.VERSION.getPlatform();
-        _javaPlatform = javaPlatform;
         if (asmVersion == 0)
             asmVersion = ASM_VERSION;
         _asmVersion = asmVersion;
-    }
-
-    /**
-     * Add a class as having been parsed.
-     *
-     * @param classname the name of the class
-     * @param location the fully qualified location of the class
-     */
-    public void addParsedClass(String classname, Resource location)
-    {
-        Resource existing = _parsedClassNames.putIfAbsent(classname, location);
-        if (existing != null)
-            LOG.warn("{} scanned from multiple locations: {}, {}", classname, existing, location);
-    }
-
-    /**
-     * Parse a given class
-     *
-     * @param handlers the set of handlers to find class
-     * @param className the class name to parse
-     * @throws Exception if unable to parse
-     */
-    public void parse(Set<? extends Handler> handlers, String className) throws Exception
-    {
-        if (className == null)
-            return;
-
-        String classRef = TypeUtil.toClassReference(className);
-        URL resource = Loader.getResource(classRef);
-        if (resource != null)
-        {
-            Resource r = Resource.newResource(resource);
-            addParsedClass(className, r);
-            try (InputStream is = r.getInputStream())
-            {
-                scanClass(handlers, null, is);
-            }
-        }
-    }
-
-    /**
-     * Parse the given class, optionally walking its inheritance hierarchy
-     *
-     * @param handlers the handlers to look for class in
-     * @param clazz the class to look for
-     * @param visitSuperClasses if true, also visit super classes for parse
-     * @throws Exception if unable to parse class
-     */
-    public void parse(Set<? extends Handler> handlers, Class<?> clazz, boolean visitSuperClasses) throws Exception
-    {
-        Class<?> cz = clazz;
-        while (cz != Object.class)
-        {
-            String nameAsResource = TypeUtil.toClassReference(cz);
-            URL resource = Loader.getResource(nameAsResource);
-            if (resource != null)
-            {
-                Resource r = Resource.newResource(resource);
-                addParsedClass(clazz.getName(), r);
-                try (InputStream is = r.getInputStream())
-                {
-                    scanClass(handlers, null, is);
-                }
-            }
-
-            if (visitSuperClasses)
-                cz = cz.getSuperclass();
-            else
-                break;
-        }
-    }
-
-    /**
-     * Parse the given classes
-     *
-     * @param handlers the set of handlers to look for class in
-     * @param classNames the class name
-     * @throws Exception if unable to parse
-     */
-    public void parse(Set<? extends Handler> handlers, String[] classNames) throws Exception
-    {
-        if (classNames == null)
-            return;
-
-        parse(handlers, Arrays.asList(classNames));
-    }
-
-    /**
-     * Parse the given classes
-     *
-     * @param handlers the set of handlers to look for class in
-     * @param classNames the class names
-     * @throws Exception if unable to parse
-     */
-    public void parse(Set<? extends Handler> handlers, List<String> classNames) throws Exception
-    {
-        MultiException me = new MultiException();
-
-        for (String className : classNames)
-        {
-            try
-            {
-                String classRef = TypeUtil.toClassReference(className);
-                URL resource = Loader.getResource(classRef);
-                if (resource != null)
-                {
-                    Resource r = Resource.newResource(resource);
-                    addParsedClass(className, r);
-                    try (InputStream is = r.getInputStream())
-                    {
-                        scanClass(handlers, null, is);
-                    }
-                }
-            }
-            catch (Exception e)
-            {
-                me.add(new RuntimeException("Error scanning class " + className, e));
-            }
-        }
-        me.ifExceptionThrow();
-    }
-
-    /**
-     * Parse classes in the supplied uris.
-     *
-     * @param handlers the handlers to look for classes in
-     * @param uris the uris for the jars
-     * @throws Exception if unable to parse
-     */
-    public void parse(final Set<? extends Handler> handlers, final URI[] uris) throws Exception
-    {
-        if (uris == null)
-            return;
-
-        MultiException me = new MultiException();
-
-        for (URI uri : uris)
-        {
-            try
-            {
-                parse(handlers, uri);
-            }
-            catch (Exception e)
-            {
-                me.add(new RuntimeException("Problem parsing classes from " + uri, e));
-            }
-        }
-        me.ifExceptionThrow();
-    }
-
-    /**
-     * Parse a particular uri
-     *
-     * @param handlers the handlers to look for classes in
-     * @param uri the uri for the jar
-     * @throws Exception if unable to parse
-     */
-    public void parse(final Set<? extends Handler> handlers, URI uri) throws Exception
-    {
-        if (uri == null)
-            return;
-
-        parse(handlers, Resource.newResource(uri));
     }
 
     /**
@@ -725,92 +547,71 @@ public class AnnotationParser
         if (r == null)
             return;
 
-        if (r.exists() && r.isDirectory())
-        {
-            parseDir(handlers, r);
-            return;
-        }
-
-        String fullname = r.toString();
-        if (fullname.endsWith(".jar"))
+        if (FileID.isJavaArchive(r.getPath()))
         {
             parseJar(handlers, r);
             return;
         }
 
-        if (fullname.endsWith(".class"))
+        if (r.isDirectory())
         {
-            try (InputStream is = r.getInputStream())
-            {
-                scanClass(handlers, null, is);
-                return;
-            }
+            parseDir(handlers, r);
+            return;
+        }
+
+        if (FileID.isClassFile(r.getPath()))
+        {
+            parseClass(handlers, null, r.getPath());
         }
 
         if (LOG.isDebugEnabled())
-            LOG.warn("Resource not scannable for classes: {}", r);
+            LOG.warn("Resource not able to be scanned for classes: {}", r);
     }
 
     /**
      * Parse all classes in a directory
      *
      * @param handlers the set of handlers to look for classes in
-     * @param root the resource directory to look for classes
+     * @param dirResource the resource representing the baseResource being scanned (jar, dir, etc)
      * @throws Exception if unable to parse
      */
-    protected void parseDir(Set<? extends Handler> handlers, Resource root) throws Exception
+    protected void parseDir(Set<? extends Handler> handlers, Resource dirResource) throws Exception
     {
-        if (!root.isDirectory() || !root.exists() || root.getName().startsWith("."))
-            return;
-
         if (LOG.isDebugEnabled())
-            LOG.debug("Scanning dir {}", root);
+            LOG.debug("Scanning dir {}", dirResource);
 
-        File rootFile = root.getFile();
+        assert dirResource.isDirectory();
 
-        MultiException me = new MultiException();
-        Collection<Resource> resources = root.getAllResources();
-        if (resources != null)
+        ExceptionUtil.MultiException multiException = new ExceptionUtil.MultiException();
+
+        for (Resource candidate : dirResource.getAllResources())
         {
-            for (Resource r : resources)
+            // Skip directories
+            if (candidate.isDirectory())
+                continue;
+
+            // Get the path relative to the base resource
+            Path relative = dirResource.getPathTo(candidate);
+
+            // select only relative non-hidden class files that are not modules nor versions
+            if (relative == null ||
+                FileID.isHidden(relative) ||
+                FileID.isMetaInfVersions(relative) ||
+                FileID.isModuleInfoClass(relative) ||
+                !FileID.isClassFile(relative))
+                continue;
+
+            try
             {
-                if (r.isDirectory())
-                    continue;
-
-                File file = r.getFile();
-                if (isValidClassFileName((file == null ? null : file.getName())))
-                {
-                    Path classpath = rootFile.toPath().relativize(file.toPath());
-                    String str = classpath.toString();
-                    str = str.substring(0, str.lastIndexOf(".class"));
-                    str = StringUtil.replace(str, File.separatorChar, '.');
-
-                    try
-                    {
-                        if (LOG.isDebugEnabled())
-                            LOG.debug("Scanning class {}", r);
-                        addParsedClass(str, r);
-                        try (InputStream is = r.getInputStream())
-                        {
-                            scanClass(handlers, Resource.newResource(file.getParentFile()), is);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        if (LOG.isDebugEnabled())
-                            LOG.debug("Error scanning file {}", file, ex);
-                        me.add(new RuntimeException("Error scanning file " + file, ex));
-                    }
-                }
-                else
-                {
-                    if (LOG.isDebugEnabled())
-                        LOG.debug("Skipping scan on invalid file {}", file);
-                }
+                parseClass(handlers, dirResource, candidate.getPath());
+            }
+            catch (Exception ex)
+            {
+                multiException.add(new RuntimeException("Error scanning entry " + ex, ex));
             }
         }
 
-        me.ifExceptionThrow();
+        multiException.ifExceptionThrow();
     }
 
     /**
@@ -825,61 +626,16 @@ public class AnnotationParser
         if (jarResource == null)
             return;
 
-        if (jarResource.toString().endsWith(".jar"))
+        /*        if (!FileID.isJavaArchive(jarResource.getPath()))
+            return;*/
+
+        if (LOG.isDebugEnabled())
+            LOG.debug("Scanning jar {}", jarResource);
+
+        try (ResourceFactory.Closeable resourceFactory = ResourceFactory.closeable())
         {
-            if (LOG.isDebugEnabled())
-                LOG.debug("Scanning jar {}", jarResource);
-
-            MultiException me = new MultiException();
-            try (MultiReleaseJarFile jarFile = new MultiReleaseJarFile(jarResource.getFile(), _javaPlatform, false))
-            {
-                jarFile.stream().forEach(e ->
-                {
-                    try
-                    {
-                        parseJarEntry(handlers, jarResource, e);
-                    }
-                    catch (Exception ex)
-                    {
-                        me.add(new RuntimeException("Error scanning entry " + e.getName() + " from jar " + jarResource, ex));
-                    }
-                });
-            }
-            me.ifExceptionThrow();
-        }
-    }
-
-    /**
-     * Parse a single entry in a jar file
-     *
-     * @param handlers the handlers to look for classes in
-     * @param entry the entry in the potentially MultiRelease jar resource to parse
-     * @param jar the jar file
-     * @throws Exception if unable to parse
-     */
-    protected void parseJarEntry(Set<? extends Handler> handlers, Resource jar, MultiReleaseJarFile.VersionedJarEntry entry)
-        throws Exception
-    {
-        if (jar == null || entry == null)
-            return;
-
-        //skip directories
-        if (entry.isDirectory())
-            return;
-
-        String name = entry.getName();
-
-        //check file is a valid class file name
-        if (isValidClassFileName(name) && isValidClassFilePath(name))
-        {
-            String shortName = StringUtil.replace(name, '/', '.').substring(0, name.length() - 6);
-            addParsedClass(shortName, Resource.newResource("jar:" + jar.getURI() + "!/" + entry.getNameInJar()));
-            if (LOG.isDebugEnabled())
-                LOG.debug("Scanning class from jar {}!/{}", jar, entry);
-            try (InputStream is = entry.getInputStream())
-            {
-                scanClass(handlers, jar, is);
-            }
+            Resource insideJarResource = resourceFactory.newJarFileResource(jarResource.getURI());
+            parseDir(handlers, insideJarResource);
         }
     }
 
@@ -888,91 +644,38 @@ public class AnnotationParser
      *
      * @param handlers the handlers to look for classes in
      * @param containingResource the dir or jar that the class is contained within, can be null if not known
-     * @param is the input stream to parse
+     * @param classFile the class file to parse
      * @throws IOException if unable to parse
      */
-    protected void scanClass(Set<? extends Handler> handlers, Resource containingResource, InputStream is) throws IOException
+    protected void parseClass(Set<? extends Handler> handlers, Resource containingResource, Path classFile) throws IOException
     {
-        ClassReader reader = new ClassReader(is);
-        reader.accept(new MyClassVisitor(handlers, containingResource, _asmVersion), ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+        if (LOG.isDebugEnabled())
+            LOG.debug("Parse class from {}", classFile.toUri());
+
+        URI location = classFile.toUri();
+
+        try (InputStream in = Files.newInputStream(classFile))
+        {
+            ClassReader reader = new ClassReader(in);
+            reader.accept(new MyClassVisitor(handlers, containingResource, _asmVersion), ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+
+            String classname = normalize(reader.getClassName());
+            URI existing = _parsedClassNames.putIfAbsent(classname, location);
+            if (existing != null)
+                LOG.warn("{} scanned from multiple locations: {}, {}", classname, existing, location);
+        }
+        catch (IllegalArgumentException | IOException e)
+        {
+            throw new IOException("Unable to parse class: " + classFile.toUri(), e);
+        }
     }
 
     /**
-     * Remove any parsed class names.
+     * Useful mostly for testing to expose the list of parsed classes.
+     * @return the map of classnames to their URIs
      */
-    public void resetParsedClasses()
+    Map<String, URI> getParsedClassNames()
     {
-        _parsedClassNames.clear();
-    }
-
-    /**
-     * Check that the given path represents a valid class file name.
-     * The check is fairly cursory, checking that:
-     * <ul>
-     * <li> the name ends with .class</li>
-     * <li> it isn't a dot file or in a hidden directory </li>
-     * <li> the name of the class at least begins with a valid identifier for a class name </li>
-     * </ul>
-     *
-     * @param name the class file name
-     * @return whether the class file name is valid
-     */
-    public boolean isValidClassFileName(String name)
-    {
-        //no name cannot be valid
-        if (name == null || name.length() == 0)
-            return false;
-
-        //skip anything that is not a class file
-        String lc = name.toLowerCase(Locale.ENGLISH);
-        if (!lc.endsWith(".class"))
-        {
-            if (LOG.isDebugEnabled())
-                LOG.debug("Not a class: {}", name);
-            return false;
-        }
-
-        if (lc.equals("module-info.class"))
-        {
-            if (LOG.isDebugEnabled())
-                LOG.debug("Skipping module-info.class");
-            return false;
-        }
-
-        //skip any classfiles that are not a valid java identifier
-        int c0 = 0;
-        int ldir = name.lastIndexOf('/', name.length() - 6);
-        c0 = (ldir > -1 ? ldir + 1 : c0);
-        if (!Character.isJavaIdentifierStart(name.charAt(c0)))
-        {
-            if (LOG.isDebugEnabled())
-                LOG.debug("Not a java identifier: {}", name);
-            return false;
-        }
-
-        return true;
-    }
-
-    /**
-     * Check that the given path does not contain hidden directories
-     *
-     * @param path the class file path
-     * @return whether the class file path is valid
-     */
-    public boolean isValidClassFilePath(String path)
-    {
-        //no path is not valid
-        if (path == null || path.length() == 0)
-            return false;
-
-        // skip any classfiles that are in a hidden directory
-        if (path.startsWith(".") || path.contains("/."))
-        {
-            if (LOG.isDebugEnabled())
-                LOG.debug("Contains hidden dirs: {}", path);
-            return false;
-        }
-
-        return true;
+        return Collections.unmodifiableMap(_parsedClassNames);
     }
 }

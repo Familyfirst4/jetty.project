@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -16,6 +16,8 @@ package org.eclipse.jetty.util.component;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.StringReader;
+import java.util.Collection;
+import java.util.EventListener;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -727,5 +729,19 @@ public class ContainerLifeCycleTest
         assertTrue(container.isStarted());
         assertTrue(bean.isFailed());
         assertTrue(container.isUnmanaged(bean));
+    }
+
+    @Test
+    public void testInstallBeanThatImplementsEventListener()
+    {
+        class Bean implements EventListener
+        {
+        }
+
+        ContainerLifeCycle container = new ContainerLifeCycle();
+        container.installBean(new Bean());
+
+        Collection<Bean> beans = container.getBeans(Bean.class);
+        assertEquals(1, beans.size());
     }
 }

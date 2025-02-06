@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,12 +13,13 @@
 
 package org.eclipse.jetty.ee10.quickstart;
 
-import java.io.File;
-import java.util.concurrent.TimeUnit;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import org.eclipse.jetty.server.Server;
-import org.eclipse.jetty.util.IO;
-import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.toolchain.test.FS;
+import org.eclipse.jetty.toolchain.test.MavenPaths;
+import org.eclipse.jetty.util.NanoTime;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -27,28 +28,36 @@ import org.slf4j.LoggerFactory;
  */
 public class PreconfigureStandardTestWar
 {
-    private static final long __start = System.nanoTime();
+    private static final long __start = NanoTime.now();
     private static final Logger LOG = LoggerFactory.getLogger(Server.class);
 
     public static void main(String[] args) throws Exception
     {
-        String target = "target/test-standard-preconfigured";
-        File file = new File(target);
-        if (file.exists())
-            IO.delete(file);
+        Path workdir = MavenPaths.targetTestDir(PreconfigureStandardTestWar.class.getSimpleName());
+        FS.ensureDirExists(workdir);
 
-        File realmPropertiesDest = new File("target/test-standard-realm.properties");
-        if (realmPropertiesDest.exists())
-            IO.delete(realmPropertiesDest);
+        Path target = workdir.resolve("test-standard-preconfigured");
+        FS.ensureEmpty(target);
 
-        Resource realmPropertiesSrc = Resource.newResource("src/test/resources/realm.properties");
-        realmPropertiesSrc.copyTo(realmPropertiesDest);
-        System.setProperty("jetty.home", "target");
+        Path realmPropertiesDest = target.resolve("test-standard-realm.properties");
+        Files.deleteIfExists(realmPropertiesDest);
 
-        PreconfigureQuickStartWar.main("target/test-standard.war", target, "src/test/resources/test.xml");
+        Path realmPropertiesSrc = MavenPaths.findTestResourceFile("realm.properties");
+        Files.copy(realmPropertiesSrc, realmPropertiesDest);
 
-        LOG.info("Preconfigured in {}ms", TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - __start));
+        System.setProperty("jetty.home", target.toString());
 
-        // IO.copy(new FileInputStream("target/test-standard-preconfigured/WEB-INF/quickstart-web.xml"),System.out);
+        PreconfigureQuickStartWar.main(
+            MavenPaths.targetDir().resolve("test-standard.war").toString(),
+            target.toString(),
+            MavenPaths.findTestResourceFile("test-spec.xml").toString());
+
+        LOG.info("Preconfigured in {}ms", NanoTime.millisSince(__start));
+
+        if (LOG.isDebugEnabled())
+        {
+            Path quickStartXml = target.resolve("WEB-INF/quickstart-web.xml");
+            System.out.println(Files.readString(quickStartXml));
+        }
     }
 }

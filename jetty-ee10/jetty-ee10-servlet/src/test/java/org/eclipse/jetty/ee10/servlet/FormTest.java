@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -16,16 +16,18 @@ package org.eclipse.jetty.ee10.servlet;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.stream.Stream;
 
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.eclipse.jetty.client.AsyncRequestContent;
+import org.eclipse.jetty.client.ContentResponse;
+import org.eclipse.jetty.client.FormRequestContent;
 import org.eclipse.jetty.client.HttpClient;
-import org.eclipse.jetty.client.api.ContentResponse;
-import org.eclipse.jetty.client.util.AsyncRequestContent;
-import org.eclipse.jetty.client.util.FormRequestContent;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpMethod;
 import org.eclipse.jetty.http.HttpStatus;
@@ -34,14 +36,13 @@ import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.util.Fields;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-@Disabled
 public class FormTest
 {
     private static final int MAX_FORM_CONTENT_SIZE = 128;
@@ -65,9 +66,10 @@ public class FormTest
         connector = new ServerConnector(server, 1, 1);
         server.addConnector(connector);
 
-        ServletContextHandler handler = new ServletContextHandler(server, contextPath);
+        ServletContextHandler handler = new ServletContextHandler(contextPath);
         HttpServlet servlet = config.apply(handler);
         handler.addServlet(new ServletHolder(servlet), servletPath + "/*");
+        server.setHandler(handler);
 
         server.start();
     }
@@ -195,5 +197,36 @@ public class FormTest
             ? HttpStatus.OK_200
             : HttpStatus.BAD_REQUEST_400;
         assertEquals(expected, response.getStatus());
+    }
+
+    @Test
+    public void testContentTypeWithNonCharsetParameter() throws Exception
+    {
+        String contentType = MimeTypes.Type.FORM_ENCODED.asString() + "; p=v";
+        String paramName = "name1";
+        String paramValue = "value1";
+        start(handler -> new HttpServlet()
+        {
+            @Override
+            protected void service(HttpServletRequest request, HttpServletResponse response)
+            {
+                assertEquals(contentType, request.getContentType());
+                Map<String, String[]> params = request.getParameterMap();
+                assertEquals(1, params.size());
+                assertEquals(paramValue, params.get(paramName)[0]);
+            }
+        });
+
+        Fields formParams = new Fields();
+        formParams.add(paramName, paramValue);
+        ContentResponse response = client.newRequest("localhost", connector.getLocalPort())
+            .method(HttpMethod.POST)
+            .path(contextPath + servletPath)
+            .headers(headers -> headers.put(HttpHeader.CONTENT_TYPE, contentType))
+            .body(new FormRequestContent(formParams))
+            .timeout(5, TimeUnit.SECONDS)
+            .send();
+
+        assertEquals(HttpStatus.OK_200, response.getStatus());
     }
 }

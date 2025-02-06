@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -72,7 +72,8 @@ public class MemoryUsageTest
         connector = new ServerConnector(server);
         server.addConnector(connector);
 
-        ServletContextHandler contextHandler = new ServletContextHandler(server, "/", true, false);
+        ServletContextHandler contextHandler = new ServletContextHandler("/", true, false);
+        server.setHandler(contextHandler);
         JakartaWebSocketServletContainerInitializer.configure(contextHandler, (context, container) ->
         {
             ServerEndpointConfig config = ServerEndpointConfig.Builder.create(BasicEndpoint.class, "/").build();

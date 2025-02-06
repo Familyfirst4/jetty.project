@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -47,7 +47,6 @@ import org.apache.tomcat.util.scan.StandardJarScanner;
 import org.codehaus.plexus.util.FileUtils;
 import org.codehaus.plexus.util.StringUtils;
 import org.eclipse.jetty.util.IO;
-import org.eclipse.jetty.util.resource.Resource;
 
 /**
  * This goal will compile jsps for a webapp so that they can be included in a
@@ -58,12 +57,11 @@ import org.eclipse.jetty.util.resource.Resource;
  * <p>
  * Note that the same java compiler will be used as for on-the-fly compiled
  * jsps, which will be the Eclipse java compiler.
- * <p>
- * See <a
- * href="https://www.eclipse.org/jetty/documentation/current/jetty-jspc-maven-plugin.html">Usage
- * Guide</a> for instructions on using this plugin.
  * </p>
+ * <p>
  * Runs jspc compiler to produce .java and .class files
+ * </p>
+ * @see <a href="https://jetty.org/docs/">Usage Guide</a>
  */
 @Mojo(name = "jspc", defaultPhase = LifecyclePhase.PROCESS_CLASSES, requiresDependencyResolution = ResolutionScope.COMPILE_PLUS_RUNTIME,
     threadSafe = true)
@@ -273,7 +271,7 @@ public class JspcMojo extends AbstractMojo
             getLog().info("generatedClasses=" + generatedClasses);
             getLog().info("webXmlFragment=" + webXmlFragment);
             getLog().info("webXml=" + webXml);
-            getLog().info("insertionMarker=" + (insertionMarker == null || insertionMarker.equals("") ? END_OF_WEBAPP : insertionMarker));
+            getLog().info("insertionMarker=" + (insertionMarker == null || insertionMarker.isEmpty() ? END_OF_WEBAPP : insertionMarker));
             getLog().info("keepSources=" + keepSources);
             getLog().info("mergeFragment=" + mergeFragment);
             if (sourceVersion != null)
@@ -352,7 +350,7 @@ public class JspcMojo extends AbstractMojo
 
         try
         {
-            if (jspFiles == null | jspFiles.equals(""))
+            if (jspFiles == null | jspFiles.isEmpty())
             {
                 getLog().info("No files selected to precompile");
             }
@@ -457,7 +455,7 @@ public class JspcMojo extends AbstractMojo
                     // marker
                     boolean atInsertPoint = false;
                     boolean atEOF = false;
-                    String marker = (insertionMarker == null || insertionMarker.equals("") ? END_OF_WEBAPP : insertionMarker);
+                    String marker = (insertionMarker == null || insertionMarker.isEmpty() ? END_OF_WEBAPP : insertionMarker);
                     while (!atInsertPoint && !atEOF)
                     {
                         String line = webXmlReader.readLine();
@@ -518,12 +516,10 @@ public class JspcMojo extends AbstractMojo
     {
         //add any classes from the webapp
         List<URL> urls = new ArrayList<URL>();
-        String classesDir = classesDirectory.getCanonicalPath();
-        classesDir = classesDir + (classesDir.endsWith(File.pathSeparator) ? "" : File.separator);
-        urls.add(Resource.toURL(new File(classesDir)));
+        urls.add(classesDirectory.toURI().toURL());
 
         if (getLog().isDebugEnabled())
-            getLog().debug("Adding to classpath classes dir: " + classesDir);
+            getLog().debug("Adding to classpath classes dir: " + classesDirectory);
 
         //add the dependencies of the webapp (which will form WEB-INF/lib)
         for (Iterator<Artifact> iter = project.getArtifacts().iterator(); iter.hasNext(); )
@@ -537,7 +533,7 @@ public class JspcMojo extends AbstractMojo
                 if (getLog().isDebugEnabled())
                     getLog().debug("Adding to classpath dependency file: " + filePath);
 
-                urls.add(Resource.toURL(artifact.getFile()));
+                urls.add(artifact.getFile().toURI().toURL());
             }
         }
         return urls;

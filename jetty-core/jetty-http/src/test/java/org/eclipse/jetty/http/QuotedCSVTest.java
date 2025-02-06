@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -106,7 +106,7 @@ public class QuotedCSVTest
         {
 
             @Override
-            protected void parsedValue(StringBuffer buffer)
+            protected void parsedValue(StringBuilder buffer)
             {
                 if (buffer.toString().contains("DELETE"))
                 {
@@ -123,7 +123,7 @@ public class QuotedCSVTest
             }
 
             @Override
-            protected void parsedParam(StringBuffer buffer, int valueLength, int paramName, int paramValue)
+            protected void parsedParam(StringBuilder buffer, int valueLength, int paramName, int paramValue)
             {
                 String name = paramValue > 0 ? buffer.substring(paramName, paramValue - 1) : buffer.substring(paramName);
                 if ("IGNORE".equals(name))
@@ -144,7 +144,7 @@ public class QuotedCSVTest
         assertThat(QuotedCSV.unquote("\"\""), is(""));
         assertThat(QuotedCSV.unquote("foo"), is("foo"));
         assertThat(QuotedCSV.unquote("\"foo\""), is("foo"));
-        assertThat(QuotedCSV.unquote("f\"o\"o"), is("foo"));
+        assertThat(QuotedCSV.unquote("f\"o\"o"), is("f\"o\"o"));
         assertThat(QuotedCSV.unquote("\"\\\"foo\""), is("\"foo"));
         assertThat(QuotedCSV.unquote("\\foo"), is("\\foo"));
     }
@@ -157,6 +157,6 @@ public class QuotedCSVTest
         assertThat(QuotedCSV.join(Collections.singletonList("hi")), is("hi"));
         assertThat(QuotedCSV.join("hi", "ho"), is("hi, ho"));
         assertThat(QuotedCSV.join("h i", "h,o"), is("\"h i\", \"h,o\""));
-        assertThat(QuotedCSV.join("h\"i", "h\to"), is("\"h\\\"i\", \"h\\to\""));
+        assertThat(QuotedCSV.join("h\"i", "h\to"), is("\"h\\\"i\", \"h\to\""));
     }
 }

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -56,13 +56,13 @@ public class AsyncServletTest extends AbstractTest
 //            }
 //        });
 //
-//        Session session = newClient(new Session.Listener.Adapter());
+//        Session session = newClient(new Session.Listener() {});
 //
 //        MetaData.Request metaData = newRequest("GET", HttpFields.EMPTY);
 //        HeadersFrame frame = new HeadersFrame(metaData, null, true);
 //        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
 //        CountDownLatch latch = new CountDownLatch(1);
-//        session.newStream(frame, new Promise.Adapter<>(), new Stream.Listener.Adapter()
+//        session.newStream(frame, new Promise.Adapter<>(), new Stream.Listener()
 //        {
 //            @Override
 //            public void onData(Stream stream, DataFrame frame, Callback callback)
@@ -93,13 +93,13 @@ public class AsyncServletTest extends AbstractTest
 //        long idleTimeout = 1000;
 //        client.setIdleTimeout(idleTimeout);
 //
-//        Session session = newClient(new Session.Listener.Adapter());
+//        Session session = newClient(new Session.Listener() {});
 //        MetaData.Request metaData = newRequest("GET", HttpFields.EMPTY);
 //        HeadersFrame frame = new HeadersFrame(metaData, null, true);
 //        FuturePromise<Stream> promise = new FuturePromise<>();
 //        CountDownLatch responseLatch = new CountDownLatch(1);
 //        CountDownLatch failLatch = new CountDownLatch(1);
-//        session.newStream(frame, promise, new Stream.Listener.Adapter()
+//        session.newStream(frame, promise, new Stream.Listener()
 //        {
 //            @Override
 //            public void onHeaders(Stream stream, HeadersFrame frame)
@@ -130,12 +130,12 @@ public class AsyncServletTest extends AbstractTest
 //        long idleTimeout = 1000;
 //        client.setIdleTimeout(10 * idleTimeout);
 //
-//        Session session = newClient(new Session.Listener.Adapter());
+//        Session session = newClient(new Session.Listener() {});
 //        MetaData.Request metaData = newRequest("GET", HttpFields.EMPTY);
 //        HeadersFrame frame = new HeadersFrame(metaData, null, true);
 //        FuturePromise<Stream> promise = new FuturePromise<>();
 //        CountDownLatch clientLatch = new CountDownLatch(1);
-//        session.newStream(frame, promise, new Stream.Listener.Adapter()
+//        session.newStream(frame, promise, new Stream.Listener()
 //        {
 //            @Override
 //            public boolean onIdleTimeout(Stream stream, Throwable x)
@@ -154,58 +154,6 @@ public class AsyncServletTest extends AbstractTest
 //        assertTrue(clientLatch.await(2 * idleTimeout, TimeUnit.MILLISECONDS));
 //    }
 //
-//    @Test
-//    public void testStartAsyncThenClientResetWithoutRemoteErrorNotification() throws Exception
-//    {
-//        HttpConfiguration httpConfiguration = new HttpConfiguration();
-//        httpConfiguration.setNotifyRemoteAsyncErrors(false);
-//        prepareServer(new HTTP2ServerConnectionFactory(httpConfiguration));
-//        ServletContextHandler context = new ServletContextHandler(server, "/");
-//        AtomicReference<AsyncContext> asyncContextRef = new AtomicReference<>();
-//        CountDownLatch latch = new CountDownLatch(1);
-//        context.addServlet(new ServletHolder(new HttpServlet()
-//        {
-//            @Override
-//            protected void service(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException
-//            {
-//                AsyncContext asyncContext = request.startAsync();
-//                asyncContext.setTimeout(0);
-//                asyncContextRef.set(asyncContext);
-//                latch.countDown();
-//            }
-//        }), servletPath + "/*");
-//        server.start();
-//
-//        prepareClient();
-//        client.start();
-//        Session session = newClient(new Session.Listener.Adapter());
-//        MetaData.Request metaData = newRequest("GET", HttpFields.EMPTY);
-//        HeadersFrame frame = new HeadersFrame(metaData, null, true);
-//        FuturePromise<Stream> promise = new FuturePromise<>();
-//        session.newStream(frame, promise, new Stream.Listener.Adapter());
-//        Stream stream = promise.get(5, TimeUnit.SECONDS);
-//
-//        // Wait for the server to be in ASYNC_WAIT.
-//        assertTrue(latch.await(5, TimeUnit.SECONDS));
-//        sleep(500);
-//
-//        stream.reset(new ResetFrame(stream.getId(), ErrorCode.CANCEL_STREAM_ERROR.code), Callback.NOOP);
-//
-//        // Wait for the reset to be processed by the server.
-//        sleep(500);
-//
-//        AsyncContext asyncContext = asyncContextRef.get();
-//        ServletResponse response = asyncContext.getResponse();
-//        ServletOutputStream output = response.getOutputStream();
-//
-//        assertThrows(IOException.class,
-//            () ->
-//            {
-//                // Large writes or explicit flush() must
-//                // fail because the stream has been reset.
-//                output.flush();
-//            });
-//    }
 //
 //    @Test
 //    public void testStartAsyncThenServerSessionIdleTimeout() throws Exception
@@ -288,11 +236,11 @@ public class AsyncServletTest extends AbstractTest
 //        prepareClient();
 //        client.start();
 //
-//        Session session = newClient(new Session.Listener.Adapter());
+//        Session session = newClient(new Session.Listener() {});
 //        MetaData.Request metaData = newRequest("GET", HttpFields.EMPTY);
 //        HeadersFrame frame = new HeadersFrame(metaData, null, true);
 //        CountDownLatch clientLatch = new CountDownLatch(1);
-//        session.newStream(frame, new Promise.Adapter<>(), new Stream.Listener.Adapter()
+//        session.newStream(frame, new Promise.Adapter<>(), new Stream.Listener()
 //        {
 //            @Override
 //            public void onHeaders(Stream stream, HeadersFrame frame)

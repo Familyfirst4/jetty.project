@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,12 +14,18 @@
 package org.eclipse.jetty.http;
 
 import java.nio.ByteBuffer;
+import java.util.HashMap;
+import java.util.Map;
 
 import org.eclipse.jetty.util.BufferUtil;
 import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.nullValue;
+import static org.hamcrest.Matchers.sameInstance;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -188,5 +194,52 @@ public class HttpFieldTest
         assertNull(field.getHeader());
         assertEquals("X-My-Custom-Header", field.getName());
         assertEquals("something", field.getValue());
+    }
+
+    @Test
+    public void testGetValueParameters()
+    {
+        Map<String, String> map = new HashMap<>();
+        String value = HttpField.getValueParameters("Value ; p1=v1;p2=v2 ; p3=\" v ; 3=three\"", map);
+        assertThat(value, is("Value"));
+        assertThat(map.size(), is(3));
+        assertThat(map.get("p1"), is("v1"));
+        assertThat(map.get("p2"), is("v2"));
+        assertThat(map.get("p3"), is(" v ; 3=three"));
+    }
+
+    @Test
+    public void testWithoutValue()
+    {
+        HttpField field = new HttpField("name", "value");
+        assertThat(field.withoutValue("value"), nullValue());
+        assertThat(field.withoutValue("other"), sameInstance(field));
+        assertThat(field.withoutValue("val"), sameInstance(field));
+
+
+        field = new HttpField("name", "list, of, values");
+        assertThat(field.withoutValue("value"), sameInstance(field));
+        assertThat(field.withoutValue("often"), sameInstance(field));
+        assertThat(field.withoutValue("of"), equalTo(new HttpField("name", "list, values")));
+    }
+
+    @Test
+    public void testWithValue()
+    {
+        HttpField field = new HttpField("name", "value");
+        assertThat(field.withValue("value"), sameInstance(field));
+        HttpField withOther = field.withValue("other");
+        assertThat(withOther, not(sameInstance(field)));
+        assertTrue(withOther.contains("other"));
+        assertTrue(withOther.contains("value"));
+
+        field = new HttpField("name", "one,value, two");
+        assertThat(field.withValue("value"), sameInstance(field));
+        withOther = field.withValue("other");
+        assertThat(withOther, not(sameInstance(field)));
+        assertTrue(withOther.contains("one"));
+        assertTrue(withOther.contains("two"));
+        assertTrue(withOther.contains("value"));
+        assertTrue(withOther.contains("other"));
     }
 }

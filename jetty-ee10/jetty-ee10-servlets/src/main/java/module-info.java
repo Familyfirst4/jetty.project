@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -22,11 +22,11 @@ module org.eclipse.jetty.ee10.servlets
 
     // Only required if using CloseableDoSFilter.
     requires static org.eclipse.jetty.io;
-    // Only required if using DoSFilter, PushCacheFilter, etc.
+    // Only required if using DoSFilter, IncludeExcludeBasedFilter, etc.
     requires static org.eclipse.jetty.http;
     requires static org.eclipse.jetty.server;
     // Only required if using CrossOriginFilter, DoSFilter, etc.
-    requires static org.eclipse.jetty.util;
+    requires static transitive org.eclipse.jetty.util;
 
     exports org.eclipse.jetty.ee10.servlets;
 }

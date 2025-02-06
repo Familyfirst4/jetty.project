@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -20,22 +20,22 @@ import jakarta.servlet.ServletRequest;
 import jakarta.servlet.ServletResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import org.eclipse.jetty.http.HttpURI;
-import org.eclipse.jetty.server.handler.ContextHandler;
+import org.eclipse.jetty.util.ExceptionUtil;
 import org.eclipse.jetty.util.thread.Scheduler;
 
 public class AsyncContextEvent extends AsyncEvent implements Runnable
 {
     private final ServletContext _servletContext;
-    private final ContextHandler.Context _context;
+    private final ServletContextHandler.ServletScopedContext _context;
     private final AsyncContextState _asyncContext;
     private final HttpURI _baseURI;
-    private final ServletRequestState _state;
+    private final ServletChannelState _state;
     private ServletContext _dispatchContext;
     private String _dispatchPath;
     private volatile Scheduler.Task _timeoutTask;
     private Throwable _throwable;
 
-    public AsyncContextEvent(ContextHandler.Context context, AsyncContextState asyncContext, ServletRequestState state, ServletRequest request, ServletResponse response)
+    public AsyncContextEvent(ServletContextHandler.ServletScopedContext context, AsyncContextState asyncContext, ServletChannelState state, ServletRequest request, ServletResponse response)
     {
         super(null, request, response, null);
         _context = context;
@@ -56,7 +56,7 @@ public class AsyncContextEvent extends AsyncEvent implements Runnable
         return _baseURI;
     }
 
-    public ServletRequestState getServletRequestState()
+    public ServletChannelState getServletRequestState()
     {
         return _state;
     }
@@ -76,7 +76,7 @@ public class AsyncContextEvent extends AsyncEvent implements Runnable
         return _dispatchContext == null ? _servletContext : _dispatchContext;
     }
 
-    public ContextHandler.Context getContext()
+    public ServletContextHandler.ServletScopedContext getContext()
     {
         return _context;
     }
@@ -125,6 +125,7 @@ public class AsyncContextEvent extends AsyncEvent implements Runnable
     }
 
     /**
+     * Set encoded URI.
      * @param path encoded URI
      */
     public void setDispatchPath(String path)
@@ -149,9 +150,6 @@ public class AsyncContextEvent extends AsyncEvent implements Runnable
 
     public void addThrowable(Throwable e)
     {
-        if (_throwable == null)
-            _throwable = e;
-        else if (e != _throwable)
-            _throwable.addSuppressed(e);
+        _throwable = ExceptionUtil.combine(_throwable, e);
     }
 }

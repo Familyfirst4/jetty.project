@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -177,7 +177,8 @@ public class SSLAsyncIOServletTest
             server.addConnector(connector);
 
             contextPath = "/context";
-            ServletContextHandler context = new ServletContextHandler(server, contextPath, true, false);
+            ServletContextHandler context = new ServletContextHandler(contextPath, true, false);
+            server.setHandler(context);
             servletPath = "/servlet";
             context.addServlet(new ServletHolder(servlet), servletPath);
 
@@ -225,7 +226,8 @@ public class SSLAsyncIOServletTest
             server.addConnector(connector);
 
             contextPath = "/context";
-            ServletContextHandler context = new ServletContextHandler(server, contextPath, true, false);
+            ServletContextHandler context = new ServletContextHandler(contextPath, true, false);
+            server.setHandler(context);
             servletPath = "/servlet";
             context.addServlet(new ServletHolder(servlet), servletPath);
 

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,7 +14,7 @@
 module org.eclipse.jetty.ee9.nested
 {
     requires transitive jetty.servlet.api;
-    requires transitive org.eclipse.jetty.ee;
+    requires transitive org.eclipse.jetty.security;
     requires transitive org.eclipse.jetty.http;
     requires transitive org.eclipse.jetty.server;
     requires transitive org.eclipse.jetty.session;

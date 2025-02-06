@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -15,8 +15,8 @@ package org.eclipse.jetty.nosql.mongodb;
 
 import java.net.UnknownHostException;
 
-import com.mongodb.MongoClient;
-import com.mongodb.MongoClientURI;
+import com.mongodb.client.MongoClient;
+import com.mongodb.client.MongoClients;
 import org.eclipse.jetty.session.AbstractSessionDataStoreFactory;
 import org.eclipse.jetty.session.SessionDataStore;
 import org.eclipse.jetty.session.SessionManager;
@@ -34,6 +34,7 @@ public class MongoSessionDataStoreFactory extends AbstractSessionDataStoreFactor
     int _port = -1;
 
     /**
+     * Get the host.
      * @return the host
      */
     public String getHost()
@@ -42,6 +43,7 @@ public class MongoSessionDataStoreFactory extends AbstractSessionDataStoreFactor
     }
 
     /**
+     * Set the host to set.
      * @param host the host to set
      */
     public void setHost(String host)
@@ -50,6 +52,7 @@ public class MongoSessionDataStoreFactory extends AbstractSessionDataStoreFactor
     }
 
     /**
+     * Get the port.
      * @return the port
      */
     public int getPort()
@@ -58,6 +61,7 @@ public class MongoSessionDataStoreFactory extends AbstractSessionDataStoreFactor
     }
 
     /**
+     * Set the port to set.
      * @param port the port to set
      */
     public void setPort(int port)
@@ -66,6 +70,7 @@ public class MongoSessionDataStoreFactory extends AbstractSessionDataStoreFactor
     }
 
     /**
+     * Get the dbName.
      * @return the dbName
      */
     public String getDbName()
@@ -74,6 +79,7 @@ public class MongoSessionDataStoreFactory extends AbstractSessionDataStoreFactor
     }
 
     /**
+     * Set the dbName to set.
      * @param dbName the dbName to set
      */
     public void setDbName(String dbName)
@@ -82,6 +88,7 @@ public class MongoSessionDataStoreFactory extends AbstractSessionDataStoreFactor
     }
 
     /**
+     * Get the connectionString.
      * @return the connectionString
      */
     public String getConnectionString()
@@ -90,6 +97,7 @@ public class MongoSessionDataStoreFactory extends AbstractSessionDataStoreFactor
     }
 
     /**
+     * Set the connection string to set. This has priority over dbHost and port.
      * @param connectionString the connection string to set. This has priority over dbHost and port
      */
     public void setConnectionString(String connectionString)
@@ -98,6 +106,7 @@ public class MongoSessionDataStoreFactory extends AbstractSessionDataStoreFactor
     }
 
     /**
+     * Get the collectionName.
      * @return the collectionName
      */
     public String getCollectionName()
@@ -106,6 +115,7 @@ public class MongoSessionDataStoreFactory extends AbstractSessionDataStoreFactor
     }
 
     /**
+     * Set the collectionName to set.
      * @param collectionName the collectionName to set
      */
     public void setCollectionName(String collectionName)
@@ -126,14 +136,14 @@ public class MongoSessionDataStoreFactory extends AbstractSessionDataStoreFactor
         MongoClient mongo;
 
         if (!StringUtil.isBlank(getConnectionString()))
-            mongo = new MongoClient(new MongoClientURI(getConnectionString()));
+            mongo = MongoClients.create(getConnectionString());
         else if (!StringUtil.isBlank(getHost()) && getPort() != -1)
-            mongo = new MongoClient(getHost(), getPort());
+            mongo = MongoClients.create("mongodb://" + getHost() + ":" + getPort());
         else if (!StringUtil.isBlank(getHost()))
-            mongo = new MongoClient(getHost());
+            mongo = MongoClients.create("mongodb://" + getHost());
         else
-            mongo = new MongoClient();
-        store.setDBCollection(mongo.getDB(getDbName()).getCollection(getCollectionName()));
+            mongo = MongoClients.create();
+        store.setDBCollection(mongo.getDatabase(getDbName()).getCollection(getCollectionName()));
         return store;
     }
 }

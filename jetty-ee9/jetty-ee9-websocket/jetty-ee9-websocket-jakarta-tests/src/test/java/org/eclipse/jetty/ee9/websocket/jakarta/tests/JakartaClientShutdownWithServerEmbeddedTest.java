@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -21,18 +21,16 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.websocket.ContainerProvider;
 import jakarta.websocket.WebSocketContainer;
+import org.eclipse.jetty.client.ContentResponse;
 import org.eclipse.jetty.client.HttpClient;
-import org.eclipse.jetty.client.api.ContentResponse;
 import org.eclipse.jetty.ee9.servlet.ServletContextHandler;
 import org.eclipse.jetty.ee9.servlet.ServletHolder;
-import org.eclipse.jetty.ee9.websocket.jakarta.client.JakartaWebSocketShutdownContainer;
-import org.eclipse.jetty.ee9.websocket.jakarta.client.internal.JakartaWebSocketClientContainer;
+import org.eclipse.jetty.ee9.websocket.jakarta.client.JakartaWebSocketClientContainer;
 import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -70,10 +68,6 @@ public class JakartaClientShutdownWithServerEmbeddedTest
         contextHandler.addServlet(new ServletHolder(new ContextHandlerShutdownServlet()), "/");
         server.setHandler(contextHandler);
 
-        // Because we are using embedded we must manually add the Jakarta WS Client Shutdown SCI.
-        JakartaWebSocketShutdownContainer jakartaWebSocketClientShutdown = new JakartaWebSocketShutdownContainer();
-        contextHandler.addServletContainerInitializer(jakartaWebSocketClientShutdown);
-
         server.start();
         serverUri = WSURI.toWebsocket(server.getURI());
 
@@ -88,7 +82,6 @@ public class JakartaClientShutdownWithServerEmbeddedTest
         server.stop();
     }
 
-    @Disabled
     @Test
     public void testShutdownWithContextHandler() throws Exception
     {

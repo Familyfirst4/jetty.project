@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -462,12 +462,12 @@ public class MultiMapTest
         MultiMap<String> mm = new MultiMap<>();
         mm.put("color", "red");
 
-        assertEquals("{color=red}", mm.toString());
+        assertEquals("{color=[red]}", mm.toString());
 
         mm.putValues("food", "apple", "cherry", "raspberry");
 
-        String expected1 = "{color=red, food=[apple, cherry, raspberry]}";
-        String expected2 = "{food=[apple, cherry, raspberry], color=red}";
+        String expected1 = "{color=[red],food=[apple, cherry, raspberry]}";
+        String expected2 = "{food=[apple, cherry, raspberry],color=[red]}";
         String actual = mm.toString();
         assertTrue(actual.equals(expected1) || actual.equals(expected2));
     }

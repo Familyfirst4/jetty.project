@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -30,26 +30,41 @@ import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.toolchain.test.MavenTestingUtils;
-import org.eclipse.jetty.util.Blocking;
+import org.eclipse.jetty.util.Blocker;
 import org.eclipse.jetty.util.BufferUtil;
 import org.eclipse.jetty.util.Callback;
-import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.FileSystemPool;
+import org.eclipse.jetty.util.resource.ResourceFactory;
 import org.eclipse.jetty.util.ssl.SslContextFactory;
-import org.eclipse.jetty.util.thread.Invocable;
 import org.hamcrest.Matchers;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.empty;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class SSLReadEOFAfterResponseTest
 {
+    @BeforeEach
+    public void beforeEach()
+    {
+        assertThat(FileSystemPool.INSTANCE.mounts(), empty());
+    }
+
+    @AfterEach
+    public void afterEach()
+    {
+        assertThat(FileSystemPool.INSTANCE.mounts(), empty());
+    }
+
     @Test
     public void testReadEOFAfterResponse() throws Exception
     {
         File keystore = MavenTestingUtils.getTestResourceFile("keystore.p12");
         SslContextFactory.Server sslContextFactory = new SslContextFactory.Server();
-        sslContextFactory.setKeyStoreResource(Resource.newResource(keystore));
+        sslContextFactory.setKeyStoreResource(ResourceFactory.root().newResource(keystore.toPath()));
         sslContextFactory.setKeyStorePassword("storepwd");
 
         Server server = new Server();
@@ -60,10 +75,10 @@ public class SSLReadEOFAfterResponseTest
 
         String content = "the quick brown fox jumped over the lazy dog";
         byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
-        server.setHandler(new Handler.Processor(Invocable.InvocationType.BLOCKING)
+        server.setHandler(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback) throws Exception
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
             {
                 // First: read the whole content exactly
                 int length = bytes.length;
@@ -72,7 +87,7 @@ public class SSLReadEOFAfterResponseTest
                     Content.Chunk c = request.read();
                     if (c == null)
                     {
-                        try (Blocking.Runnable blocker = Blocking.runnable())
+                        try (Blocker.Runnable blocker = Blocker.runnable())
                         {
                             request.demand(blocker);
                             blocker.block();
@@ -80,17 +95,16 @@ public class SSLReadEOFAfterResponseTest
                         continue;
                     }
                     if (c.hasRemaining())
-                    {
                         length -= c.remaining();
-                        c.release();
-                    }
+                    c.release();
+                    // TODO: should not compare to EOF.
                     if (c == Content.Chunk.EOF)
                         callback.failed(new IllegalStateException());
                 }
 
                 // Second: write the response.
-                response.getHeaders().putLongField(HttpHeader.CONTENT_LENGTH, bytes.length);
-                try (Blocking.Callback blocker = Blocking.callback())
+                response.getHeaders().put(HttpHeader.CONTENT_LENGTH, bytes.length);
+                try (Blocker.Callback blocker = Blocker.callback())
                 {
                     response.write(true, BufferUtil.toBuffer(bytes), blocker);
                     blocker.block();
@@ -100,9 +114,11 @@ public class SSLReadEOFAfterResponseTest
 
                 // Third, read the EOF.
                 Content.Chunk chunk = request.read();
+                chunk.release();
                 if (!chunk.isLast())
                     throw new IllegalStateException();
                 callback.succeeded();
+                return true;
             }
         });
         server.start();

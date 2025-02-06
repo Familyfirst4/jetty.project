@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,34 +13,35 @@
 
 package org.eclipse.jetty.ee10.webapp;
 
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.instrument.ClassFileTransformer;
 import java.lang.instrument.IllegalClassFormatException;
+import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.nio.file.Path;
 import java.security.CodeSource;
 import java.security.PermissionCollection;
 import java.security.PrivilegedExceptionAction;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 import java.util.StringTokenizer;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.eclipse.jetty.util.ClassVisibilityChecker;
+import org.eclipse.jetty.util.FileID;
 import org.eclipse.jetty.util.IO;
 import org.eclipse.jetty.util.StringUtil;
 import org.eclipse.jetty.util.TypeUtil;
-import org.eclipse.jetty.util.URIUtil;
 import org.eclipse.jetty.util.resource.Resource;
-import org.eclipse.jetty.util.resource.ResourceCollection;
+import org.eclipse.jetty.util.resource.ResourceCollators;
+import org.eclipse.jetty.util.resource.ResourceFactory;
+import org.eclipse.jetty.util.resource.Resources;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -55,8 +56,8 @@ import org.slf4j.LoggerFactory;
  * parent loader.  Java2 compliant loading, where the parent loader
  * always has priority, can be selected with the
  * {@link WebAppContext#setParentLoaderPriority(boolean)}
- * method and influenced with {@link WebAppContext#isServerClass(Class)} and
- * {@link WebAppContext#isSystemClass(Class)}.
+ * method and influenced with {@link WebAppContext#isHiddenClass(Class)} and
+ * {@link WebAppContext#isProtectedClass(Class)}.
  * <p>
  * If no parent class loader is provided, then the current thread
  * context classloader will be used.  If that is null then the
@@ -74,9 +75,10 @@ public class WebAppClassLoader extends URLClassLoader implements ClassVisibility
 
     private final Context _context;
     private final ClassLoader _parent;
-    private final Set<String> _extensions = new HashSet<String>();
+    private final Set<String> _extensions = new HashSet<>();
     private String _name = String.valueOf(hashCode());
     private final List<ClassFileTransformer> _transformers = new CopyOnWriteArrayList<>();
+    private final ResourceFactory.Closeable _resourceFactory = ResourceFactory.closeable();
 
     /**
      * The Context in which the classloader operates.
@@ -86,7 +88,7 @@ public class WebAppClassLoader extends URLClassLoader implements ClassVisibility
         /**
          * Convert a URL or path to a Resource.
          * The default implementation
-         * is a wrapper for {@link Resource#newResource(String)}.
+         * is a wrapper for {@link ResourceFactory#newResource(String)}.
          *
          * @param urlOrPath The URL or path to convert
          * @return The Resource for the URL/path
@@ -109,9 +111,33 @@ public class WebAppClassLoader extends URLClassLoader implements ClassVisibility
 
         List<Resource> getExtraClasspath();
 
-        boolean isServerResource(String name, URL parentUrl);
+        /**
+         * @deprecated use {@link #isHiddenResource(String, URL)}
+         */
+        @Deprecated(since = "12.0.8", forRemoval = true)
+        default boolean isServerResource(String name, URL parentUrl)
+        {
+            return isHiddenResource(name, parentUrl);
+        }
 
-        boolean isSystemResource(String name, URL webappUrl);
+        /**
+         * @deprecated use {@link #isProtectedResource(String, URL)}
+         */
+        @Deprecated(since = "12.0.8", forRemoval = true)
+        default boolean isSystemResource(String name, URL webappUrl)
+        {
+            return isProtectedResource(name, webappUrl);
+        }
+
+        default boolean isHiddenResource(String name, URL parentUrl)
+        {
+            return false;
+        }
+
+        default boolean isProtectedResource(String name, URL webappUrl)
+        {
+            return false;
+        }
     }
 
     /**
@@ -119,9 +145,8 @@ public class WebAppClassLoader extends URLClassLoader implements ClassVisibility
      * <p>Run the passed {@link PrivilegedExceptionAction} with the classloader
      * configured so as to allow server classes to be visible</p>
      *
-     * @param <T> The type returned by the action
      * @param action The action to run
-     * @param <T> the type of PrivilegedExceptionAction
+     * @param <T> the type of PrivilegedExceptionAction and the type returned by the action
      * @return The return from the action
      * @throws Exception if thrown by the action
      */
@@ -146,10 +171,8 @@ public class WebAppClassLoader extends URLClassLoader implements ClassVisibility
      * Constructor.
      *
      * @param context the context for this classloader
-     * @throws IOException if unable to initialize from context
      */
     public WebAppClassLoader(Context context)
-        throws IOException
     {
         this(null, context);
     }
@@ -159,10 +182,8 @@ public class WebAppClassLoader extends URLClassLoader implements ClassVisibility
      *
      * @param parent the parent classloader
      * @param context the context for this classloader
-     * @throws IOException if unable to initialize classloader
      */
     public WebAppClassLoader(ClassLoader parent, Context context)
-        throws IOException
     {
         super(new URL[]{}, parent != null ? parent
             : (Thread.currentThread().getContextClassLoader() != null ? Thread.currentThread().getContextClassLoader()
@@ -173,8 +194,8 @@ public class WebAppClassLoader extends URLClassLoader implements ClassVisibility
         if (_parent == null)
             throw new IllegalArgumentException("no parent classloader!");
 
-        _extensions.add(".jar");
-        _extensions.add(".zip");
+        _extensions.add("jar");
+        _extensions.add("zip");
 
         // TODO remove this system property
         String extensions = System.getProperty(WebAppClassLoader.class.getName() + ".extensions");
@@ -187,16 +208,12 @@ public class WebAppClassLoader extends URLClassLoader implements ClassVisibility
             }
         }
 
-        if (context.getExtraClasspath() != null)
-        {
-            for (Resource resource : context.getExtraClasspath())
-            {
-                addClassPath(resource);
-            }
-        }
+        for (Resource extra : context.getExtraClasspath())
+            addClassPath(extra);
     }
 
     /**
+     * Get the name of the classloader.
      * @return the name of the classloader
      */
     public String getName()
@@ -205,6 +222,7 @@ public class WebAppClassLoader extends URLClassLoader implements ClassVisibility
     }
 
     /**
+     * Set the name of the classloader.
      * @param name the name of the classloader
      */
     public void setName(String name)
@@ -218,59 +236,45 @@ public class WebAppClassLoader extends URLClassLoader implements ClassVisibility
     }
 
     /**
-     * @param resource Comma or semicolon separated path of filenames or URLs
-     * pointing to directories or jar files. Directories should end
-     * with '/'.
-     * @throws IOException if unable to add classpath from resource
+     * @param resource The resources to add to the classpath
      */
     public void addClassPath(Resource resource)
-        throws IOException
     {
-        if (resource instanceof ResourceCollection)
+        for (Resource r : resource)
         {
-            for (Resource r : ((ResourceCollection)resource).getResources())
+            if (resource.exists())
             {
-                addClassPath(r);
-            }
-        }
-        else
-        {
-            // Resolve file path if possible
-            File file = resource.getFile();
-            if (file != null)
-            {
-                URL url = resource.getURI().toURL();
-                addURL(url);
-            }
-            else if (resource.isDirectory())
-            {
-                addURL(resource.getURI().toURL());
+                try
+                {
+                    addURL(r.getURI().toURL());
+                }
+                catch (MalformedURLException e)
+                {
+                    throw new IllegalArgumentException("File not resolvable or incompatible with URLClassloader: " + resource);
+                }
             }
             else
             {
                 if (LOG.isDebugEnabled())
-                    LOG.debug("Check file exists and is not nested jar: {}", resource);
+                    LOG.debug("Check resource exists and is not a nested jar: {}", resource);
                 throw new IllegalArgumentException("File not resolvable or incompatible with URLClassloader: " + resource);
             }
         }
     }
 
     /**
-     * @param classPath Comma or semicolon separated path of filenames or URLs
+     * @param classPathList Comma or semicolon separated path of filenames or URLs
      * pointing to directories or jar files. Directories should end
      * with '/'.
      * @throws IOException if unable to add classpath
      */
-    public void addClassPath(String classPath)
+    public void addClassPath(String classPathList)
         throws IOException
     {
-        if (classPath == null)
+        if (classPathList == null)
             return;
 
-        for (Resource resource : Resource.fromList(classPath, false, _context::newResource))
-        {
-            addClassPath(resource);
-        }
+        _resourceFactory.split(classPathList).forEach(this::addClassPath);
     }
 
     /**
@@ -278,47 +282,26 @@ public class WebAppClassLoader extends URLClassLoader implements ClassVisibility
      */
     private boolean isFileSupported(String file)
     {
-        int dot = file.lastIndexOf('.');
-        return dot != -1 && _extensions.contains(file.substring(dot));
+        String ext = FileID.getExtension(file);
+        return ext != null && _extensions.contains(ext);
+    }
+
+    private boolean isFileSupported(Path path)
+    {
+        return isFileSupported(path.getFileName().toString());
     }
 
     /**
      * Add elements to the class path for the context from the jar and zip files found
      * in the specified resource.
      *
-     * @param lib the resource that contains the jar and/or zip files.
+     * @param libs the directory resource that contains the jar and/or zip files.
      */
-    public void addJars(Resource lib)
+    public void addJars(Resource libs)
     {
-        if (lib.exists() && lib.isDirectory())
-        {
-            String[] entries = lib.list();
-            if (entries != null)
-            {
-                Arrays.sort(entries);
-
-                for (String entry : entries)
-                {
-                    try
-                    {
-                        Resource resource = lib.addPath(entry);
-                        if (LOG.isDebugEnabled())
-                            LOG.debug("addJar - {}", resource);
-                        String fnlc = resource.getName().toLowerCase(Locale.ENGLISH);
-                        // don't check if this is a directory (prevents use of symlinks), see Bug 353165
-                        if (isFileSupported(fnlc))
-                        {
-                            String jar = URIUtil.encodeSpecific(resource.toString(), ",;");
-                            addClassPath(jar);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        LOG.warn("Unable to load WEB-INF/lib JAR {}", entry, ex);
-                    }
-                }
-            }
-        }
+        if (!Resources.isReadableDirectory(libs))
+            return;
+        libs.list().stream().filter(r -> isFileSupported(r.getName())).sorted(ResourceCollators.byName(true)).forEach(this::addClassPath);
     }
 
     @Override
@@ -339,7 +322,7 @@ public class WebAppClassLoader extends URLClassLoader implements ClassVisibility
         while (urls != null && urls.hasMoreElements())
         {
             URL url = urls.nextElement();
-            if (Boolean.TRUE.equals(__loadServerClasses.get()) || !_context.isServerResource(name, url))
+            if (Boolean.TRUE.equals(__loadServerClasses.get()) || !_context.isHiddenResource(name, url))
                 fromParent.add(url);
         }
 
@@ -347,7 +330,7 @@ public class WebAppClassLoader extends URLClassLoader implements ClassVisibility
         while (urls != null && urls.hasMoreElements())
         {
             URL url = urls.nextElement();
-            if (!_context.isSystemResource(name, url) || fromParent.isEmpty())
+            if (!_context.isProtectedResource(name, url) || fromParent.isEmpty())
                 fromWebapp.add(url);
         }
 
@@ -388,7 +371,7 @@ public class WebAppClassLoader extends URLClassLoader implements ClassVisibility
             // return if we have a url the webapp is allowed to see
             if (parentUrl != null &&
                 (Boolean.TRUE.equals(__loadServerClasses.get()) ||
-                    !_context.isServerResource(name, parentUrl)))
+                    !_context.isHiddenResource(name, parentUrl)))
                 resource = parentUrl;
             else
             {
@@ -407,7 +390,7 @@ public class WebAppClassLoader extends URLClassLoader implements ClassVisibility
         {
             URL webappUrl = this.findResource(name);
 
-            if (webappUrl != null && !_context.isSystemResource(name, webappUrl))
+            if (webappUrl != null && !_context.isProtectedResource(name, webappUrl))
                 resource = webappUrl;
             else
             {
@@ -416,7 +399,7 @@ public class WebAppClassLoader extends URLClassLoader implements ClassVisibility
                 URL parentUrl = _parent.getResource(name);
                 if (parentUrl != null &&
                     (Boolean.TRUE.equals(__loadServerClasses.get()) ||
-                        !_context.isServerResource(name, parentUrl)))
+                        !_context.isHiddenResource(name, parentUrl)))
                     resource = parentUrl;
                     // We couldn't find a parent resource, so OK to return a webapp one if it exists
                     // and we just couldn't see it before
@@ -462,7 +445,7 @@ public class WebAppClassLoader extends URLClassLoader implements ClassVisibility
                         throw new ClassNotFoundException("Bad ClassLoader: returned null for loadClass(" + name + ")");
 
                     // If the webapp is allowed to see this class
-                    if (Boolean.TRUE.equals(__loadServerClasses.get()) || !_context.isServerClass(parentClass))
+                    if (Boolean.TRUE.equals(__loadServerClasses.get()) || !_context.isHiddenClass(parentClass))
                     {
                         return parentClass;
                     }
@@ -510,7 +493,7 @@ public class WebAppClassLoader extends URLClassLoader implements ClassVisibility
                 {
                     parentClass = _parent.loadClass(name);
                     // If the webapp is allowed to see this class
-                    if (Boolean.TRUE.equals(__loadServerClasses.get()) || !_context.isServerClass(parentClass))
+                    if (Boolean.TRUE.equals(__loadServerClasses.get()) || !_context.isHiddenClass(parentClass))
                     {
                         return parentClass;
                     }
@@ -561,9 +544,8 @@ public class WebAppClassLoader extends URLClassLoader implements ClassVisibility
         String path = TypeUtil.toClassReference(name);
         URL webappUrl = findResource(path);
 
-        if (webappUrl != null && (!checkSystemResource || !_context.isSystemResource(name, webappUrl)))
+        if (webappUrl != null && (!checkSystemResource || !_context.isProtectedResource(name, webappUrl)))
         {
-
             webappClass = this.foundClass(name, webappUrl);
             resolveClass(webappClass);
             if (LOG.isDebugEnabled())
@@ -608,11 +590,7 @@ public class WebAppClassLoader extends URLClassLoader implements ClassVisibility
 
             return defineClass(name, bytes, 0, bytes.length);
         }
-        catch (IOException e)
-        {
-            throw new ClassNotFoundException(name, e);
-        }
-        catch (IllegalClassFormatException e)
+        catch (IOException | IllegalClassFormatException e)
         {
             throw new ClassNotFoundException(name, e);
         }
@@ -636,6 +614,7 @@ public class WebAppClassLoader extends URLClassLoader implements ClassVisibility
     public void close() throws IOException
     {
         super.close();
+        IO.close(_resourceFactory);
     }
 
     @Override
@@ -645,14 +624,14 @@ public class WebAppClassLoader extends URLClassLoader implements ClassVisibility
     }
 
     @Override
-    public boolean isSystemClass(Class<?> clazz)
+    public boolean isProtectedClass(Class<?> clazz)
     {
-        return _context.isSystemClass(clazz);
+        return _context.isProtectedClass(clazz);
     }
 
     @Override
-    public boolean isServerClass(Class<?> clazz)
+    public boolean isHiddenClass(Class<?> clazz)
     {
-        return _context.isServerClass(clazz);
+        return _context.isHiddenClass(clazz);
     }
 }

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -15,64 +15,72 @@ package org.eclipse.jetty.ee9.nested;
 
 import java.util.Set;
 
+import jakarta.servlet.AsyncContext;
+import org.eclipse.jetty.io.EndPoint;
 import org.eclipse.jetty.util.Attributes;
-import org.eclipse.jetty.util.AttributesMap;
 
 /**
- * An implementation of Attributes that supports the standard async attributes.
- *
- * This implementation delegates to an internal {@link AttributesMap} instance, which
- * can optionally be wrapped with a {@link AsyncAttributes} instance. This allows async
- * attributes to be applied underneath any other attribute wrappers.
+ * An implementation of Attributes that supports the standard SSL and async attributes.
  */
-public class ServletAttributes implements Attributes
+public class ServletAttributes extends Attributes.Synthetic
 {
-    private final Attributes _attributes;
-    private AsyncAttributes _asyncAttributes;
+    private static final Set<String> ATTRIBUTES =
+        Set.of(
+            Request.SSL_CIPHER_SUITE,
+            Request.SSL_KEY_SIZE,
+            Request.SSL_SESSION_ID,
+            Request.PEER_CERTIFICATES,
+            AsyncContext.ASYNC_REQUEST_URI,
+            AsyncContext.ASYNC_CONTEXT_PATH,
+            AsyncContext.ASYNC_SERVLET_PATH,
+            AsyncContext.ASYNC_PATH_INFO,
+            AsyncContext.ASYNC_QUERY_STRING,
+            AsyncContext.ASYNC_MAPPING
+        );
+
+    private record Async(
+        String requestURI,
+        String contextPath,
+        String pathInContext,
+        ServletPathMapping mapping,
+        String queryString)
+    {
+    }
+
+    private Async _async;
 
     ServletAttributes(Attributes attributes)
     {
-        _attributes = attributes;
+        super(attributes);
+    }
+
+    @Override
+    protected Object getSyntheticAttribute(String name)
+    {
+        return switch (name)
+        {
+            case Request.SSL_CIPHER_SUITE -> getWrapped().getAttribute(EndPoint.SslSessionData.ATTRIBUTE) instanceof EndPoint.SslSessionData sslSessionData ? sslSessionData.cipherSuite() : null;
+            case Request.SSL_KEY_SIZE -> getWrapped().getAttribute(EndPoint.SslSessionData.ATTRIBUTE) instanceof EndPoint.SslSessionData sslSessionData ? sslSessionData.keySize() : null;
+            case Request.SSL_SESSION_ID -> getWrapped().getAttribute(EndPoint.SslSessionData.ATTRIBUTE) instanceof EndPoint.SslSessionData sslSessionData ? sslSessionData.sslSessionId() : null;
+            case Request.PEER_CERTIFICATES -> getWrapped().getAttribute(EndPoint.SslSessionData.ATTRIBUTE) instanceof EndPoint.SslSessionData sslSessionData ? sslSessionData.peerCertificates() : null;
+            case AsyncContext.ASYNC_REQUEST_URI -> _async == null ? null : _async.requestURI;
+            case AsyncContext.ASYNC_CONTEXT_PATH -> _async == null ? null : _async.contextPath;
+            case AsyncContext.ASYNC_SERVLET_PATH -> _async == null ? null : _async.mapping == null ? null : _async.mapping.getServletPath();
+            case AsyncContext.ASYNC_PATH_INFO -> _async == null ? null : _async.mapping == null ? _async.pathInContext : _async.mapping.getPathInfo();
+            case AsyncContext.ASYNC_QUERY_STRING -> _async == null ? null : _async.queryString;
+            case AsyncContext.ASYNC_MAPPING -> _async == null ? null : _async.mapping;
+            default -> null;
+        };
+    }
+
+    @Override
+    protected Set<String> getSyntheticNameSet()
+    {
+        return ATTRIBUTES;
     }
 
     public void setAsyncAttributes(String requestURI, String contextPath, String pathInContext, ServletPathMapping servletPathMapping, String queryString)
     {
-        _asyncAttributes = new AsyncAttributes(_attributes, requestURI, contextPath, pathInContext, servletPathMapping, queryString);
-    }
-
-    private Attributes getAttributes()
-    {
-        return (_asyncAttributes == null) ? _attributes : _asyncAttributes;
-    }
-
-    @Override
-    public Object removeAttribute(String name)
-    {
-        return getAttributes().removeAttribute(name);
-    }
-
-    @Override
-    public Object setAttribute(String name, Object attribute)
-    {
-        return getAttributes().setAttribute(name, attribute);
-    }
-
-    @Override
-    public Object getAttribute(String name)
-    {
-        return getAttributes().getAttribute(name);
-    }
-
-    @Override
-    public Set<String> getAttributeNameSet()
-    {
-        return getAttributes().getAttributeNameSet();
-    }
-
-    @Override
-    public void clearAttributes()
-    {
-        getAttributes().clearAttributes();
-        _asyncAttributes = null;
+        _async = new Async(requestURI, contextPath, pathInContext, servletPathMapping, queryString);
     }
 }

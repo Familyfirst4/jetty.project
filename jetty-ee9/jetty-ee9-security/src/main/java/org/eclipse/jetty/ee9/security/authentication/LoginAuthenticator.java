@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,19 +13,24 @@
 
 package org.eclipse.jetty.ee9.security.authentication;
 
+import java.util.function.Function;
+
 import jakarta.servlet.ServletRequest;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
+import org.eclipse.jetty.ee9.nested.HttpChannel;
 import org.eclipse.jetty.ee9.nested.Request;
-import org.eclipse.jetty.ee9.nested.Response;
-import org.eclipse.jetty.ee9.nested.UserIdentity;
 import org.eclipse.jetty.ee9.security.Authenticator;
-import org.eclipse.jetty.ee9.security.IdentityService;
-import org.eclipse.jetty.ee9.security.LoginService;
-import org.eclipse.jetty.session.Session;
+import org.eclipse.jetty.security.IdentityService;
+import org.eclipse.jetty.security.LoginService;
+import org.eclipse.jetty.security.UserIdentity;
+import org.eclipse.jetty.server.Session;
+import org.eclipse.jetty.session.ManagedSession;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.eclipse.jetty.ee9.nested.SessionHandler.ServletSessionApi.getOrCreateSession;
 
 public abstract class LoginAuthenticator implements Authenticator
 {
@@ -33,7 +38,8 @@ public abstract class LoginAuthenticator implements Authenticator
 
     protected LoginService _loginService;
     protected IdentityService _identityService;
-    private boolean _renewSession;
+    private boolean _sessionRenewedOnAuthentication;
+    private int _sessionMaxInactiveIntervalOnAuthentication;
 
     protected LoginAuthenticator()
     {
@@ -46,7 +52,8 @@ public abstract class LoginAuthenticator implements Authenticator
     }
 
     /**
-     * If the UserIdentity is not null after this method calls {@link LoginService#login(String, Object, ServletRequest)}, it
+     * If the UserIdentity returned from
+     * {@link LoginService#login(String, Object, org.eclipse.jetty.server.Request, Function)} is not null, it
      * is assumed that the user is fully authenticated and we need to change the session id to prevent
      * session fixation vulnerability. If the UserIdentity is not necessarily fully
      * authenticated, then subclasses must override this method and
@@ -58,7 +65,10 @@ public abstract class LoginAuthenticator implements Authenticator
      */
     public UserIdentity login(String username, Object password, ServletRequest servletRequest)
     {
-        UserIdentity user = _loginService.login(username, password, servletRequest);
+        Request baseRequest = Request.getBaseRequest(servletRequest);
+        if (baseRequest == null)
+            return null;
+        UserIdentity user = _loginService.login(username, password, baseRequest.getCoreRequest(), getOrCreateSession(servletRequest));
         if (user != null)
         {
             Request request = Request.getBaseRequest(servletRequest);
@@ -76,7 +86,7 @@ public abstract class LoginAuthenticator implements Authenticator
         if (session == null)
             return;
 
-        session.removeAttribute(Session.SESSION_CREATED_SECURE);
+        session.removeAttribute(ManagedSession.SESSION_CREATED_SECURE);
     }
 
     @Override
@@ -88,7 +98,8 @@ public abstract class LoginAuthenticator implements Authenticator
         _identityService = configuration.getIdentityService();
         if (_identityService == null)
             throw new IllegalStateException("No IdentityService for " + this + " in " + configuration);
-        _renewSession = configuration.isSessionRenewedOnAuthentication();
+        _sessionRenewedOnAuthentication = configuration.isSessionRenewedOnAuthentication();
+        _sessionMaxInactiveIntervalOnAuthentication = configuration.getSessionMaxInactiveIntervalOnAuthentication();
     }
 
     public LoginService getLoginService()
@@ -112,33 +123,36 @@ public abstract class LoginAuthenticator implements Authenticator
     {
         HttpSession httpSession = request.getSession(false);
 
-        if (_renewSession && httpSession != null)
+        if (httpSession != null && (_sessionRenewedOnAuthentication || _sessionMaxInactiveIntervalOnAuthentication != 0))
         {
             synchronized (httpSession)
             {
-                //if we should renew sessions, and there is an existing session that may have been seen by non-authenticated users
-                //(indicated by SESSION_SECURED not being set on the session) then we should change id
-                if (httpSession.getAttribute(Session.SESSION_CREATED_SECURE) != Boolean.TRUE)
+                if (_sessionMaxInactiveIntervalOnAuthentication != 0)
+                    httpSession.setMaxInactiveInterval(_sessionMaxInactiveIntervalOnAuthentication < 0 ? -1 : _sessionMaxInactiveIntervalOnAuthentication);
+                if (_sessionRenewedOnAuthentication)
                 {
-                    if (httpSession instanceof Session.APISession apiSession)
+                    //if we should renew sessions, and there is an existing session that may have been seen by non-authenticated users
+                    //(indicated by SESSION_SECURED not being set on the session) then we should change id
+                    if (httpSession.getAttribute(ManagedSession.SESSION_CREATED_SECURE) != Boolean.TRUE)
                     {
-                        Session session = apiSession.getCoreSession();
-                        String oldId = session.getId();
-                        session.renewId(Request.getBaseRequest(request).getHttpChannel().getCoreRequest());
-                        session.setAttribute(Session.SESSION_CREATED_SECURE, Boolean.TRUE);
-                        if (session.isSetCookieNeeded() && (response instanceof Response))
-                            ((Response)response).replaceCookie(session.getSessionManager().getSessionCookie(session, request.getContextPath(), request.isSecure()));
-                        if (LOG.isDebugEnabled())
-                            LOG.debug("renew {}->{}", oldId, session.getId());
-                    }
-                    else
-                    {
+                        if (httpSession instanceof Session.API api)
+                        {
+                            Request baseRequest = Request.getBaseRequest(request);
+                            if (baseRequest != null)
+                            {
+                                httpSession.setAttribute(ManagedSession.SESSION_CREATED_SECURE, Boolean.TRUE);
+                                HttpChannel httpChannel = baseRequest.getHttpChannel();
+                                api.getSession().renewId(httpChannel.getCoreRequest(), httpChannel.getCoreResponse());
+                                return httpSession;
+                            }
+                        }
                         LOG.warn("Unable to renew session {}", httpSession);
+                        return httpSession;
                     }
-                    return httpSession;
                 }
             }
         }
+
         return httpSession;
     }
 }

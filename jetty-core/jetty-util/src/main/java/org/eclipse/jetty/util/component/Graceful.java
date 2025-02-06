@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,6 +14,7 @@
 package org.eclipse.jetty.util.component;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Future;
@@ -107,6 +108,11 @@ public interface Graceful
                 done.complete(null);
         }
 
+        /**
+         * This method can be called after {@link #shutdown()} has been called, but before
+         * {@link #check()} has been called with {@link #isShutdownDone()} having returned
+         * true to cancel the effects of the {@link #shutdown()} call.
+         */
         public void cancel()
         {
             CompletableFuture<Void> done = _done.get();
@@ -141,8 +147,12 @@ public interface Graceful
         gracefuls.addAll(component.getContainedBeans(Graceful.class));
 
         if (log.isDebugEnabled())
-            gracefuls.forEach(g -> log.debug("graceful {}", g));
+            gracefuls.forEach(g -> log.debug("Graceful {}", g));
 
+        // Call shutdown() on the gracefuls in reverse order.
+        // Inner components may send network bytes to close connections
+        // and must run before the ServerConnector closes the EndPoints.
+        Collections.reverse(gracefuls);
         return CompletableFuture.allOf(gracefuls.stream().map(Graceful::shutdown).toArray(CompletableFuture[]::new));
     }
 

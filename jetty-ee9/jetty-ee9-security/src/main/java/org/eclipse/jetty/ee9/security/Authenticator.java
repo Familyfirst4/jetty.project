@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -20,6 +20,8 @@ import jakarta.servlet.ServletRequest;
 import jakarta.servlet.ServletResponse;
 import org.eclipse.jetty.ee9.nested.Authentication;
 import org.eclipse.jetty.ee9.nested.Authentication.User;
+import org.eclipse.jetty.security.IdentityService;
+import org.eclipse.jetty.security.LoginService;
 import org.eclipse.jetty.server.Server;
 
 /**
@@ -34,6 +36,14 @@ import org.eclipse.jetty.server.Server;
  */
 public interface Authenticator
 {
+    String BASIC_AUTH = org.eclipse.jetty.security.Authenticator.BASIC_AUTH;
+    String FORM_AUTH = org.eclipse.jetty.security.Authenticator.FORM_AUTH;
+    String DIGEST_AUTH = org.eclipse.jetty.security.Authenticator.DIGEST_AUTH;
+    String CERT_AUTH = org.eclipse.jetty.security.Authenticator.CERT_AUTH;
+    String CERT_AUTH2 = org.eclipse.jetty.security.Authenticator.CERT_AUTH2;
+    String SPNEGO_AUTH = org.eclipse.jetty.security.Authenticator.SPNEGO_AUTH;
+    String NEGOTIATE_AUTH = org.eclipse.jetty.security.Authenticator.NEGOTIATE_AUTH;
+    String OPENID_AUTH = org.eclipse.jetty.security.Authenticator.OPENID_AUTH;
 
     /**
      * Configure the Authenticator
@@ -117,7 +127,21 @@ public interface Authenticator
 
         IdentityService getIdentityService();
 
+        /**
+         * Should session ID be renewed on authentication.
+         * @return true if the session ID should be renewed on authentication
+         */
         boolean isSessionRenewedOnAuthentication();
+
+        /**
+         * Get the interval in seconds, which if non-zero, will be set
+         * with {@link jakarta.servlet.http.HttpSession#setMaxInactiveInterval(int)}
+         * when a session is newly authenticated
+         * @return An interval in seconds; or 0 to not set the interval
+         *         on authentication; or a negative number to make the
+         *         session never timeout after authentication.
+         */
+        int getSessionMaxInactiveIntervalOnAuthentication();
     }
 
     /**

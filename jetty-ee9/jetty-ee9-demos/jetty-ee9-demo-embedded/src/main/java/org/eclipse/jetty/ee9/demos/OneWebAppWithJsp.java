@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,14 +14,13 @@
 package org.eclipse.jetty.ee9.demos;
 
 import java.io.FileNotFoundException;
-import java.net.URL;
 import java.nio.file.Path;
 
 import org.eclipse.jetty.ee9.annotations.AnnotationConfiguration;
-import org.eclipse.jetty.ee9.security.HashLoginService;
 import org.eclipse.jetty.ee9.webapp.WebAppContext;
+import org.eclipse.jetty.security.HashLoginService;
 import org.eclipse.jetty.server.Server;
-import org.eclipse.jetty.util.resource.PathResource;
+import org.eclipse.jetty.util.resource.Resource;
 
 public class OneWebAppWithJsp
 {
@@ -45,8 +44,10 @@ public class OneWebAppWithJsp
         // the webapp will unpack itself.
         WebAppContext webapp = new WebAppContext();
         webapp.setContextPath("/");
-        Path warFile = JettyDemos.find("demo-jsp-webapp/target/demo-jsp-webapp-@VER@.war");
-        webapp.setWarResource(new PathResource(warFile));
+        JettyDemos.MavenCoordinate mavenCoordinate = new JettyDemos.MavenCoordinate("org.eclipse.jetty.ee9.demos",
+                "jetty-ee9-demo-jsp-webapp", "", "war");
+        Path warFile = JettyDemos.find("jetty-ee9-demo-jsp-webapp/target/jetty-ee9-demo-jsp-webapp-@VER@.war", mavenCoordinate);
+        webapp.setWarResource(webapp.getResourceFactory().newResource(warFile));
         webapp.setExtractWAR(true);
 
         // This webapp will use jsps and jstl. We need to enable the
@@ -76,14 +77,13 @@ public class OneWebAppWithJsp
         // can be started and stopped according to the lifecycle of the server
         // itself.
         String realmResourceName = "etc/realm.properties";
-        ClassLoader classLoader = OneWebAppWithJsp.class.getClassLoader();
-        URL realmProps = classLoader.getResource(realmResourceName);
-        if (realmProps == null)
+        Resource realmResource = webapp.getResourceFactory().newClassLoaderResource(realmResourceName, false);
+        if (realmResource == null)
             throw new FileNotFoundException("Unable to find " + realmResourceName);
 
         HashLoginService loginService = new HashLoginService();
         loginService.setName("Test Realm");
-        loginService.setConfig(realmProps.toExternalForm());
+        loginService.setConfig(realmResource);
         server.addBean(loginService);
 
         return server;

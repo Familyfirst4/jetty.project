@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -39,20 +39,23 @@ public class RewritePatternRuleTest extends AbstractRuleTest
             Arguments.of("/foo/bar", "/replace", "/foo/bar", "/replace"),
             Arguments.of("*.txt", "/replace", "/foo/bar.txt", "/replace"),
             Arguments.of("/foo/*", "/replace", "/foo/bar/%20x", "/replace/bar/%20x"),
-            Arguments.of("/old/context", "/replace?given=param", "/old/context", "/replace?given=param")
+            Arguments.of("/old/context", "/replace?given=param", "/old/context?mode=orig", "/replace?mode=orig&given=param"),
+            // no match, as input uri.path is not decoded to match
+            Arguments.of("/old/context", "/replace?given=param", "/old/c%6Fntext", "/old/c%6Fntext")
         );
     }
 
     private void start(RewritePatternRule rule) throws Exception
     {
         _rewriteHandler.addRule(rule);
-        start(new Handler.Processor()
+        start(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 response.getHeaders().put("X-URI", request.getHttpURI().getPathQuery());
                 callback.succeeded();
+                return true;
             }
         });
     }

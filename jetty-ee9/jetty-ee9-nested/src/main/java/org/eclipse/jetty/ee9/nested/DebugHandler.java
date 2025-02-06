@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -92,7 +92,7 @@ public class DebugHandler extends HandlerWrapper implements Connection.Listener
     private void print(String name, String message)
     {
         long now = System.currentTimeMillis();
-        final String d = _date.formatNow(now);
+        final String d = _date.format(now);
         final int ms = (int)(now % 1000);
 
         _print.println(d + (ms > 99 ? "." : (ms > 9 ? ".0" : ".00")) + ms + ":" + name + " " + message);
@@ -127,6 +127,7 @@ public class DebugHandler extends HandlerWrapper implements Connection.Listener
     }
 
     /**
+     * Get the out.
      * @return the out
      */
     public OutputStream getOutputStream()
@@ -135,6 +136,7 @@ public class DebugHandler extends HandlerWrapper implements Connection.Listener
     }
 
     /**
+     * Set the out to set.
      * @param out the out to set
      */
     public void setOutputStream(OutputStream out)

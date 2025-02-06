@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -18,8 +18,9 @@ import java.nio.ByteBuffer;
 import org.eclipse.jetty.io.ByteBufferAccumulator;
 import org.eclipse.jetty.io.Content;
 import org.eclipse.jetty.util.Promise;
+import org.eclipse.jetty.util.thread.Invocable;
 
-public class ContentSourceByteBuffer implements Runnable
+public class ContentSourceByteBuffer implements Invocable.Task
 {
     private final ByteBufferAccumulator accumulator = new ByteBufferAccumulator();
     private final Content.Source source;
@@ -44,9 +45,11 @@ public class ContentSourceByteBuffer implements Runnable
                 return;
             }
 
-            if (chunk instanceof Content.Chunk.Error error)
+            if (Content.Chunk.isFailure(chunk))
             {
-                promise.failed(error.getCause());
+                promise.failed(chunk.getFailure());
+                if (!chunk.isLast())
+                    source.fail(chunk.getFailure());
                 return;
             }
 
@@ -59,5 +62,11 @@ public class ContentSourceByteBuffer implements Runnable
                 return;
             }
         }
+    }
+
+    @Override
+    public InvocationType getInvocationType()
+    {
+        return Invocable.getInvocationType(promise);
     }
 }

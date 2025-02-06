@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,19 +13,18 @@
 
 package org.eclipse.jetty.ee10;
 
+import java.io.FileNotFoundException;
 import java.lang.management.ManagementFactory;
-import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-import org.eclipse.jetty.ee10.servlet.security.HashLoginService;
 import org.eclipse.jetty.ee10.webapp.Configurations;
 import org.eclipse.jetty.ee10.webapp.MetaInfConfiguration;
 import org.eclipse.jetty.ee10.webapp.WebAppContext;
 import org.eclipse.jetty.jmx.MBeanContainer;
+import org.eclipse.jetty.security.HashLoginService;
 import org.eclipse.jetty.server.CustomRequestLog;
 import org.eclipse.jetty.server.ForwardedRequestCustomizer;
-import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.HttpConfiguration;
 import org.eclipse.jetty.server.HttpConnectionFactory;
 import org.eclipse.jetty.server.SecureRequestCustomizer;
@@ -33,28 +32,21 @@ import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.server.handler.ContextHandler;
 import org.eclipse.jetty.server.handler.ContextHandlerCollection;
-import org.eclipse.jetty.server.handler.DefaultHandler;
 import org.eclipse.jetty.server.handler.ResourceHandler;
 import org.eclipse.jetty.session.DefaultSessionCache;
 import org.eclipse.jetty.session.FileSessionDataStore;
+import org.eclipse.jetty.toolchain.test.MavenTestingUtils;
+import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
 import org.eclipse.jetty.util.thread.QueuedThreadPool;
 import org.junit.jupiter.api.Disabled;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 @Disabled("Not a test case")
 public class TestServer
 {
-    private static final Logger LOG = LoggerFactory.getLogger(TestServer.class);
-
     public static void main(String[] args) throws Exception
     {
-        // TODO don't depend on this file structure
-        Path jettyRoot = FileSystems.getDefault().getPath(".").toAbsolutePath().normalize();
-        if (!Files.exists(jettyRoot.resolve("VERSION.txt")))
-            jettyRoot = FileSystems.getDefault().getPath("../../..").toAbsolutePath().normalize();
-        if (!Files.exists(jettyRoot.resolve("VERSION.txt")))
-            throw new IllegalArgumentException(jettyRoot.toString());
+        Path webappProjectRoot = MavenTestingUtils.getBasePath();
 
         // Setup Threadpool
         QueuedThreadPool threadPool = new QueuedThreadPool();
@@ -86,17 +78,22 @@ public class TestServer
 
         // Handlers
         ContextHandlerCollection contexts = new ContextHandlerCollection();
-        Handler.Collection handlers = new Handler.Collection(contexts, new DefaultHandler());
 
         // Add restart handler to test the ability to save sessions and restart
-        /*        RestartHandler restart = new RestartHandler();
+        /* TODO: figure out how to do this
+        RestartHandler restart = new RestartHandler();
         restart.setHandler(handlers);
-        server.setHandler(restart);*/
+        server.setHandler(restart);
+        */
 
         // Setup context
         HashLoginService login = new HashLoginService();
         login.setName("Test Realm");
-        login.setConfig(jettyRoot.resolve("tests/test-webapps/test-jetty-webapp/src/main/config/demo-base/etc/realm.properties").toString());
+        Path realmPropPath = webappProjectRoot.resolve("jetty-ee10/jetty-ee10-demos/jetty-ee10-demo-jetty-webapp/src/test/resources/test-realm.properties");
+        if (!Files.exists(realmPropPath))
+            throw new FileNotFoundException(realmPropPath.toString());
+        Resource realmResource = ResourceFactory.of(server).newResource(realmPropPath);
+        login.setConfig(realmResource);
         server.addBean(login);
 
         Path logPath = Files.createTempFile("jetty-yyyy_mm_dd", "log");
@@ -108,10 +105,13 @@ public class TestServer
         WebAppContext webapp = new WebAppContext();
         webapp.setContextPath("/test");
         webapp.setParentLoaderPriority(true);
-        webapp.setBaseResource(jettyRoot.resolve("tests/test-webapps/test-jetty-webapp/src/main/webapp"));
+        Path webappBase = webappProjectRoot.resolve("jetty-ee10/jetty-ee10-demos/jetty-ee10-demo-jetty-webapp/src/main/webapp");
+        if (!Files.exists(webappBase))
+            throw new FileNotFoundException(webappBase.toString());
+        webapp.setBaseResource(webapp.getResourceFactory().newResource(webappBase));
         webapp.setAttribute(MetaInfConfiguration.CONTAINER_JAR_PATTERN,
             ".*/test-jetty-webapp/target/classes.*$|" +
-                ".*/jetty-jakarta-servlet-api-[^/]*\\.jar$|.*/jakarta.servlet.jsp.jstl-.*\\.jar$|.*/org.apache.taglibs.taglibs-standard.*\\.jar$"
+                ".*/jakarta.servlet.api-[^/]*\\.jar$|.*/jakarta.servlet.jsp.jstl-.*\\.jar$|.*/org.apache.taglibs.taglibs-standard.*\\.jar$"
         );
 
         webapp.setAttribute("testAttribute", "testValue");
@@ -125,7 +125,10 @@ public class TestServer
         contexts.addHandler(webapp);
 
         ContextHandler srcroot = new ContextHandler();
-        srcroot.setBaseResource(jettyRoot.resolve("tests/test-webapps/test-jetty-webapp/src"));
+        Path srcRootPath = webappProjectRoot.resolve("jetty-ee10/jetty-ee10-demos/jetty-ee10-demo-jetty-webapp/src");
+        if (!Files.exists(srcRootPath))
+            throw new FileNotFoundException(srcRootPath.toString());
+        srcroot.setBaseResource(ResourceFactory.of(server).newResource(srcRootPath));
         srcroot.setHandler(new ResourceHandler());
         srcroot.setContextPath("/src");
         contexts.addHandler(srcroot);
@@ -136,7 +139,7 @@ public class TestServer
 
         server.join();
     }
-    
+
     //TODO how to restart server?
     /*
     private static class RestartHandler extends HandlerWrapper

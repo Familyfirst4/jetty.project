@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -20,6 +20,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.eclipse.jetty.util.StringUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -37,7 +38,7 @@ import static java.util.EnumSet.of;
  */
 public final class HttpCompliance implements ComplianceViolation.Mode
 {
-    protected static final Logger LOG = LoggerFactory.getLogger(HttpCompliance.class);
+    private static final Logger LOG = LoggerFactory.getLogger(HttpCompliance.class);
 
     // These are compliance violations, which may optionally be allowed by the compliance mode, which mean that
     // the relevant section of the RFC is not strictly adhered to.
@@ -46,7 +47,7 @@ public final class HttpCompliance implements ComplianceViolation.Mode
         /**
          * The HTTP RFC(s) require that field names are case-insensitive, so for example the fields "{@code Content-Type: text/xml}"
          * and "{@code content-type: text/xml}" are considered equivalent.  Jetty has been optimized to take advantage of this by
-         * looking up field names in a case insensitive cache and will by default provide the standard capitalisation of a field
+         * looking up field names in a case-insensitive cache and will by default provide the standard capitalisation of a field
          * name rather than create a new string with the actual capitalisation received.   However, some applications have been
          * written to expect a specific capitalisation of field, so deployments of such applications must include this violation
          * in their {@link HttpCompliance} mode to prevent Jetty altering the case of the fields received. Jetty itself will still
@@ -56,8 +57,8 @@ public final class HttpCompliance implements ComplianceViolation.Mode
         CASE_SENSITIVE_FIELD_NAME("https://tools.ietf.org/html/rfc7230#section-3.2", "Field name is case-insensitive"),
 
         /**
-         * The HTTP RFC(s) require that method names are case sensitive, so that "{@code Get}" and "{@code GET}" are considered
-         * different methods.   Jetty releases prior to 9.4 used a case insensitive cache to match method names, thus this requirement
+         * The HTTP RFC(s) require that method names are case-sensitive, so that "{@code Get}" and "{@code GET}" are considered
+         * different methods.   Jetty releases prior to 9.4 used a case-insensitive cache to match method names, thus this requirement
          * was violated.  Deployments which wish to retain this legacy violation can include this violation in the
          * {@link HttpCompliance} mode.
          */
@@ -103,7 +104,28 @@ public final class HttpCompliance implements ComplianceViolation.Mode
          * line of a single token with neither a colon nor value following, to be interpreted as a field name with no value.
          * A deployment may include this violation to allow such fields to be in a received request.
          */
-        NO_COLON_AFTER_FIELD_NAME("https://tools.ietf.org/html/rfc7230#section-3.2", "Fields must have a Colon");
+        NO_COLON_AFTER_FIELD_NAME("https://tools.ietf.org/html/rfc7230#section-3.2", "Fields must have a Colon"),
+
+        /**
+         * Since <a href="https://www.rfc-editor.org/rfc/rfc7230#section-5.4">RFC 7230: Section 5.4</a>, the HTTP protocol
+         * says that a Server must reject a request duplicate host headers.
+         * A deployment may include this violation to allow duplicate host headers on a received request.
+         */
+        DUPLICATE_HOST_HEADERS("https://www.rfc-editor.org/rfc/rfc7230#section-5.4", "Duplicate Host Header"),
+
+        /**
+         * Since <a href="https://www.rfc-editor.org/rfc/rfc7230#section-2.7.1">RFC 7230</a>, the HTTP protocol
+         * should reject a request if the Host headers contains an invalid / unsafe authority.
+         * A deployment may include this violation to allow unsafe host headesr on a received request.
+         */
+        UNSAFE_HOST_HEADER("https://www.rfc-editor.org/rfc/rfc7230#section-2.7.1", "Invalid Authority"),
+
+        /**
+         * Since <a href="https://www.rfc-editor.org/rfc/rfc7230#section-5.4">RFC 7230: Section 5.4</a>, the HTTP protocol
+         * must reject a request if the target URI has an authority that is different than a provided Host header.
+         * A deployment may include this violation to allow different values on the target URI and the Host header on a received request.
+         */
+        MISMATCHED_AUTHORITY("https://www.rfc-editor.org/rfc/rfc7230#section-5.4", "Mismatched Authority");
 
         private final String url;
         private final String description;
@@ -135,8 +157,14 @@ public final class HttpCompliance implements ComplianceViolation.Mode
 
     /**
      * The request attribute which may be set to record any allowed HTTP violations.
+     * @deprecated use {@link ComplianceViolation.CapturingListener#VIOLATIONS_ATTR_KEY} instead.<br>
+     *   (Note: new ATTR captures all Compliance violations, not just HTTP.<br>
+     *   Make sure you have {@code HttpConnectionFactory.setRecordHttpComplianceViolations(true)}.<br>
+     *   Also make sure that a {@link ComplianceViolation.CapturingListener} has been added as a bean to
+     *   either the {@code Connector} or {@code Server} for the Attribute to be created.)
      */
-    public static final String VIOLATIONS_ATTR = "org.eclipse.jetty.http.compliance.violations";
+    @Deprecated(since = "12.0.6", forRemoval = true)
+    public static final String VIOLATIONS_ATTR = ComplianceViolation.CapturingListener.VIOLATIONS_ATTR_KEY;
 
     /**
      * The HttpCompliance mode that supports <a href="https://tools.ietf.org/html/rfc7230">RFC 7230</a>
@@ -148,7 +176,11 @@ public final class HttpCompliance implements ComplianceViolation.Mode
      * The HttpCompliance mode that supports <a href="https://tools.ietf.org/html/rfc2616">RFC 7230</a>
      * with only the violations that differ from {@link #RFC7230}.
      */
-    public static final HttpCompliance RFC2616 = new HttpCompliance("RFC2616", of(Violation.HTTP_0_9, Violation.MULTILINE_FIELD_VALUE));
+    public static final HttpCompliance RFC2616 = new HttpCompliance("RFC2616", of(
+        Violation.HTTP_0_9,
+        Violation.MULTILINE_FIELD_VALUE,
+        Violation.MISMATCHED_AUTHORITY
+    ));
 
     /**
      * A legacy HttpCompliance mode that allows all violations except case-insensitive methods.
@@ -185,7 +217,8 @@ public final class HttpCompliance implements ComplianceViolation.Mode
             if (compliance.getName().equals(name))
                 return compliance;
         }
-        LOG.warn("Unknown HttpCompliance mode {}", name);
+        if (name.indexOf(',') == -1) // skip warning if delimited, will be handled by .from() properly as a CUSTOM mode.
+            LOG.warn("Unknown HttpCompliance mode {}", name);
         return null;
     }
 
@@ -197,9 +230,9 @@ public final class HttpCompliance implements ComplianceViolation.Mode
      * <dl>
      * <dt>0</dt><dd>No {@link Violation}s</dd>
      * <dt>*</dt><dd>All {@link Violation}s</dd>
-     * <dt>RFC2616</dt><dd>The set of {@link Violation}s application to https://tools.ietf.org/html/rfc2616,
-     * but not https://tools.ietf.org/html/rfc7230</dd>
-     * <dt>RFC7230</dt><dd>The set of {@link Violation}s application to https://tools.ietf.org/html/rfc7230</dd>
+     * <dt>RFC2616</dt><dd>The set of {@link Violation}s application to <a href="https://tools.ietf.org/html/rfc2616">RFC2616</a>,
+     * but not <a href="https://tools.ietf.org/html/rfc7230">RFC7230</a></dd>
+     * <dt>RFC7230</dt><dd>The set of {@link Violation}s application to <a href="https://tools.ietf.org/html/rfc7230">RFC7230</a></dd>
      * <dt>name</dt><dd>Any of the known modes defined in {@link HttpCompliance#KNOWN_MODES}</dd>
      * </dl>
      * <p>
@@ -212,39 +245,37 @@ public final class HttpCompliance implements ComplianceViolation.Mode
      */
     public static HttpCompliance from(String spec)
     {
-        Set<Violation> sections;
-        String[] elements = spec.split("\\s*,\\s*");
-        switch (elements[0])
+        HttpCompliance compliance = valueOf(spec);
+        if (compliance == null)
         {
-            case "0":
-                sections = noneOf(Violation.class);
-                break;
+            String[] elements = spec.split("\\s*,\\s*");
+            Set<Violation> sections = switch (elements[0])
+                {
+                    case "0" -> noneOf(Violation.class);
+                    case "*" -> allOf(Violation.class);
+                    default ->
+                    {
+                        HttpCompliance mode = HttpCompliance.valueOf(elements[0]);
+                        yield (mode == null) ? noneOf(Violation.class) : copyOf(mode.getAllowed());
+                    }
+                };
 
-            case "*":
-                sections = allOf(Violation.class);
-                break;
-
-            default:
+            for (int i = 1; i < elements.length; i++)
             {
-                HttpCompliance mode = HttpCompliance.valueOf(elements[0]);
-                sections = (mode == null) ? noneOf(HttpCompliance.Violation.class) : copyOf(mode.getAllowed());
+                String element = elements[i];
+                boolean exclude = element.startsWith("-");
+                if (exclude)
+                    element = element.substring(1);
+                Violation section = Violation.valueOf(element);
+                if (exclude)
+                    sections.remove(section);
+                else
+                    sections.add(section);
             }
-        }
 
-        for (int i = 1; i < elements.length; i++)
-        {
-            String element = elements[i];
-            boolean exclude = element.startsWith("-");
-            if (exclude)
-                element = element.substring(1);
-            Violation section = Violation.valueOf(element);
-            if (exclude)
-                sections.remove(section);
-            else
-                sections.add(section);
+            compliance = new HttpCompliance("CUSTOM" + __custom.getAndIncrement(), sections);
         }
-
-        return new HttpCompliance("CUSTOM" + __custom.getAndIncrement(), sections);
+        return compliance;
     }
 
     private final String _name;
@@ -327,5 +358,63 @@ public final class HttpCompliance implements ComplianceViolation.Mode
         if (violations == null || violations.isEmpty())
             return EnumSet.noneOf(Violation.class);
         return EnumSet.copyOf(violations);
+    }
+
+    public static void checkHttpCompliance(MetaData.Request request, HttpCompliance mode,
+                             ComplianceViolation.Listener listener)
+    {
+        boolean seenContentLength = false;
+        boolean seenTransferEncoding = false;
+        boolean seenHostHeader = false;
+
+        HttpFields fields = request.getHttpFields();
+        for (HttpField httpField: fields)
+        {
+            if (httpField.getHeader() == null)
+                continue;
+
+            switch (httpField.getHeader())
+            {
+                case CONTENT_LENGTH ->
+                {
+                    if (seenContentLength)
+                        assertAllowed(Violation.MULTIPLE_CONTENT_LENGTHS, mode, listener);
+                    String[] lengths = httpField.getValues();
+                    if (lengths.length > 1)
+                        assertAllowed(Violation.MULTIPLE_CONTENT_LENGTHS, mode, listener);
+                    if (seenTransferEncoding)
+                        assertAllowed(Violation.TRANSFER_ENCODING_WITH_CONTENT_LENGTH, mode, listener);
+                    seenContentLength = true;
+                }
+                case TRANSFER_ENCODING ->
+                {
+                    if (seenContentLength)
+                        assertAllowed(Violation.TRANSFER_ENCODING_WITH_CONTENT_LENGTH, mode, listener);
+                    seenTransferEncoding = true;
+                }
+                case HOST ->
+                {
+                    if (seenHostHeader)
+                        assertAllowed(Violation.DUPLICATE_HOST_HEADERS, mode, listener);
+                    String[] hostValues = httpField.getValues();
+                    if (hostValues.length > 1)
+                        assertAllowed(Violation.DUPLICATE_HOST_HEADERS, mode, listener);
+                    for (String hostValue: hostValues)
+                        if (StringUtil.isBlank(hostValue))
+                            assertAllowed(Violation.UNSAFE_HOST_HEADER, mode, listener);
+                    seenHostHeader = true;
+                }
+            }
+        }
+    }
+
+    private static void assertAllowed(Violation violation, HttpCompliance mode, ComplianceViolation.Listener listener)
+    {
+        if (mode.allows(violation))
+            listener.onComplianceViolation(new ComplianceViolation.Event(
+                mode, violation, violation.getDescription()
+            ));
+        else
+            throw new BadMessageException(violation.getDescription());
     }
 }

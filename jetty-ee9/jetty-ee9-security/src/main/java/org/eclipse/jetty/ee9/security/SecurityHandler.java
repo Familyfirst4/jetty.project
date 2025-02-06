@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -34,20 +34,22 @@ import org.eclipse.jetty.ee9.nested.Handler;
 import org.eclipse.jetty.ee9.nested.HandlerWrapper;
 import org.eclipse.jetty.ee9.nested.Request;
 import org.eclipse.jetty.ee9.nested.Response;
-import org.eclipse.jetty.ee9.nested.UserIdentity;
 import org.eclipse.jetty.ee9.security.authentication.DeferredAuthentication;
+import org.eclipse.jetty.security.DefaultIdentityService;
+import org.eclipse.jetty.security.IdentityService;
+import org.eclipse.jetty.security.LoginService;
+import org.eclipse.jetty.security.UserIdentity;
+import org.eclipse.jetty.util.IO;
 import org.eclipse.jetty.util.TypeUtil;
 import org.eclipse.jetty.util.component.DumpableCollection;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Abstract SecurityHandler.
- * <p>
  * Select and apply an {@link Authenticator} to a request.
  * <p>
  * The Authenticator may either be directly set on the handler
- * or will be create during {@link #start()} with a call to
+ * or will be created during {@link #start()} with a call to
  * either the default or set AuthenticatorFactory.
  * <p>
  * SecurityHandler has a set of initparameters that are used by the
@@ -68,7 +70,8 @@ public abstract class SecurityHandler extends HandlerWrapper implements Authenti
     private final Map<String, String> _initParameters = new HashMap<>();
     private LoginService _loginService;
     private IdentityService _identityService;
-    private boolean _renewSession = true;
+    private boolean _renewSessionOnAuthentication = true;
+    private int _sessionMaxInactiveIntervalOnAuthentication = 0;
 
     static
     {
@@ -79,7 +82,7 @@ public abstract class SecurityHandler extends HandlerWrapper implements Authenti
 
     protected SecurityHandler()
     {
-        addBean(new DumpableCollection("knownAuthenticatorFactories", __knownAuthenticatorFactories));
+        installBean(new DumpableCollection("knownAuthenticatorFactories", __knownAuthenticatorFactories));
     }
 
     /**
@@ -433,7 +436,7 @@ public abstract class SecurityHandler extends HandlerWrapper implements Authenti
     @Override
     public boolean isSessionRenewedOnAuthentication()
     {
-        return _renewSession;
+        return _renewSessionOnAuthentication;
     }
 
     /**
@@ -446,7 +449,26 @@ public abstract class SecurityHandler extends HandlerWrapper implements Authenti
      */
     public void setSessionRenewedOnAuthentication(boolean renew)
     {
-        _renewSession = renew;
+        _renewSessionOnAuthentication = renew;
+    }
+
+    @Override
+    public int getSessionMaxInactiveIntervalOnAuthentication()
+    {
+        return _sessionMaxInactiveIntervalOnAuthentication;
+    }
+
+    /**
+     * Set the interval in seconds, which if non-zero, will be set with
+     * {@link jakarta.servlet.http.HttpSession#setMaxInactiveInterval(int)}
+     * when a session is newly authenticated.
+     * @param seconds An interval in seconds; or 0 to not set the interval
+     *                on authentication; or a negative number to make the
+     *                session never timeout after authentication.
+     */
+    public void setSessionMaxInactiveIntervalOnAuthentication(int seconds)
+    {
+        _sessionMaxInactiveIntervalOnAuthentication = seconds;
     }
 
     /*
@@ -500,7 +522,7 @@ public abstract class SecurityHandler extends HandlerWrapper implements Authenti
             }
 
             // check authentication
-            Object previousIdentity = null;
+            IdentityService.Association identityAssociation = null;
             try
             {
                 Authentication authentication = baseRequest.getAuthentication();
@@ -522,7 +544,10 @@ public abstract class SecurityHandler extends HandlerWrapper implements Authenti
                     Authentication.User userAuth = (Authentication.User)authentication;
                     baseRequest.setAuthentication(authentication);
                     if (_identityService != null)
-                        previousIdentity = _identityService.associate(userAuth.getUserIdentity());
+                    {
+                        UserIdentity user = userAuth.getUserIdentity();
+                        identityAssociation = _identityService.associate(user, null);
+                    }
 
                     if (isAuthMandatory)
                     {
@@ -550,7 +575,7 @@ public abstract class SecurityHandler extends HandlerWrapper implements Authenti
                     }
                     finally
                     {
-                        previousIdentity = deferred.getPreviousAssociation();
+                        identityAssociation = deferred.getAssociation();
                     }
 
                     if (authenticator != null)
@@ -574,7 +599,7 @@ public abstract class SecurityHandler extends HandlerWrapper implements Authenti
                 {
                     baseRequest.setAuthentication(authentication);
                     if (_identityService != null)
-                        previousIdentity = _identityService.associate(null);
+                        identityAssociation = _identityService.associate(null, null);
                     handler.handle(pathInContext, baseRequest, request, response);
                     if (authenticator != null)
                         authenticator.secureResponse(request, response, isAuthMandatory, null);
@@ -588,8 +613,7 @@ public abstract class SecurityHandler extends HandlerWrapper implements Authenti
             }
             finally
             {
-                if (_identityService != null)
-                    _identityService.disassociate(previousIdentity);
+                IO.close(identityAssociation);
             }
         }
         else
@@ -619,11 +643,7 @@ public abstract class SecurityHandler extends HandlerWrapper implements Authenti
 
         IdentityService identityService = getIdentityService();
         if (identityService != null)
-        {
-            // TODO recover previous from threadlocal (or similar)
-            Object previous = null;
-            identityService.disassociate(previous);
-        }
+            identityService.onLogout(user.getUserIdentity());
     }
 
     protected abstract RoleInfo prepareConstraintInfo(String pathInContext, Request request);

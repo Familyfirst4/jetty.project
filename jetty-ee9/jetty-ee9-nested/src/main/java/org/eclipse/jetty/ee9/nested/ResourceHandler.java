@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,10 +13,9 @@
 
 package org.eclipse.jetty.ee9.nested;
 
-import java.io.FileNotFoundException;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Arrays;
+import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
 
 import jakarta.servlet.ServletException;
@@ -29,7 +28,14 @@ import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpMethod;
 import org.eclipse.jetty.http.MimeTypes;
 import org.eclipse.jetty.http.PreEncodedHttpField;
-import org.eclipse.jetty.util.StringUtil;
+import org.eclipse.jetty.http.content.FileMappingHttpContentFactory;
+import org.eclipse.jetty.http.content.HttpContent;
+import org.eclipse.jetty.http.content.PreCompressedHttpContentFactory;
+import org.eclipse.jetty.http.content.ResourceHttpContentFactory;
+import org.eclipse.jetty.http.content.ValidatingCachingHttpContentFactory;
+import org.eclipse.jetty.http.content.VirtualHttpContentFactory;
+import org.eclipse.jetty.io.ByteBufferPool;
+import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.util.URIUtil;
 import org.eclipse.jetty.util.resource.Resource;
 import org.eclipse.jetty.util.resource.ResourceFactory;
@@ -42,16 +48,17 @@ import org.slf4j.LoggerFactory;
  * This handle will serve static content and handle If-Modified-Since headers. No caching is done. Requests for resources that do not exist are let pass (Eg no
  * 404's).
  */
-public class ResourceHandler extends HandlerWrapper implements ResourceFactory, WelcomeFactory
+public class ResourceHandler extends HandlerWrapper implements WelcomeFactory
 {
     private static final Logger LOG = LoggerFactory.getLogger(ResourceHandler.class);
 
+    private ByteBufferPool _bufferPool;
     Resource _baseResource;
     ContextHandler _context;
-    Resource _defaultStylesheet;
+    Resource _defaultStyleSheet;
     MimeTypes _mimeTypes;
     private final ResourceService _resourceService;
-    Resource _stylesheet;
+    Resource _styleSheet;
     String[] _welcomes = {"index.html"};
 
     public ResourceHandler(ResourceService resourceService)
@@ -68,19 +75,19 @@ public class ResourceHandler extends HandlerWrapper implements ResourceFactory, 
             {
             }
         });
-        _resourceService.setGzipEquivalentFileExtensions(new ArrayList<>(Arrays.asList(new String[]{".svgz"})));
+        _resourceService.setGzipEquivalentFileExtensions(List.of(".svgz"));
     }
 
     @Override
-    public String getWelcomeFile(String pathInContext) throws IOException
+    public String getWelcomeFile(String pathInContext)
     {
         if (_welcomes == null)
             return null;
 
-        for (int i = 0; i < _welcomes.length; i++)
+        for (String s : _welcomes)
         {
-            String welcomeInContext = URIUtil.addPaths(pathInContext, _welcomes[i]);
-            Resource welcome = getResource(welcomeInContext);
+            String welcomeInContext = URIUtil.addPaths(pathInContext, s);
+            Resource welcome = _baseResource.resolve(welcomeInContext);
             if (welcome.exists())
                 return welcomeInContext;
         }
@@ -94,12 +101,40 @@ public class ResourceHandler extends HandlerWrapper implements ResourceFactory, 
         APIContext scontext = ContextHandler.getCurrentContext();
         _context = (scontext == null ? null : scontext.getContextHandler());
         if (_mimeTypes == null)
-            _mimeTypes = _context == null ? new MimeTypes() : _context.getMimeTypes();
+            _mimeTypes = _context == null ? MimeTypes.DEFAULTS : _context.getMimeTypes();
 
-        _resourceService.setContentFactory(new ResourceContentFactory(this, _mimeTypes, _resourceService.getPrecompressedFormats()));
+        _bufferPool = getByteBufferPool(_context);
+        if (_resourceService.getHttpContentFactory() == null)
+            _resourceService.setHttpContentFactory(newHttpContentFactory());
         _resourceService.setWelcomeFactory(this);
 
         super.doStart();
+    }
+
+    private static ByteBufferPool getByteBufferPool(ContextHandler contextHandler)
+    {
+        if (contextHandler == null)
+            return ByteBufferPool.NON_POOLING;
+        Server server = contextHandler.getServer();
+        if (server == null)
+            return ByteBufferPool.NON_POOLING;
+        return server.getByteBufferPool();
+    }
+
+    public HttpContent.Factory getHttpContentFactory()
+    {
+        return _resourceService.getHttpContentFactory();
+    }
+
+    protected HttpContent.Factory newHttpContentFactory()
+    {
+        Resource baseResource = getBaseResource();
+        HttpContent.Factory contentFactory = new ResourceHttpContentFactory(baseResource, _mimeTypes);
+        contentFactory = new FileMappingHttpContentFactory(contentFactory);
+        contentFactory = new VirtualHttpContentFactory(contentFactory, getStyleSheet(), "text/css");
+        contentFactory = new PreCompressedHttpContentFactory(contentFactory, _resourceService.getPrecompressedFormats());
+        contentFactory = new ValidatingCachingHttpContentFactory(contentFactory, Duration.ofSeconds(1).toMillis(), _bufferPool);
+        return contentFactory;
     }
 
     /**
@@ -108,11 +143,12 @@ public class ResourceHandler extends HandlerWrapper implements ResourceFactory, 
     public Resource getBaseResource()
     {
         if (_baseResource == null)
-            return null;
+            return _context.getBaseResource();
         return _baseResource;
     }
 
     /**
+     * Get the cacheControl header to set on all static content..
      * @return the cacheControl header to set on all static content.
      */
     public String getCacheControl()
@@ -133,54 +169,10 @@ public class ResourceHandler extends HandlerWrapper implements ResourceFactory, 
         return _mimeTypes;
     }
 
-    @Override
-    public Resource getResource(String path) throws IOException
-    {
-        if (LOG.isDebugEnabled())
-            LOG.debug("{} getResource({})", _context == null ? _baseResource : _context, path);
-
-        if (StringUtil.isBlank(path))
-        {
-            throw new IllegalArgumentException("Path is blank");
-        }
-
-        if (!path.startsWith("/"))
-        {
-            throw new IllegalArgumentException("Path reference invalid: " + path);
-        }
-
-        Resource r = null;
-
-        if (_baseResource != null)
-        {
-            r = _baseResource.addPath(path);
-
-            if (r.isAlias() && (_context == null || !_context.checkAlias(path, r)))
-            {
-                if (LOG.isDebugEnabled())
-                    LOG.debug("Rejected alias resource={} alias={}", r, r.getAlias());
-                throw new IllegalStateException("Rejected alias reference: " + path);
-            }
-        }
-        else if (_context != null)
-        {
-            r = _context.getResource(path);
-        }
-
-        if ((r == null || !r.exists()) && path.endsWith("/jetty-dir.css"))
-            r = getStylesheet();
-
-        if (r == null)
-        {
-            throw new FileNotFoundException("Resource: " + path);
-        }
-
-        return r;
-    }
-
     /**
      * @return Returns the base resource as a string.
      */
+    @Deprecated
     public String getResourceBase()
     {
         if (_baseResource == null)
@@ -191,25 +183,20 @@ public class ResourceHandler extends HandlerWrapper implements ResourceFactory, 
     /**
      * @return Returns the stylesheet as a Resource.
      */
-    public Resource getStylesheet()
+    public Resource getStyleSheet()
     {
-        if (_stylesheet != null)
+        if (_styleSheet != null)
         {
-            return _stylesheet;
+            return _styleSheet;
         }
         else
         {
-            if (_defaultStylesheet == null)
+            if (_defaultStyleSheet == null)
             {
-                _defaultStylesheet = getDefaultStylesheet();
+                _defaultStyleSheet = getServer().getDefaultStyleSheet();
             }
-            return _defaultStylesheet;
+            return _defaultStyleSheet;
         }
-    }
-
-    public static Resource getDefaultStylesheet()
-    {
-        return Resource.newResource(ResourceHandler.class.getResource("/jetty-dir.css"));
     }
 
     public String[] getWelcomeFiles()
@@ -313,6 +300,16 @@ public class ResourceHandler extends HandlerWrapper implements ResourceFactory, 
     }
 
     /**
+     * @param basePath The resourceBase to server content from. If null the
+     * context resource base is used.
+     */
+    public void setBaseResource(Path basePath)
+    {
+        setBaseResource(ResourceFactory.root().newResource(basePath));
+    }
+
+    /**
+     * Set the cacheControl header to set on all static content..
      * @param cacheControl the cacheControl header to set on all static content.
      */
     public void setCacheControl(String cacheControl)
@@ -347,6 +344,7 @@ public class ResourceHandler extends HandlerWrapper implements ResourceFactory, 
     }
 
     /**
+     * Set file extensions that signify that a file is gzip compressed. Eg ".svgz".
      * @param gzipEquivalentFileExtensions file extensions that signify that a file is gzip compressed. Eg ".svgz"
      */
     public void setGzipEquivalentFileExtensions(List<String> gzipEquivalentFileExtensions)
@@ -369,6 +367,7 @@ public class ResourceHandler extends HandlerWrapper implements ResourceFactory, 
     }
 
     /**
+     * Set true, only the path info will be applied to the resourceBase.
      * @param pathInfoOnly true, only the path info will be applied to the resourceBase
      */
     public void setPathInfoOnly(boolean pathInfoOnly)
@@ -388,38 +387,50 @@ public class ResourceHandler extends HandlerWrapper implements ResourceFactory, 
 
     /**
      * @param resourceBase The base resource as a string.
+     * @deprecated use {@link #setBaseResource(Resource)}
      */
+    @Deprecated
     public void setResourceBase(String resourceBase)
+    {
+        setBaseResourceAsString(resourceBase);
+    }
+
+    /**
+     * @param baseResource The base resource as a string.
+     * @deprecated use {@link #setBaseResource(Resource)}
+     */
+    @Deprecated
+    public void setBaseResourceAsString(String baseResource)
     {
         try
         {
-            setBaseResource(Resource.newResource(resourceBase));
+            setBaseResource(ResourceFactory.of(this).newResource(baseResource));
         }
         catch (Exception e)
         {
-            LOG.warn("Invalid Base Resource reference: {}", resourceBase, e);
-            throw new IllegalArgumentException(resourceBase);
+            LOG.warn("Invalid Base Resource reference: {}", baseResource, e);
+            throw new IllegalArgumentException(baseResource);
         }
     }
 
     /**
-     * @param stylesheet The location of the stylesheet to be used as a String.
+     * @param styleSheet The location of the style sheet to be used as a String.
      */
-    public void setStylesheet(String stylesheet)
+    public void setStyleSheet(String styleSheet)
     {
         try
         {
-            _stylesheet = Resource.newResource(stylesheet);
-            if (!_stylesheet.exists())
+            _styleSheet = ResourceFactory.of(this).newResource(styleSheet);
+            if (!_styleSheet.exists())
             {
-                LOG.warn("unable to find custom stylesheet: {}", stylesheet);
-                _stylesheet = null;
+                LOG.warn("unable to find custom styleSheet: {}", styleSheet);
+                _styleSheet = null;
             }
         }
         catch (Exception e)
         {
-            LOG.warn("Invalid StyleSheet reference: {}", stylesheet, e);
-            throw new IllegalArgumentException(stylesheet);
+            LOG.warn("Invalid StyleSheet reference: {}", styleSheet, e);
+            throw new IllegalArgumentException(styleSheet);
         }
     }
 

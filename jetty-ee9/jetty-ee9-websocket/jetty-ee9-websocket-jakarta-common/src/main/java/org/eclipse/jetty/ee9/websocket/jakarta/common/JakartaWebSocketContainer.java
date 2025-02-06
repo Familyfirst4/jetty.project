@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -46,16 +46,16 @@ public abstract class JakartaWebSocketContainer extends ContainerLifeCycle imple
     {
         this.components = components;
         addSessionListener(sessionTracker);
-        addBean(sessionTracker);
+        installBean(sessionTracker);
     }
 
     public abstract Executor getExecutor();
 
     protected abstract JakartaWebSocketFrameHandlerFactory getFrameHandlerFactory();
 
-    public ByteBufferPool getBufferPool()
+    public ByteBufferPool getByteBufferPool()
     {
-        return components.getBufferPool();
+        return components.getByteBufferPool();
     }
 
     public WebSocketExtensionRegistry getExtensionRegistry()

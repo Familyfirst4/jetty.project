@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -17,6 +17,8 @@ import java.util.EventListener;
 import java.util.EventObject;
 import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLException;
+
+import org.eclipse.jetty.io.EndPoint;
 
 /**
  * <p>Implementations of this interface are notified of TLS handshake events.</p>
@@ -49,11 +51,26 @@ public interface SslHandshakeListener extends EventListener
     /**
      * <p>The event object carrying information about TLS handshake events.</p>
      */
-    public static class Event extends EventObject
+    class Event extends EventObject
     {
+        private final EndPoint endPoint;
+
+        /**
+         * <p>Creates a new instance with the given event source.</p>
+         *
+         * @param source the source of this event.
+         * @deprecated instances of this class can only be created by the implementation
+         */
+        @Deprecated(forRemoval = true, since = "12.0.7")
         public Event(Object source)
         {
-            super(source);
+            this(source, null);
+        }
+
+        Event(Object sslEngine, EndPoint endPoint)
+        {
+            super(sslEngine);
+            this.endPoint = endPoint;
         }
 
         /**
@@ -62,6 +79,14 @@ public interface SslHandshakeListener extends EventListener
         public SSLEngine getSSLEngine()
         {
             return (SSLEngine)getSource();
+        }
+
+        /**
+         * @return the EndPoint associated to the TLS handshake event
+         */
+        public EndPoint getEndPoint()
+        {
+            return endPoint;
         }
     }
 }

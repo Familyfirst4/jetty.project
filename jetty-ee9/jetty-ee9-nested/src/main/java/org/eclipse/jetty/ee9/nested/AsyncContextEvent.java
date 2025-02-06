@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -19,6 +19,7 @@ import jakarta.servlet.ServletContext;
 import jakarta.servlet.ServletRequest;
 import jakarta.servlet.ServletResponse;
 import org.eclipse.jetty.http.HttpURI;
+import org.eclipse.jetty.util.ExceptionUtil;
 import org.eclipse.jetty.util.thread.Scheduler;
 
 public class AsyncContextEvent extends AsyncEvent implements Runnable
@@ -34,7 +35,7 @@ public class AsyncContextEvent extends AsyncEvent implements Runnable
 
     public AsyncContextEvent(ContextHandler.APIContext context, AsyncContextState asyncContext, HttpChannelState state, Request baseRequest, ServletRequest request, ServletResponse response)
     {
-        this (context, asyncContext, state, baseRequest, request, response, null);
+        this(context, asyncContext, state, baseRequest, request, response, null);
     }
 
     public AsyncContextEvent(ContextHandler.APIContext context, AsyncContextState asyncContext, HttpChannelState state, Request baseRequest, ServletRequest request, ServletResponse response, HttpURI baseURI)
@@ -119,6 +120,7 @@ public class AsyncContextEvent extends AsyncEvent implements Runnable
     }
 
     /**
+     * Set encoded URI.
      * @param path encoded URI
      */
     public void setDispatchPath(String path)
@@ -148,9 +150,6 @@ public class AsyncContextEvent extends AsyncEvent implements Runnable
 
     public void addThrowable(Throwable e)
     {
-        if (_throwable == null)
-            _throwable = e;
-        else if (e != _throwable)
-            _throwable.addSuppressed(e);
+        _throwable = ExceptionUtil.combine(_throwable, e);
     }
 }

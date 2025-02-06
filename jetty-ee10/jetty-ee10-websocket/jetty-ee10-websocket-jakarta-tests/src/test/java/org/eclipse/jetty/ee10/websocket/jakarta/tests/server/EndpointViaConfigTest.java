@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,6 +14,7 @@
 package org.eclipse.jetty.ee10.websocket.jakarta.tests.server;
 
 import java.net.URI;
+import java.nio.file.Path;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
@@ -45,12 +46,10 @@ public class EndpointViaConfigTest
 {
     private static final Logger LOG = LoggerFactory.getLogger(EndpointViaConfigTest.class);
 
-    public WorkDir testdir;
-
     @Test
-    public void testEcho() throws Exception
+    public void testEcho(WorkDir workDir) throws Exception
     {
-        WSServer wsb = new WSServer(testdir.getPath());
+        WSServer wsb = new WSServer(workDir.getEmptyPathDir());
         WSServer.WebApp app = wsb.createWebApp("app");
         // the endpoint (extends jakarta.websocket.Endpoint)
         app.copyClass(BasicEchoEndpoint.class);

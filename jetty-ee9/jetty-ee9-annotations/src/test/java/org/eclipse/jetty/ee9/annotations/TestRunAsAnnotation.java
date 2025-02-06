@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,21 +13,26 @@
 
 package org.eclipse.jetty.ee9.annotations;
 
-import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import org.eclipse.jetty.ee9.servlet.ServletHolder;
 import org.eclipse.jetty.ee9.webapp.WebAppContext;
 import org.eclipse.jetty.ee9.webapp.WebDescriptor;
-import org.eclipse.jetty.toolchain.test.MavenTestingUtils;
-import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.toolchain.test.jupiter.WorkDir;
+import org.eclipse.jetty.toolchain.test.jupiter.WorkDirExtension;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
+@ExtendWith(WorkDirExtension.class)
 public class TestRunAsAnnotation
 {
+
     @Test
-    public void testRunAsAnnotation() throws Exception
+    public void testRunAsAnnotation(WorkDir workDir)  throws Exception
     {
         WebAppContext wac = new WebAppContext();
         
@@ -44,8 +49,10 @@ public class TestRunAsAnnotation
         holder2.setHeldClass(ServletC.class);
         holder2.setInitOrder(1);
         wac.getServletHandler().addServletWithMapping(holder2, "/foo2/*");
-        Resource fakeXml = Resource.newResource(new File(MavenTestingUtils.getTargetTestingDir("run-as"), "fake.xml"));
-        wac.getMetaData().setOrigin(holder2.getName() + ".servlet.run-as", new WebDescriptor(fakeXml));
+        Path tmpPath = workDir.getEmptyPathDir();
+        Path fakeXml = tmpPath.resolve("fake.xml");
+        Files.createFile(fakeXml);
+        wac.getMetaData().setOrigin(holder2.getName() + ".servlet.run-as", new WebDescriptor(wac.getResourceFactory().newResource(fakeXml)));
         
         AnnotationIntrospector parser = new AnnotationIntrospector(wac);
         RunAsAnnotationHandler handler = new RunAsAnnotationHandler(wac);
@@ -53,6 +60,6 @@ public class TestRunAsAnnotation
         parser.introspect(new ServletC(), null);
         
         assertEquals("admin", holder.getRunAsRole());
-        assertEquals(null, holder2.getRunAsRole());
+        assertNull(holder2.getRunAsRole());
     }
 }

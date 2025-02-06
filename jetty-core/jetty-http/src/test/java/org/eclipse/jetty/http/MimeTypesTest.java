@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,6 +13,7 @@
 
 package org.eclipse.jetty.http;
 
+import java.nio.charset.StandardCharsets;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
@@ -21,6 +22,7 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.equalToIgnoringCase;
 import static org.hamcrest.Matchers.is;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
@@ -30,6 +32,8 @@ public class MimeTypesTest
     {
         return Stream.of(
             Arguments.of("test.gz", "application/gzip"),
+            Arguments.of("test.tar.gz", "application/gzip"),
+            Arguments.of("test.tgz", "application/x-gtar"),
             Arguments.of("foo.webp", "image/webp"),
             Arguments.of("zed.avif", "image/avif"),
             // make sure that filename case isn't an issue
@@ -123,5 +127,86 @@ public class MimeTypesTest
     {
         assertThat("MimeTypes.getContentTypeWithoutCharset(\"" + contentTypeWithCharset + "\")",
             MimeTypes.getContentTypeWithoutCharset(contentTypeWithCharset), is(expectedContentType));
+    }
+
+    public static Stream<Arguments> mimeTypesGetBaseTypeCases()
+    {
+        return Stream.of(
+            Arguments.of("foo/bar", null),
+            Arguments.of("foo/bar;charset=abc;some=else", null),
+            Arguments.of("text/html", MimeTypes.Type.TEXT_HTML),
+            Arguments.of("text/html;charset=utf-8", MimeTypes.Type.TEXT_HTML),
+            Arguments.of("text/html; charset=iso-8859-1", MimeTypes.Type.TEXT_HTML),
+            Arguments.of("text/html;charset=utf-8;other=param", MimeTypes.Type.TEXT_HTML),
+            Arguments.of("text/html;other=param;charset=iso-8859-1", MimeTypes.Type.TEXT_HTML),
+
+            Arguments.of(null, null)
+        );
+    }
+
+    @ParameterizedTest
+    @MethodSource("mimeTypesGetBaseTypeCases")
+    public void testMimeTypesGetBaseType(String contentTypeWithCharset, MimeTypes.Type expectedType)
+    {
+        MimeTypes.CACHE.keySet().forEach(System.err::println);
+        assertThat(MimeTypes.getBaseType(contentTypeWithCharset), is(expectedType));
+    }
+
+    @Test
+    public void testWrapper()
+    {
+        MimeTypes.Wrapper wrapper = new MimeTypes.Wrapper();
+        assertThat(wrapper.getMimeMap().size(), is(0));
+        assertThat(wrapper.getInferredMap().size(), is(0));
+        assertThat(wrapper.getAssumedMap().size(), is(0));
+
+        wrapper.addMimeMapping("txt", "text/plain");
+        wrapper.addInferred("text/plain", "us-ascii");
+        wrapper.addAssumed("json", "utf-8");
+
+        assertThat(wrapper.getMimeMap().size(), is(1));
+        assertThat(wrapper.getInferredMap().size(), is(1));
+        assertThat(wrapper.getAssumedMap().size(), is(1));
+        assertThat(wrapper.getMimeByExtension("fee.txt"), is("text/plain"));
+        assertThat(wrapper.getCharsetInferredFromContentType("text/plain"), equalToIgnoringCase("us-ascii"));
+        assertThat(wrapper.getCharsetAssumedFromContentType("json"), equalToIgnoringCase("utf-8"));
+
+        MimeTypes.Mutable wrapped = new MimeTypes.Mutable(null);
+        wrapper.setWrapped(wrapped);
+
+        assertThat(wrapper.getMimeMap().size(), is(1));
+        assertThat(wrapper.getInferredMap().size(), is(1));
+        assertThat(wrapper.getAssumedMap().size(), is(1));
+        assertThat(wrapper.getMimeByExtension("fee.txt"), is("text/plain"));
+        assertThat(wrapper.getCharsetInferredFromContentType("text/plain"), equalToIgnoringCase("us-ascii"));
+        assertThat(wrapper.getCharsetAssumedFromContentType("json"), equalToIgnoringCase("utf-8"));
+
+        wrapped.addMimeMapping("txt", StandardCharsets.UTF_16.name());
+        wrapped.addInferred("text/plain", StandardCharsets.UTF_16.name());
+        wrapped.addAssumed("json", StandardCharsets.UTF_16.name());
+
+        assertThat(wrapper.getMimeMap().size(), is(1));
+        assertThat(wrapper.getInferredMap().size(), is(1));
+        assertThat(wrapper.getAssumedMap().size(), is(1));
+        assertThat(wrapper.getMimeByExtension("fee.txt"), is("text/plain"));
+        assertThat(wrapper.getCharsetInferredFromContentType("text/plain"), equalToIgnoringCase("us-ascii"));
+        assertThat(wrapper.getCharsetAssumedFromContentType("json"), equalToIgnoringCase("utf-8"));
+
+        wrapped.addMimeMapping("xml", "text/xml");
+        wrapped.addInferred("text/xml", "iso-8859-1");
+        wrapped.addAssumed("text/xxx", StandardCharsets.UTF_16.name());
+        assertThat(wrapped.getMimeMap().size(), is(2));
+        assertThat(wrapped.getInferredMap().size(), is(2));
+        assertThat(wrapped.getAssumedMap().size(), is(2));
+
+        assertThat(wrapper.getMimeMap().size(), is(2));
+        assertThat(wrapper.getInferredMap().size(), is(2));
+        assertThat(wrapper.getAssumedMap().size(), is(2));
+        assertThat(wrapper.getMimeByExtension("fee.txt"), is("text/plain"));
+        assertThat(wrapper.getCharsetInferredFromContentType("text/plain"), equalToIgnoringCase("us-ascii"));
+        assertThat(wrapper.getCharsetAssumedFromContentType("json"), equalToIgnoringCase("utf-8"));
+        assertThat(wrapper.getMimeByExtension("fee.xml"), is("text/xml"));
+        assertThat(wrapper.getCharsetInferredFromContentType("text/xml"), equalToIgnoringCase("iso-8859-1"));
+        assertThat(wrapper.getCharsetAssumedFromContentType("text/xxx"), equalToIgnoringCase("utf-16"));
     }
 }

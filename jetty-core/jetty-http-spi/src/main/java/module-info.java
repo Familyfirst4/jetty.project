@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -11,6 +11,9 @@
 // ========================================================================
 //
 
+import com.sun.net.httpserver.spi.HttpServerProvider;
+import org.eclipse.jetty.http.spi.JettyHttpServerProvider;
+
 module org.eclipse.jetty.http.spi
 {
     requires transitive jdk.httpserver;
@@ -19,4 +22,6 @@ module org.eclipse.jetty.http.spi
     requires transitive org.eclipse.jetty.util;
 
     exports org.eclipse.jetty.http.spi;
+
+    provides HttpServerProvider with JettyHttpServerProvider;
 }

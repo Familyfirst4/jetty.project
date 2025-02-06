@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -17,6 +17,7 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.util.Map;
 
+import org.eclipse.jetty.client.transport.HttpDestination;
 import org.eclipse.jetty.io.ClientConnectionFactory;
 
 /**
@@ -30,7 +31,7 @@ import org.eclipse.jetty.io.ClientConnectionFactory;
  * but the HTTP exchange may also be carried using the FCGI protocol, the HTTP/2 protocol or,
  * in future, other protocols.
  */
-public interface HttpClientTransport extends ClientConnectionFactory
+public interface HttpClientTransport extends ClientConnectionFactory, HttpClient.Aware
 {
     public static final String HTTP_DESTINATION_CONTEXT_KEY = "org.eclipse.jetty.client.destination";
     public static final String HTTP_CONNECTION_PROMISE_CONTEXT_KEY = "org.eclipse.jetty.client.connection.promise";
@@ -44,6 +45,7 @@ public interface HttpClientTransport extends ClientConnectionFactory
      *
      * @param client the {@link HttpClient} that uses this transport.
      */
+    @Override
     public void setHttpClient(HttpClient client);
 
     /**
@@ -52,7 +54,7 @@ public interface HttpClientTransport extends ClientConnectionFactory
      * @param request the request that triggers the creation of the Origin
      * @return an Origin that identifies a destination
      */
-    public Origin newOrigin(HttpRequest request);
+    public Origin newOrigin(Request request);
 
     /**
      * Creates a new, transport-specific, {@link HttpDestination} object.
@@ -63,7 +65,7 @@ public interface HttpClientTransport extends ClientConnectionFactory
      * @param origin the destination origin
      * @return a new, transport-specific, {@link HttpDestination} object
      */
-    public HttpDestination newHttpDestination(Origin origin);
+    public Destination newDestination(Origin origin);
 
     /**
      * Establishes a physical connection to the given {@code address}.
@@ -95,6 +97,7 @@ public interface HttpClientTransport extends ClientConnectionFactory
     public ConnectionPool.Factory getConnectionPoolFactory();
 
     /**
+     * Set the factory for ConnectionPool instances.
      * @param factory the factory for ConnectionPool instances
      */
     public void setConnectionPoolFactory(ConnectionPool.Factory factory);

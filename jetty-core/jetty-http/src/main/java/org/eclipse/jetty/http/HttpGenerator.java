@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -18,8 +18,6 @@ import java.nio.BufferOverflowException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.function.Supplier;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 import org.eclipse.jetty.http.HttpTokens.EndOfContent;
 import org.eclipse.jetty.util.BufferUtil;
@@ -43,12 +41,14 @@ public class HttpGenerator
     private static final Logger LOG = LoggerFactory.getLogger(HttpGenerator.class);
 
     public static final boolean __STRICT = Boolean.getBoolean("org.eclipse.jetty.http.HttpGenerator.STRICT");
-
     private static final byte[] __colon_space = new byte[]{':', ' '};
-    public static final MetaData.Response CONTINUE_100_INFO = new MetaData.Response(HttpVersion.HTTP_1_1, 100, null, null, -1);
-    public static final MetaData.Response PROGRESS_102_INFO = new MetaData.Response(HttpVersion.HTTP_1_1, 102, null, null, -1);
-    public static final MetaData.Response RESPONSE_500_INFO =
-        new MetaData.Response(HttpVersion.HTTP_1_1, INTERNAL_SERVER_ERROR_500, null, HttpFields.build().add(HttpFields.CONNECTION_CLOSE), 0);
+    public static final MetaData.Response CONTINUE_100_INFO = new MetaData.Response(100, null, HttpVersion.HTTP_1_1, HttpFields.EMPTY);
+    private static final Index<Boolean> ASSUMED_CONTENT_METHODS = new Index.Builder<Boolean>()
+        .caseSensitive(false)
+        .with(HttpMethod.POST.asString(), Boolean.TRUE)
+        .with(HttpMethod.PUT.asString(), Boolean.TRUE)
+        .build();
+    public static final int CHUNK_SIZE = 12;
 
     // states
     public enum State
@@ -73,44 +73,17 @@ public class HttpGenerator
         DONE                    // The current phase of generation is complete
     }
 
-    // other statics
-    public static final int CHUNK_SIZE = 12;
-
     private State _state = State.START;
     private EndOfContent _endOfContent = EndOfContent.UNKNOWN_CONTENT;
     private MetaData _info;
-
     private long _contentPrepared = 0;
     private boolean _noContentResponse = false;
     private Boolean _persistent = null;
-
-    private final int _send;
-    private static final int SEND_SERVER = 0x01;
-    private static final int SEND_XPOWEREDBY = 0x02;
-    private static final Index<Boolean> ASSUMED_CONTENT_METHODS = new Index.Builder<Boolean>()
-        .caseSensitive(false)
-        .with(HttpMethod.POST.asString(), Boolean.TRUE)
-        .with(HttpMethod.PUT.asString(), Boolean.TRUE)
-        .build();
-
-    public static void setJettyVersion(String serverVersion)
-    {
-        SEND[SEND_SERVER] = StringUtil.getBytes("Server: " + serverVersion + "\r\n");
-        SEND[SEND_XPOWEREDBY] = StringUtil.getBytes("X-Powered-By: " + serverVersion + "\r\n");
-        SEND[SEND_SERVER | SEND_XPOWEREDBY] = StringUtil.getBytes("Server: " + serverVersion + "\r\nX-Powered-By: " + serverVersion + "\r\n");
-    }
-
-    // data
     private boolean _needCRLF = false;
+    private int _maxHeaderBytes;
 
     public HttpGenerator()
     {
-        this(false, false);
-    }
-
-    public HttpGenerator(boolean sendServerVersion, boolean sendXPoweredBy)
-    {
-        _send = (sendServerVersion ? SEND_SERVER : 0) | (sendXPoweredBy ? SEND_XPOWEREDBY : 0);
     }
 
     public void reset()
@@ -122,6 +95,16 @@ public class HttpGenerator
         _persistent = null;
         _contentPrepared = 0;
         _needCRLF = false;
+    }
+
+    public int getMaxHeaderBytes()
+    {
+        return _maxHeaderBytes;
+    }
+
+    public void setMaxHeaderBytes(int maxHeaderBytes)
+    {
+        _maxHeaderBytes = maxHeaderBytes;
     }
 
     public State getState()
@@ -214,15 +197,15 @@ public class HttpGenerator
                 int pos = BufferUtil.flipToFill(header);
                 try
                 {
-                    // generate ResponseLine
+                    // generate request line
                     generateRequestLine(info, header);
 
                     if (info.getHttpVersion() == HttpVersion.HTTP_0_9)
-                        throw new BadMessageException(INTERNAL_SERVER_ERROR_500, "HTTP/0.9 not supported");
+                        throw new HttpException.RuntimeException(INTERNAL_SERVER_ERROR_500, "HTTP/0.9 not supported");
 
                     generateHeaders(header, content, last);
 
-                    boolean expect100 = info.getFields().contains(HttpHeader.EXPECT, HttpHeaderValue.CONTINUE.asString());
+                    boolean expect100 = info.getHttpFields().contains(HttpHeader.EXPECT, HttpHeaderValue.CONTINUE.asString());
 
                     if (expect100)
                     {
@@ -243,10 +226,6 @@ public class HttpGenerator
 
                     return Result.FLUSH;
                 }
-                catch (BadMessageException e)
-                {
-                    throw e;
-                }
                 catch (BufferOverflowException e)
                 {
                     LOG.trace("IGNORED", e);
@@ -254,7 +233,9 @@ public class HttpGenerator
                 }
                 catch (Exception e)
                 {
-                    throw new BadMessageException(INTERNAL_SERVER_ERROR_500, e.getMessage(), e);
+                    if (e instanceof HttpException)
+                        throw e;
+                    throw new HttpException.RuntimeException(INTERNAL_SERVER_ERROR_500, e.getMessage(), e);
                 }
                 finally
                 {
@@ -323,7 +304,7 @@ public class HttpGenerator
 
         if (isChunking())
         {
-            Supplier<HttpFields> trailersSupplier = _info.getTrailerSupplier();
+            Supplier<HttpFields> trailersSupplier = _info.getTrailersSupplier();
             if (trailersSupplier != null)
             {
                 // Do we need a chunk buffer?
@@ -370,7 +351,7 @@ public class HttpGenerator
 
                 HttpVersion version = info.getHttpVersion();
                 if (version == null)
-                    throw new BadMessageException(INTERNAL_SERVER_ERROR_500, "No version");
+                    throw new HttpException.RuntimeException(INTERNAL_SERVER_ERROR_500, "No version");
 
                 if (version == HttpVersion.HTTP_0_9)
                 {
@@ -402,7 +383,7 @@ public class HttpGenerator
                         {
                             case HttpStatus.SWITCHING_PROTOCOLS_101:
                                 break;
-                            case HttpStatus.EARLY_HINT_103:
+                            case HttpStatus.EARLY_HINTS_103:
                                 generateHeaders(header, content, last);
                                 _state = State.COMPLETING_1XX;
                                 return Result.FLUSH;
@@ -429,10 +410,6 @@ public class HttpGenerator
                     }
                     _state = last ? State.COMPLETING : State.COMMITTED;
                 }
-                catch (BadMessageException e)
-                {
-                    throw e;
-                }
                 catch (BufferOverflowException e)
                 {
                     LOG.trace("IGNORED", e);
@@ -440,7 +417,9 @@ public class HttpGenerator
                 }
                 catch (Exception e)
                 {
-                    throw new BadMessageException(INTERNAL_SERVER_ERROR_500, e.getMessage(), e);
+                    if (e instanceof HttpException)
+                        throw e;
+                    throw new HttpException.RuntimeException(INTERNAL_SERVER_ERROR_500, e.getMessage(), e);
                 }
                 finally
                 {
@@ -529,7 +508,7 @@ public class HttpGenerator
     {
         header.put(StringUtil.getBytes(request.getMethod()));
         header.put((byte)' ');
-        header.put(StringUtil.getBytes(request.getURIString()));
+        header.put(StringUtil.getBytes(request.getHttpURI().toString()));
         header.put((byte)' ');
         header.put(request.getHttpVersion().toBytes());
         header.put(HttpTokens.CRLF);
@@ -543,7 +522,7 @@ public class HttpGenerator
         String reason = response.getReason();
         if (preprepared != null)
         {
-            if (reason == null)
+            if (reason == null || preprepared._reason.equals(reason))
                 header.put(preprepared._responseLine);
             else
             {
@@ -593,21 +572,24 @@ public class HttpGenerator
         if (LOG.isDebugEnabled())
         {
             LOG.debug("generateHeaders {} last={} content={}", _info, last, BufferUtil.toDetailString(content));
-            LOG.debug(_info.getFields().toString());
+            LOG.debug(_info.getHttpFields().toString());
         }
 
         // default field values
-        int send = _send;
         HttpField transferEncoding = null;
+        HttpField connection = null;
+        boolean http10 = _info.getHttpVersion() == HttpVersion.HTTP_1_0;
         boolean http11 = _info.getHttpVersion() == HttpVersion.HTTP_1_1;
-        boolean close = false;
-        boolean chunkedHint = _info.getTrailerSupplier() != null;
+        boolean connectionClose = false;
+        boolean connectionKeepAlive = false;
+        boolean connectionUpgrade = false;
+        boolean chunkedHint = _info.getTrailersSupplier() != null;
         boolean contentType = false;
         long contentLength = _info.getContentLength();
         boolean contentLengthField = false;
 
         // Generate fields
-        HttpFields fields = _info.getFields();
+        HttpFields fields = _info.getHttpFields();
         if (fields != null)
         {
             int n = fields.size();
@@ -616,77 +598,61 @@ public class HttpGenerator
                 HttpField field = fields.getField(f);
                 HttpHeader h = field.getHeader();
                 if (h == null)
+                {
                     putTo(field, header);
+                }
                 else
                 {
                     switch (h)
                     {
-                        case CONTENT_LENGTH:
+                        case CONTENT_LENGTH ->
+                        {
                             if (contentLength < 0)
                                 contentLength = field.getLongValue();
                             else if (contentLength != field.getLongValue())
-                                throw new BadMessageException(INTERNAL_SERVER_ERROR_500, String.format("Incorrect Content-Length %d!=%d", contentLength, field.getLongValue()));
+                                throw new HttpException.RuntimeException(INTERNAL_SERVER_ERROR_500, String.format("Incorrect Content-Length %d!=%d", contentLength, field.getLongValue()));
                             contentLengthField = true;
-                            break;
-
-                        case CONTENT_TYPE:
+                        }
+                        case CONTENT_TYPE ->
                         {
                             // write the field to the header
                             contentType = true;
                             putTo(field, header);
-                            break;
                         }
-
-                        case TRANSFER_ENCODING:
+                        case TRANSFER_ENCODING ->
                         {
                             if (http11)
                             {
                                 // Don't add yet, treat this only as a hint that there is content
                                 // with a preference to chunk if we can
-                                transferEncoding = field;
-                                chunkedHint = field.contains(HttpHeaderValue.CHUNKED.asString());
+                                if (transferEncoding == null)
+                                    transferEncoding = field;
+                                else
+                                    transferEncoding = transferEncoding.withValues(field.getValues());
+                                chunkedHint |= field.contains(HttpHeaderValue.CHUNKED.asString());
                             }
-                            break;
                         }
-
-                        case CONNECTION:
+                        case CONNECTION ->
                         {
-                            boolean keepAlive = field.contains(HttpHeaderValue.KEEP_ALIVE.asString());
-                            if (keepAlive && _info.getHttpVersion() == HttpVersion.HTTP_1_0 && _persistent == null)
-                            {
-                                _persistent = true;
-                            }
-                            if (field.contains(HttpHeaderValue.CLOSE.asString()))
-                            {
-                                close = true;
-                                _persistent = false;
-                            }
-                            if (keepAlive && _persistent == Boolean.FALSE)
-                            {
-                                field = new HttpField(HttpHeader.CONNECTION,
-                                    Stream.of(field.getValues()).filter(s -> !HttpHeaderValue.KEEP_ALIVE.is(s))
-                                        .collect(Collectors.joining(", ")));
-                            }
-                            putTo(field, header);
-                            break;
-                        }
+                            // Save to connection field for processing when all other fields are known
+                            if (connection == null)
+                                connection = field;
+                            else
+                                connection = connection.withValues(field.getValues());
 
-                        case SERVER:
-                        {
-                            send = send & ~SEND_SERVER;
-                            putTo(field, header);
-                            break;
+                            connectionClose |= field.contains(HttpHeaderValue.CLOSE.asString());
+                            connectionKeepAlive |= field.contains(HttpHeaderValue.KEEP_ALIVE.asString());
+                            connectionUpgrade |= field.contains(HttpHeaderValue.UPGRADE.asString());
                         }
-
-                        default:
-                            putTo(field, header);
+                        default -> putTo(field, header);
                     }
                 }
+                checkMaxHeaderBytes(header);
             }
         }
 
         // Can we work out the content length?
-        if (last && contentLength < 0 && _info.getTrailerSupplier() == null)
+        if (last && contentLength < 0 && _info.getTrailersSupplier() == null)
             contentLength = _contentPrepared + BufferUtil.length(content);
 
         // Calculate how to end _content and connection, _content length and transfer encoding
@@ -696,8 +662,112 @@ public class HttpGenerator
         boolean assumedContent = assumedContentRequest || contentType || chunkedHint;
         boolean noContentRequest = request != null && contentLength <= 0 && !assumedContent;
 
-        if (_persistent == null)
-            _persistent = http11 || (request != null && HttpMethod.CONNECT.is(request.getMethod()));
+        // Handle CONNECT requests.
+        if (request != null && HttpMethod.CONNECT.is(request.getMethod()))
+        {
+            _persistent = true;
+            if (http10 && !connectionKeepAlive)
+                connectionKeepAlive = true;
+            if (connectionClose)
+                connectionClose = false;
+        }
+        // Handle Upgrade responses.
+        if (request != null && connectionUpgrade)
+        {
+            _persistent = true;
+            if (connectionClose)
+            {
+                connection = connection.withoutValue(HttpHeaderValue.CLOSE.asString());
+                connectionClose = false;
+            }
+        }
+
+        // Handle persistence and adjust connection header if necessary.
+        if (http11)
+        {
+            // Don't use keepAlive
+            if (connectionKeepAlive)
+            {
+                connection = connection.withoutValue(HttpHeaderValue.KEEP_ALIVE.asString());
+                connectionKeepAlive = false;
+            }
+
+            if (_persistent == null)
+            {
+                // Default to persistent unless explicitly closed
+                _persistent = !connectionClose;
+            }
+            else if (_persistent)
+            {
+                if (connectionClose)
+                    _persistent = false;
+            }
+            else
+            {
+                if (!connectionClose)
+                {
+                    if (connection == null)
+                        connection = CONNECTION_CLOSE;
+                    else
+                        connection = connection.withValue(HttpHeaderValue.CLOSE.asString());
+                    connectionClose = true;
+                }
+            }
+        }
+        else if (http10)
+        {
+            if (_persistent == null)
+            {
+                // If persistence has not been set, then it must be explicitly requested with keep-alive, or a connect request
+                if (connectionClose)
+                {
+                    _persistent = false;
+                    if (connectionKeepAlive)
+                    {
+                        connection = connection.withoutValue(HttpHeaderValue.KEEP_ALIVE.asString());
+                        connectionKeepAlive = false;
+                    }
+                }
+                else
+                {
+                    _persistent = connectionKeepAlive;
+                }
+            }
+            else if (_persistent)
+            {
+                if (connectionClose)
+                {
+                    _persistent = false;
+                    if (connectionKeepAlive)
+                    {
+                        connection = connection.withoutValue(HttpHeaderValue.KEEP_ALIVE.asString());
+                        connectionKeepAlive = false;
+                    }
+                }
+                else if (!connectionKeepAlive)
+                {
+                    if (connection == null)
+                        connection = CONNECTION_KEEP_ALIVE;
+                    else
+                        connection = connection.withValue(HttpHeaderValue.KEEP_ALIVE.asString());
+                    connectionKeepAlive = true;
+                }
+            }
+            else
+            {
+                if (connectionKeepAlive)
+                {
+                    connection = connection.withoutValue(HttpHeaderValue.KEEP_ALIVE.asString());
+                    connectionKeepAlive = false;
+                }
+            }
+        }
+        else
+        {
+            _persistent = false;
+        }
+
+        // Work out how the message will be framed:
 
         // If the message is known not to have content
         if (_noContentResponse || noContentRequest)
@@ -707,7 +777,7 @@ public class HttpGenerator
 
             // But it is an error if there actually is content
             if (_contentPrepared > 0)
-                throw new BadMessageException(INTERNAL_SERVER_ERROR_500, "Content for no content response");
+                throw new HttpException.RuntimeException(INTERNAL_SERVER_ERROR_500, "Content for no content response");
 
             if (contentLengthField)
             {
@@ -722,7 +792,7 @@ public class HttpGenerator
                         content.clear();
                     }
                     else
-                        throw new BadMessageException(INTERNAL_SERVER_ERROR_500, "Content for no content response");
+                        throw new HttpException.RuntimeException(INTERNAL_SERVER_ERROR_500, "Content for no content response");
                 }
             }
         }
@@ -747,9 +817,9 @@ public class HttpGenerator
                 transferEncoding = null;
             }
             else
-                throw new BadMessageException(INTERNAL_SERVER_ERROR_500, "Bad Transfer-Encoding");
+                throw new HttpException.RuntimeException(INTERNAL_SERVER_ERROR_500, "Bad Transfer-Encoding");
         }
-        // Else if we known the content length and are a request or a persistent response, 
+        // Else if we know the content length and are a request or a persistent response,
         else if (contentLength >= 0 && (request != null || _persistent))
         {
             // Use the content length 
@@ -765,18 +835,39 @@ public class HttpGenerator
             if (contentLength >= 0 && (contentLength > 0 || assumedContent || contentLengthField))
                 putContentLength(header, contentLength);
 
-            if (http11 && !close)
-                header.put(CONNECTION_CLOSE);
+            if (http11)
+            {
+                if (!connectionClose)
+                {
+                    if (connection == null)
+                        connection = CONNECTION_CLOSE;
+                    else
+                        connection = connection.withValue(HttpHeaderValue.CLOSE.asString());
+                    connectionClose = true;
+                }
+            }
+            else if (http10)
+            {
+                if (connectionKeepAlive)
+                {
+                    connection = connection.withoutValue(HttpHeaderValue.KEEP_ALIVE.asString());
+                    connectionKeepAlive = false;
+                }
+            }
         }
         // Else we must be a request
         else
         {
             // with no way to indicate body length
-            throw new BadMessageException(INTERNAL_SERVER_ERROR_500, "Unknown content length for request");
+            throw new HttpException.RuntimeException(INTERNAL_SERVER_ERROR_500, "Unknown content length for request");
         }
 
         if (LOG.isDebugEnabled())
-            LOG.debug(_endOfContent.toString());
+            LOG.debug("endOfContent {} content-Length {}", _endOfContent.toString(), contentLength);
+
+        // Add the connection header if we have one
+        if (connection != null)
+            putTo(connection, header);
 
         // Add transfer encoding if it is not chunking
         if (transferEncoding != null)
@@ -794,19 +885,25 @@ public class HttpGenerator
             }
         }
 
-        // Send server?
-        int status = response != null ? response.getStatus() : -1;
-        if (status > 199)
-            header.put(SEND[send]);
-
         // end the header.
         header.put(HttpTokens.CRLF);
+
+        checkMaxHeaderBytes(header);
+    }
+
+    private void checkMaxHeaderBytes(ByteBuffer header)
+    {
+        int maxHeaderBytes = getMaxHeaderBytes();
+        if (maxHeaderBytes > 0 && header.position() > maxHeaderBytes)
+            throw new BufferOverflowException();
     }
 
     private static void putContentLength(ByteBuffer header, long contentLength)
     {
         if (contentLength == 0)
+        {
             header.put(CONTENT_LENGTH_0);
+        }
         else
         {
             header.put(HttpHeader.CONTENT_LENGTH.getBytesColonSpace());
@@ -815,11 +912,9 @@ public class HttpGenerator
         }
     }
 
+    @Deprecated(forRemoval = true)
     public static byte[] getReasonBuffer(int code)
     {
-        PreparedResponse status = code < __preprepared.length ? __preprepared[code] : null;
-        if (status != null)
-            return status._reason;
         return null;
     }
 
@@ -836,22 +931,24 @@ public class HttpGenerator
     private static final byte[] ZERO_CHUNK = {(byte)'0', (byte)'\r', (byte)'\n'};
     private static final byte[] LAST_CHUNK = {(byte)'0', (byte)'\r', (byte)'\n', (byte)'\r', (byte)'\n'};
     private static final byte[] CONTENT_LENGTH_0 = StringUtil.getBytes("Content-Length: 0\r\n");
-    private static final byte[] CONNECTION_CLOSE = StringUtil.getBytes("Connection: close\r\n");
+    private static final HttpField CONNECTION_KEEP_ALIVE = new PreEncodedHttpField(HttpHeader.CONNECTION, HttpHeaderValue.KEEP_ALIVE.asString());
+    private static final HttpField CONNECTION_CLOSE = new PreEncodedHttpField(HttpHeader.CONNECTION, HttpHeaderValue.CLOSE.asString());
     private static final byte[] HTTP_1_1_SPACE = StringUtil.getBytes(HttpVersion.HTTP_1_1 + " ");
     private static final byte[] TRANSFER_ENCODING_CHUNKED = StringUtil.getBytes("Transfer-Encoding: chunked\r\n");
-    private static final byte[][] SEND = new byte[][]{
-        new byte[0],
-        StringUtil.getBytes("Server: Jetty(10.x.x)\r\n"),
-        StringUtil.getBytes("X-Powered-By: Jetty(10.x.x)\r\n"),
-        StringUtil.getBytes("Server: Jetty(10.x.x)\r\nX-Powered-By: Jetty(10.x.x)\r\n")
-    };
 
     // Build cache of response lines for status
     private static class PreparedResponse
     {
-        byte[] _reason;
-        byte[] _schemeCode;
-        byte[] _responseLine;
+        final String _reason;
+        final byte[] _schemeCode;
+        final byte[] _responseLine;
+
+        private PreparedResponse(String reason, byte[] schemeCode, byte[] responseLine)
+        {
+            _reason = reason;
+            _schemeCode = schemeCode;
+            _responseLine = responseLine;
+        }
     }
 
     private static final PreparedResponse[] __preprepared = new PreparedResponse[HttpStatus.MAX_CODE + 1];
@@ -868,7 +965,7 @@ public class HttpGenerator
             String reason = code.getMessage();
             byte[] line = new byte[versionLength + 5 + reason.length() + 2];
             HttpVersion.HTTP_1_1.toBuffer().get(line, 0, versionLength);
-            line[versionLength + 0] = ' ';
+            line[versionLength] = ' ';
             line[versionLength + 1] = (byte)('0' + i / 100);
             line[versionLength + 2] = (byte)('0' + (i % 100) / 10);
             line[versionLength + 3] = (byte)('0' + (i % 10));
@@ -880,10 +977,7 @@ public class HttpGenerator
             line[versionLength + 5 + reason.length()] = HttpTokens.CARRIAGE_RETURN;
             line[versionLength + 6 + reason.length()] = HttpTokens.LINE_FEED;
 
-            __preprepared[i] = new PreparedResponse();
-            __preprepared[i]._schemeCode = Arrays.copyOfRange(line, 0, versionLength + 5);
-            __preprepared[i]._reason = Arrays.copyOfRange(line, versionLength + 5, line.length - 2);
-            __preprepared[i]._responseLine = line;
+            __preprepared[i] = new PreparedResponse(reason, Arrays.copyOfRange(line, 0, versionLength + 5), line);
         }
     }
 
@@ -894,7 +988,7 @@ public class HttpGenerator
         {
             char c = s.charAt(i);
 
-            if (c < 0 || c > 0xff || c == '\r' || c == '\n' || c == ':')
+            if (c > 0xff || c == '\r' || c == '\n' || c == ':')
                 buffer.put((byte)'?');
             else
                 buffer.put((byte)(0xff & c));
@@ -908,7 +1002,7 @@ public class HttpGenerator
         {
             char c = s.charAt(i);
 
-            if (c < 0 || c > 0xff || c == '\r' || c == '\n')
+            if (c > 0xff || c == '\r' || c == '\n')
                 buffer.put((byte)' ');
             else
                 buffer.put((byte)(0xff & c));
@@ -921,7 +1015,7 @@ public class HttpGenerator
         {
             ((PreEncodedHttpField)field).putTo(bufferInFillMode, HttpVersion.HTTP_1_0);
         }
-        else
+        else if (field != null)
         {
             HttpHeader header = field.getHeader();
             if (header != null)

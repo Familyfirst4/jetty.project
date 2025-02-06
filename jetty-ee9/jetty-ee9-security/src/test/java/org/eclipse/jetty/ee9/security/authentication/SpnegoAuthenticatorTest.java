@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -80,7 +80,7 @@ public class SpnegoAuthenticatorTest
         };
         Request req = channel.getRequest();
         Response res = channel.getResponse();
-        MetaData.Request metadata = new MetaData.Request(null, HttpURI.build("http://localhost"), null, HttpFields.EMPTY);
+        MetaData.Request metadata = new MetaData.Request("GET", HttpURI.build("http://localhost"), null, HttpFields.EMPTY);
         req.setMetaData(metadata);
 
         assertThat(channel.getState().handling(), is(HttpChannelState.Action.DISPATCH));
@@ -148,7 +148,7 @@ public class SpnegoAuthenticatorTest
 
         // Create a bogus Authorization header. We don't care about the actual credentials.
 
-        MetaData.Request metadata = new MetaData.Request(null, HttpURI.build("http://localhost"), null,
+        MetaData.Request metadata = new MetaData.Request("GET", HttpURI.build("http://localhost"), null,
             HttpFields.build().add(HttpHeader.AUTHORIZATION, "Basic asdf"));
         req.setMetaData(metadata);
 

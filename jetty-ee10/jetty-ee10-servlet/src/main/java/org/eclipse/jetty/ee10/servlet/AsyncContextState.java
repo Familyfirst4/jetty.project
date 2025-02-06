@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -27,16 +27,16 @@ import jakarta.servlet.http.HttpServletResponse;
 
 public class AsyncContextState implements AsyncContext
 {
-    volatile ServletRequestState _state;
+    volatile ServletChannelState _state;
 
-    public AsyncContextState(ServletRequestState state)
+    public AsyncContextState(ServletChannelState state)
     {
         _state = state;
     }
 
-    ServletRequestState state()
+    ServletChannelState state()
     {
-        ServletRequestState state = _state;
+        ServletChannelState state = _state;
         if (state == null)
             throw new IllegalStateException("AsyncContext completed and/or Request lifecycle recycled");
         return state;
@@ -116,8 +116,8 @@ public class AsyncContextState implements AsyncContext
         ServletRequest servletRequest = getRequest();
         ServletResponse servletResponse = getResponse();
         ServletChannel servletChannel = _state.getServletChannel();
-        HttpServletRequest originalHttpServletRequest = servletChannel.getRequest().getHttpServletRequest();
-        HttpServletResponse originalHttpServletResponse = servletChannel.getResponse().getHttpServletResponse();
+        HttpServletRequest originalHttpServletRequest = servletChannel.getServletContextRequest().getServletApiRequest();
+        HttpServletResponse originalHttpServletResponse = servletChannel.getServletContextResponse().getServletApiResponse();
         return (servletRequest == originalHttpServletRequest && servletResponse == originalHttpServletResponse);
     }
 
@@ -141,17 +141,12 @@ public class AsyncContextState implements AsyncContext
             {
                 task.run();
             }
-        });
+        }, _state.getServletChannel().getRequest());
     }
 
     public void reset()
     {
         _state = null;
-    }
-
-    public ServletRequestState getServletChannelState()
-    {
-        return state();
     }
 
     public static class WrappedAsyncListener implements AsyncListener

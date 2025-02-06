@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -37,9 +37,10 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.eclipse.jetty.client.ContinueProtocolHandler;
 import org.eclipse.jetty.client.HttpClient;
 import org.eclipse.jetty.client.ProtocolHandlers;
-import org.eclipse.jetty.client.api.Request;
-import org.eclipse.jetty.client.api.Response;
-import org.eclipse.jetty.client.dynamic.HttpClientTransportDynamic;
+import org.eclipse.jetty.client.Request;
+import org.eclipse.jetty.client.Response;
+import org.eclipse.jetty.client.transport.HttpClientTransportDynamic;
+import org.eclipse.jetty.http.HttpCookieStore;
 import org.eclipse.jetty.http.HttpField;
 import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpHeader;
@@ -47,7 +48,6 @@ import org.eclipse.jetty.http.HttpHeaderValue;
 import org.eclipse.jetty.http.HttpScheme;
 import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.io.ClientConnector;
-import org.eclipse.jetty.util.HttpCookieStore;
 import org.eclipse.jetty.util.StringUtil;
 import org.eclipse.jetty.util.ssl.SslContextFactory;
 import org.eclipse.jetty.util.thread.QueuedThreadPool;
@@ -255,6 +255,11 @@ public abstract class AbstractProxyServlet extends HttpServlet
      * <td>The response buffer size, see {@link HttpClient#setResponseBufferSize(int)}</td>
      * </tr>
      * <tr>
+     * <td>maxResponseHeadersSize</td>
+     * <td>HttpClient's default</td>
+     * <td>The maximum response headers size, see {@link HttpClient#setMaxResponseHeadersSize(int)}</td>
+     * </tr>
+     * <tr>
      * <td>selectors</td>
      * <td>cores / 2</td>
      * <td>The number of NIO selectors used by {@link HttpClient}</td>
@@ -276,7 +281,7 @@ public abstract class AbstractProxyServlet extends HttpServlet
         client.setFollowRedirects(false);
 
         // Must not store cookies, otherwise cookies of different clients will mix.
-        client.setCookieStore(new HttpCookieStore.Empty());
+        client.setHttpCookieStore(new HttpCookieStore.Empty());
 
         Executor executor;
         String value = config.getInitParameter("maxThreads");
@@ -321,6 +326,10 @@ public abstract class AbstractProxyServlet extends HttpServlet
         value = config.getInitParameter("responseBufferSize");
         if (value != null)
             client.setResponseBufferSize(Integer.parseInt(value));
+
+        value = config.getInitParameter("maxResponseHeadersSize");
+        if (value != null)
+            client.setMaxResponseHeadersSize(Integer.parseInt(value));
 
         try
         {
@@ -456,9 +465,12 @@ public abstract class AbstractProxyServlet extends HttpServlet
 
     protected boolean hasContent(HttpServletRequest clientRequest)
     {
-        return clientRequest.getContentLength() > 0 ||
-            clientRequest.getContentType() != null ||
-            clientRequest.getHeader(HttpHeader.TRANSFER_ENCODING.asString()) != null;
+        long contentLength = clientRequest.getContentLengthLong();
+        if (contentLength == 0)
+            return false;
+        if (contentLength > 0)
+            return true;
+        return clientRequest.getHeader(HttpHeader.TRANSFER_ENCODING.asString()) != null;
     }
 
     protected boolean expects100Continue(HttpServletRequest request)
@@ -638,12 +650,13 @@ public abstract class AbstractProxyServlet extends HttpServlet
 
     protected void onClientRequestFailure(HttpServletRequest clientRequest, Request proxyRequest, HttpServletResponse proxyResponse, Throwable failure)
     {
-        boolean aborted = proxyRequest.abort(failure);
-        if (!aborted)
+        proxyRequest.abort(failure).whenComplete((aborted, x) ->
         {
+            if (aborted)
+                return;
             int status = clientRequestStatus(failure);
             sendProxyResponseError(clientRequest, proxyResponse, status);
-        }
+        });
     }
 
     protected int clientRequestStatus(Throwable failure)
@@ -663,7 +676,7 @@ public abstract class AbstractProxyServlet extends HttpServlet
                 continue;
 
             String newHeaderValue = filterServerResponseHeader(clientRequest, serverResponse, headerName, field.getValue());
-            if (newHeaderValue == null || newHeaderValue.trim().length() == 0)
+            if (newHeaderValue == null)
                 continue;
 
             proxyResponse.addHeader(headerName, newHeaderValue);
@@ -711,7 +724,7 @@ public abstract class AbstractProxyServlet extends HttpServlet
     protected void onProxyResponseFailure(HttpServletRequest clientRequest, HttpServletResponse proxyResponse, Response serverResponse, Throwable failure)
     {
         if (_log.isDebugEnabled())
-            _log.debug(getRequestId(clientRequest) + " proxying failed", failure);
+            _log.debug("{} proxying failed", getRequestId(clientRequest), failure);
 
         int status = proxyResponseStatus(failure);
         int serverStatus = serverResponse == null ? status : serverResponse.getStatus();
@@ -762,22 +775,21 @@ public abstract class AbstractProxyServlet extends HttpServlet
         }
     }
 
-    protected void onContinue(HttpServletRequest clientRequest, Request proxyRequest)
+    protected Runnable onContinue(HttpServletRequest clientRequest, Request proxyRequest)
     {
-        if (_log.isDebugEnabled())
-            _log.debug("{} handling 100 Continue", getRequestId(clientRequest));
+        return null;
     }
 
     /**
      * <p>Utility class that implement transparent proxy functionalities.</p>
      * <p>Configuration parameters:</p>
      * <ul>
-     * <li>{@code proxyTo} - a mandatory URI like http://host:80/context to which the request is proxied.</li>
+     * <li>{@code proxyTo} - a mandatory URI like {@code http://host:80/context} to which the request is proxied.</li>
      * <li>{@code prefix} - an optional URI prefix that is stripped from the start of the forwarded URI.</li>
      * </ul>
      * <p>For example, if a request is received at "/foo/bar", the {@code proxyTo} parameter is
-     * "http://host:80/context" and the {@code prefix} parameter is "/foo", then the request would
-     * be proxied to "http://host:80/context/bar".
+     * {@code http://host:80/context} and the {@code prefix} parameter is "/foo", then the request would
+     * be proxied to {@code http://host:80/context/bar}.
      */
     protected static class TransparentDelegate
     {
@@ -809,7 +821,7 @@ public abstract class AbstractProxyServlet extends HttpServlet
             _prefix = _prefix == null ? contextPath : (contextPath + _prefix);
 
             if (proxyServlet._log.isDebugEnabled())
-                proxyServlet._log.debug(config.getServletName() + " @ " + _prefix + " to " + _proxyTo);
+                proxyServlet._log.debug("{} @ {} to {}", config.getServletName(), _prefix, _proxyTo);
         }
 
         protected String rewriteTarget(HttpServletRequest request)
@@ -850,10 +862,10 @@ public abstract class AbstractProxyServlet extends HttpServlet
     class ProxyContinueProtocolHandler extends ContinueProtocolHandler
     {
         @Override
-        protected void onContinue(Request request)
+        protected Runnable onContinue(Request request)
         {
             HttpServletRequest clientRequest = (HttpServletRequest)request.getAttributes().get(CLIENT_REQUEST_ATTRIBUTE);
-            AbstractProxyServlet.this.onContinue(clientRequest, request);
+            return AbstractProxyServlet.this.onContinue(clientRequest, request);
         }
     }
 }

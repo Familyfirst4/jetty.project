@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -24,12 +24,10 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.eclipse.jetty.ee9.nested.Authentication;
 import org.eclipse.jetty.ee9.nested.Authentication.User;
-import org.eclipse.jetty.ee9.nested.UserIdentity;
 import org.eclipse.jetty.ee9.security.Authenticator;
 import org.eclipse.jetty.ee9.security.ServerAuthException;
 import org.eclipse.jetty.ee9.security.UserAuthentication;
-import org.eclipse.jetty.server.SecureRequestCustomizer;
-import org.eclipse.jetty.util.security.Constraint;
+import org.eclipse.jetty.security.UserIdentity;
 import org.eclipse.jetty.util.ssl.SslContextFactory;
 
 /**
@@ -52,7 +50,7 @@ public class SslClientCertAuthenticator extends LoginAuthenticator
     @Override
     public String getAuthMethod()
     {
-        return Constraint.__CERT_AUTH;
+        return Authenticator.CERT_AUTH;
     }
 
     @Override
@@ -63,47 +61,39 @@ public class SslClientCertAuthenticator extends LoginAuthenticator
 
         HttpServletRequest request = (HttpServletRequest)req;
         HttpServletResponse response = (HttpServletResponse)res;
-        X509Certificate[] certs = (X509Certificate[])request.getAttribute(SecureRequestCustomizer.CERTIFICATES);
-
+        X509Certificate[] certs = (X509Certificate[])request.getAttribute("jakarta.servlet.request.X509Certificate");
         try
         {
             // Need certificates.
             if (certs != null && certs.length > 0)
             {
-
                 if (validateCerts)
-                {
                     sslContextFactory.validateCerts(certs);
-                }
 
                 for (X509Certificate cert : certs)
                 {
                     if (cert == null)
                         continue;
 
-                    Principal principal = cert.getSubjectDN();
+                    Principal principal = cert.getSubjectX500Principal();
                     if (principal == null)
-                        principal = cert.getIssuerDN();
-                    final String username = principal == null ? "clientcert" : principal.getName();
+                        principal = cert.getIssuerX500Principal();
+                    String username = principal == null ? "clientcert" : principal.getName();
 
                     UserIdentity user = login(username, "", req);
                     if (user != null)
-                    {
                         return new UserAuthentication(getAuthMethod(), user);
-                    }
+
                     // try with null password
                     user = login(username, null, req);
                     if (user != null)
-                    {
                         return new UserAuthentication(getAuthMethod(), user);
-                    }
+
                     // try with certs sig against login service as previous behaviour
-                    final char[] credential = Base64.getEncoder().encodeToString(cert.getSignature()).toCharArray();
+                    char[] credential = Base64.getEncoder().encodeToString(cert.getSignature()).toCharArray();
                     user = login(username, credential, req);
                     if (user != null)
-                    {
                         return new UserAuthentication(getAuthMethod(), user);
-                    }
                 }
             }
 
@@ -136,6 +126,7 @@ public class SslClientCertAuthenticator extends LoginAuthenticator
     }
 
     /**
+     * Set true if SSL certificates have to be validated..
      * @param validateCerts true if SSL certificates have to be validated.
      */
     public void setValidateCerts(boolean validateCerts)

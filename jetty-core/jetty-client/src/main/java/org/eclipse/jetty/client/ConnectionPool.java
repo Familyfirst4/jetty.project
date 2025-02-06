@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,15 +13,12 @@
 
 package org.eclipse.jetty.client;
 
-import java.io.Closeable;
 import java.util.concurrent.CompletableFuture;
-
-import org.eclipse.jetty.client.api.Connection;
 
 /**
  * <p>Client-side connection pool abstraction.</p>
  */
-public interface ConnectionPool extends Closeable
+public interface ConnectionPool
 {
     /**
      * Optionally pre-create up to {@code connectionCount}
@@ -43,12 +40,6 @@ public interface ConnectionPool extends Closeable
      * @return whether this ConnectionPool has no open connections
      */
     boolean isEmpty();
-
-    /**
-     * @return whether this ConnectionPool has been closed
-     * @see #close()
-     */
-    boolean isClosed();
 
     /**
      * <p>Returns an idle connection, if available;
@@ -88,9 +79,6 @@ public interface ConnectionPool extends Closeable
      */
     boolean remove(Connection connection);
 
-    @Override
-    void close();
-
     /**
      * Factory for ConnectionPool instances.
      */
@@ -102,27 +90,18 @@ public interface ConnectionPool extends Closeable
          * @param destination the destination to create the ConnectionPool for
          * @return the newly created ConnectionPool
          */
-        ConnectionPool newConnectionPool(HttpDestination destination);
+        ConnectionPool newConnectionPool(Destination destination);
     }
 
     /**
      * Marks a connection as supporting multiplexed requests.
      */
-    interface Multiplexable
+    interface MaxMultiplexable
     {
         /**
          * @return the max number of requests multiplexable on a single connection
          */
         int getMaxMultiplex();
-
-        /**
-         * @param maxMultiplex the max number of requests multiplexable on a single connection
-         * @deprecated do not use, as the maxMultiplex value is pulled, rather than pushed
-         */
-        @Deprecated
-        default void setMaxMultiplex(int maxMultiplex)
-        {
-        }
     }
 
     /**
@@ -133,6 +112,6 @@ public interface ConnectionPool extends Closeable
         /**
          * @return the max number of requests on a single connection
          */
-        int getMaxUsageCount();
+        int getMaxUsage();
     }
 }

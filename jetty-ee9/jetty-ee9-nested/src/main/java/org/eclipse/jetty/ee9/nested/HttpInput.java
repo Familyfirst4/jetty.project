@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -21,11 +21,13 @@ import java.util.concurrent.atomic.LongAdder;
 import jakarta.servlet.ReadListener;
 import jakarta.servlet.ServletInputStream;
 import org.eclipse.jetty.http.HttpFields;
-import org.eclipse.jetty.io.Content;
 import org.eclipse.jetty.server.Context;
+import org.eclipse.jetty.util.BufferUtil;
 import org.eclipse.jetty.util.Callback;
+import org.eclipse.jetty.util.ExceptionUtil;
 import org.eclipse.jetty.util.component.Destroyable;
 import org.eclipse.jetty.util.thread.AutoLock;
+import org.eclipse.jetty.util.thread.Invocable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -37,10 +39,10 @@ public class HttpInput extends ServletInputStream implements Runnable
 {
     private static final Logger LOG = LoggerFactory.getLogger(HttpInput.class);
 
-    private final HttpChannel _httpChannel;
     private final byte[] _oneByteBuffer = new byte[1];
-    private BlockingContentProducer _blockingContentProducer;
-    private AsyncContentProducer _asyncContentProducer;
+    private final BlockingContentProducer _blockingContentProducer;
+    private final AsyncContentProducer _asyncContentProducer;
+    private final HttpChannel _httpChannel;
     private final LongAdder _contentConsumed = new LongAdder();
     private volatile ContentProducer _contentProducer;
     private volatile boolean _consumedEof;
@@ -61,6 +63,7 @@ public class HttpInput extends ServletInputStream implements Runnable
             if (LOG.isDebugEnabled())
                 LOG.debug("recycle {}", this);
             _blockingContentProducer.recycle();
+            _readListener = null;
         }
     }
 
@@ -131,12 +134,32 @@ public class HttpInput extends ServletInputStream implements Runnable
         }
     }
 
-    private int get(Content.Chunk content, byte[] bytes, int offset, int length)
+    private int get(Content content, byte[] bytes, int offset, int length)
     {
         length = Math.min(content.remaining(), length);
-        content.getByteBuffer().get(bytes, offset, length);
-        _contentConsumed.add(length);
-        return length;
+        int consumed = content.get(bytes, offset, length);
+        _contentConsumed.add(consumed);
+        return consumed;
+    }
+
+    private int get(Content content, ByteBuffer des)
+    {
+        var capacity = des.remaining();
+        var src = content.getByteBuffer();
+        if (src.remaining() > capacity)
+        {
+            int limit = src.limit();
+            src.limit(src.position() + capacity);
+            des.put(src);
+            src.limit(limit);
+        }
+        else
+        {
+            des.put(src);
+        }
+        var consumed = capacity - des.remaining();
+        _contentConsumed.add(consumed);
+        return consumed;
     }
 
     public long getContentConsumed()
@@ -149,18 +172,6 @@ public class HttpInput extends ServletInputStream implements Runnable
         try (AutoLock lock = _contentProducer.lock())
         {
             return _contentProducer.getRawContentArrived();
-        }
-    }
-
-    public void releaseContent()
-    {
-        try (AutoLock lock = _contentProducer.lock())
-        {
-            if (LOG.isDebugEnabled())
-                LOG.debug("consumeAll {}", this);
-            boolean eof = _contentProducer.releaseContent();
-            if (eof)
-                _consumedEof = true;
         }
     }
 
@@ -263,6 +274,16 @@ public class HttpInput extends ServletInputStream implements Runnable
     @Override
     public int read(byte[] b, int off, int len) throws IOException
     {
+        return read(null, b, off, len);
+    }
+
+    public int read(ByteBuffer buffer) throws IOException
+    {
+        return read(buffer, null, -1, -1);
+    }
+
+    private int read(ByteBuffer buffer, byte[] b, int off, int len) throws IOException
+    {
         try (AutoLock lock = _contentProducer.lock())
         {
             // Don't try to get content if no bytes were requested to be read.
@@ -272,30 +293,27 @@ public class HttpInput extends ServletInputStream implements Runnable
             // Calculate minimum request rate for DoS protection
             _contentProducer.checkMinDataRate();
 
-            Content.Chunk content = _contentProducer.nextContent();
+            Content content = _contentProducer.nextContent();
             if (content == null)
                 throw new IllegalStateException("read on unready input");
-            if (!content.isTerminal())
+            
+            if (!content.isSpecial())
             {
-                int read = get(content, b, off, len);
+                int read = buffer == null ? get(content, b, off, len) : get(content, buffer);
                 if (LOG.isDebugEnabled())
                     LOG.debug("read produced {} byte(s) {}", read, this);
-                if (!content.hasRemaining())
+                if (content.isEmpty())
                     _contentProducer.reclaim(content);
                 return read;
             }
 
-            if (content instanceof Content.Chunk.Error errorContent)
-            {
-                Throwable error = errorContent.getCause();
-                if (LOG.isDebugEnabled())
-                    LOG.debug("read error={} {}", error, this);
-                if (error instanceof IOException)
-                    throw (IOException)error;
-                throw new IOException(error);
-            }
+            Throwable error = content.getError();
+            if (LOG.isDebugEnabled())
+                LOG.debug("read error={} {}", error, this);
+            if (error != null)
+                ExceptionUtil.ifExceptionThrowAs(IOException.class, error);
 
-            if (content == Content.Chunk.EOF)
+            if (content.isEof())
             {
                 if (LOG.isDebugEnabled())
                     LOG.debug("read at EOF, setting consumed EOF to true {}", this);
@@ -345,6 +363,18 @@ public class HttpInput extends ServletInputStream implements Runnable
         }
     }
 
+    public Invocable.InvocationType getInvocationType()
+    {
+        // This is the invocation type used for demand callbacks.
+        // If we are blocking mode, then we implement the callbacks, which just wake up the blocked application thread
+        // If we are async mode, then we need to ask the read listener (which will probably be seen as blocking as
+        // the InvocationType API is normally hidden from a web application.
+        // TODO is there another way for an app to promise its callbacks are not blocking?
+        return _readListener == null
+            ? Invocable.InvocationType.NON_BLOCKING // blocking reads have non blocking callbacks
+            : Invocable.getInvocationType(_readListener);
+    }
+
     /* Runnable */
 
     /*
@@ -354,7 +384,7 @@ public class HttpInput extends ServletInputStream implements Runnable
     @Override
     public void run()
     {
-        Content.Chunk content;
+        Content content;
         try (AutoLock lock = _contentProducer.lock())
         {
             // Call isReady() to make sure that if not ready we register for fill interest.
@@ -378,18 +408,18 @@ public class HttpInput extends ServletInputStream implements Runnable
             return;
         }
 
-        if (content.isTerminal())
+        if (content.isSpecial())
         {
-            if (content instanceof Content.Chunk.Error errorContent)
+            Throwable error = content.getError();
+            if (error != null)
             {
-                Throwable error = errorContent.getCause();
                 if (LOG.isDebugEnabled())
                     LOG.debug("running error={} {}", error, this);
                 // TODO is this necessary to add here?
                 _httpChannel.getResponse().getHttpFields().add(HttpFields.CONNECTION_CLOSE);
                 _readListener.onError(error);
             }
-            else if (content == Content.Chunk.EOF)
+            else if (content.isEof())
             {
                 try
                 {
@@ -432,9 +462,9 @@ public class HttpInput extends ServletInputStream implements Runnable
     }
 
     /**
-     * <p>{@link Content.Chunk} interceptor that can be registered using {@link #setInterceptor(Interceptor)} or
+     * <p>{@link Content} interceptor that can be registered using {@link #setInterceptor(Interceptor)} or
      * {@link #addInterceptor(Interceptor)}.
-     * When {@link Content.Chunk} instances are generated, they are passed to the registered interceptor (if any)
+     * When {@link Content} instances are generated, they are passed to the registered interceptor (if any)
      * that is then responsible for providing the actual content that is consumed by {@link #read(byte[], int, int)} and its
      * sibling methods.</p>
      * A minimal implementation could be as simple as:
@@ -459,21 +489,24 @@ public class HttpInput extends ServletInputStream implements Runnable
      * </pre>
      * Implementors of this interface must keep the following in mind:
      * <ul>
-     *     <li>Calling {@link Content.Chunk#getByteBuffer()} when {@link Content.Chunk#isTerminal()} returns <code>true</code> throws
+     *     <li>Calling {@link Content#getByteBuffer()} when {@link Content#isSpecial()} returns <code>true</code> throws
      *     {@link IllegalStateException}.</li>
-     *     <li>A {@link Content.Chunk} can both be non-special and have {@code content == Content.EOF} return <code>true</code>.</li>
-     *     <li>{@link Content.Chunk} extends {@link Callback} to manage the lifecycle of the contained byte buffer. The code calling
-     *     {@link #readFrom(Content.Chunk)} is responsible for managing the lifecycle of both the passed and the returned content
-     *     instances, once {@link ByteBuffer#hasRemaining()} returns <code>false</code> {@code HttpInput} will make sure
+     *     <li>A {@link Content} can both be non-special and have {@link Content#isEof()} return <code>true</code>.</li>
+     *     <li>{@link Content} extends {@link Callback} to manage the lifecycle of the contained byte buffer. The code calling
+     *     {@link #readFrom(Content)} is responsible for managing the lifecycle of both the passed and the returned content
+     *     instances, once {@link ByteBuffer#hasRemaining()} returns <code>false</code> {@link HttpInput} will make sure
      *     {@link Callback#succeeded()} is called, or {@link Callback#failed(Throwable)} if an error occurs.</li>
-     *     <li>After {@link #readFrom(Content.Chunk)} is called for the first time, subsequent {@link #readFrom(Content.Chunk)} calls will
+     *     <li>After {@link #readFrom(Content)} is called for the first time, subsequent {@link #readFrom(Content)} calls will
      *     occur only after the contained byte buffer is empty (see above) or at any time if the returned content was special.</li>
-     *     <li>Once {@link #readFrom(Content.Chunk)} returned a special content, subsequent calls to {@link #readFrom(Content.Chunk)} must
+     *     <li>Once {@link #readFrom(Content)} returned a special content, subsequent calls to {@link #readFrom(Content)} must
      *     always return the same special content.</li>
      *     <li>Implementations implementing both this interface and {@link Destroyable} will have their
      *     {@link Destroyable#destroy()} method called when {@link #recycle()} is called.</li>
      * </ul>
+     *
+     * @deprecated Interceptor has been removed with no replacement in the EE10 implementation
      */
+    @Deprecated(forRemoval = true)
     public interface Interceptor
     {
         /**
@@ -483,13 +516,13 @@ public class HttpInput extends ServletInputStream implements Runnable
          * unless the returned content is the passed content instance.
          * @return The intercepted content or null if interception is completed for that content.
          */
-        Content.Chunk readFrom(Content.Chunk content);
+        Content readFrom(Content content);
     }
 
     /**
      * An {@link Interceptor} that chains two other {@link Interceptor}s together.
-     * The {@link Interceptor#readFrom(Content.Chunk)} calls the previous {@link Interceptor}'s
-     * {@link Interceptor#readFrom(Content.Chunk)} and then passes any {@link Content.Chunk} returned
+     * The {@link Interceptor#readFrom(Content)} calls the previous {@link Interceptor}'s
+     * {@link Interceptor#readFrom(Content)} and then passes any {@link Content} returned
      * to the next {@link Interceptor}.
      */
     private static class ChainedInterceptor implements Interceptor, Destroyable
@@ -514,9 +547,9 @@ public class HttpInput extends ServletInputStream implements Runnable
         }
 
         @Override
-        public Content.Chunk readFrom(Content.Chunk content)
+        public Content readFrom(Content content)
         {
-            Content.Chunk c = getPrev().readFrom(content);
+            Content c = getPrev().readFrom(content);
             if (c == null)
                 return null;
             return getNext().readFrom(c);
@@ -535,6 +568,295 @@ public class HttpInput extends ServletInputStream implements Runnable
         public String toString()
         {
             return getClass().getSimpleName() + "@" + hashCode() + " [p=" + _prev + ",n=" + _next + "]";
+        }
+    }
+
+    /**
+     * A content represents the production of context bytes by {@link AsyncContentProducer#nextContent()}.
+     * There are two fundamental types of content: special and non-special.
+     * Non-special content always wraps a byte buffer that can be consumed and must be recycled once it is empty, either
+     * via {@link #succeeded()} or {@link #failed(Throwable)}.
+     * Special content indicates a special event, like EOF or an error and never wraps a byte buffer. Calling
+     * {@link #succeeded()} or {@link #failed(Throwable)} on those have no effect.
+     */
+    public static class Content implements Callback
+    {
+        public static Content asChunk(org.eclipse.jetty.io.Content.Chunk chunk)
+        {
+            if (org.eclipse.jetty.io.Content.Chunk.isFailure(chunk))
+                return new ErrorContent(chunk.getFailure());
+            if (chunk.isLast() && !chunk.hasRemaining())
+                return new EofContent();
+            Content content = new Content(chunk.getByteBuffer())
+            {
+                @Override
+                public void succeeded()
+                {
+                    chunk.release();
+                    super.succeeded();
+                }
+
+                @Override
+                public void failed(Throwable x)
+                {
+                    chunk.release();
+                    super.failed(x);
+                }
+            };
+            return chunk.isLast() ? new WrappingContent(content, true) : content;
+        }
+
+        protected final ByteBuffer _content;
+
+        public Content(ByteBuffer content)
+        {
+            _content = content;
+        }
+
+        /**
+         * Get the wrapped byte buffer. Throws {@link IllegalStateException} if the content is special.
+         * @return the wrapped byte buffer.
+         */
+        public ByteBuffer getByteBuffer()
+        {
+            return _content;
+        }
+
+        @Override
+        public InvocationType getInvocationType()
+        {
+            return InvocationType.NON_BLOCKING;
+        }
+
+        /**
+         * Read the wrapped byte buffer. Throws {@link IllegalStateException} if the content is special.
+         * @param buffer The array into which bytes are to be written.
+         * @param offset The offset within the array of the first byte to be written.
+         * @param length The maximum number of bytes to be written to the given array.
+         * @return The amount of bytes read from the buffer.
+         */
+        public int get(byte[] buffer, int offset, int length)
+        {
+            length = Math.min(_content.remaining(), length);
+            _content.get(buffer, offset, length);
+            return length;
+        }
+
+        /**
+         * Skip some bytes from the buffer. Has no effect on a special content.
+         * @param length How many bytes to skip.
+         * @return How many bytes were skipped.
+         */
+        public int skip(int length)
+        {
+            length = Math.min(_content.remaining(), length);
+            _content.position(_content.position() + length);
+            return length;
+        }
+
+        /**
+         * Check if there is at least one byte left in the buffer.
+         * Always false on a special content.
+         * @return true if there is at least one byte left in the buffer.
+         */
+        public boolean hasContent()
+        {
+            return _content.hasRemaining();
+        }
+
+        /**
+         * Get the number of bytes remaining in the buffer.
+         * Always 0 on a special content.
+         * @return the number of bytes remaining in the buffer.
+         */
+        public int remaining()
+        {
+            return _content.remaining();
+        }
+
+        /**
+         * Check if the buffer is empty.
+         * Always true on a special content.
+         * @return true if there is 0 byte left in the buffer.
+         */
+        public boolean isEmpty()
+        {
+            return !_content.hasRemaining();
+        }
+
+        /**
+         * Check if the content is special. A content is deemed special
+         * if it does not hold bytes but rather conveys a special event,
+         * like when EOF has been reached or an error has occurred.
+         * @return true if the content is special, false otherwise.
+         */
+        public boolean isSpecial()
+        {
+            return false;
+        }
+
+        /**
+         * Check if EOF was reached. Both special and non-special content
+         * can have this flag set to true but in the case of non-special content,
+         * this can be interpreted as a hint as it is always going to be followed
+         * by another content that is both special and EOF.
+         * @return true if EOF was reached, false otherwise.
+         */
+        public boolean isEof()
+        {
+            return false;
+        }
+
+        /**
+         * Get the reported error. Only special contents can have an error.
+         * @return the error or null if there is none.
+         */
+        public Throwable getError()
+        {
+            return null;
+        }
+
+        @Override
+        public String toString()
+        {
+            return String.format("%s@%x{%s,spc=%s,eof=%s,err=%s}", getClass().getSimpleName(), hashCode(),
+                BufferUtil.toDetailString(_content), isSpecial(), isEof(), getError());
+        }
+    }
+
+    /**
+     * Simple non-special content wrapper allow overriding the EOF flag.
+     */
+    public static class WrappingContent extends Content
+    {
+        private final Content _delegate;
+        private final boolean _eof;
+
+        public WrappingContent(Content delegate, boolean eof)
+        {
+            super(delegate.getByteBuffer());
+            _delegate = delegate;
+            _eof = eof;
+        }
+
+        @Override
+        public boolean isEof()
+        {
+            return _eof;
+        }
+
+        @Override
+        public void succeeded()
+        {
+            _delegate.succeeded();
+        }
+
+        @Override
+        public void failed(Throwable x)
+        {
+            _delegate.failed(x);
+        }
+
+        @Override
+        public InvocationType getInvocationType()
+        {
+            return _delegate.getInvocationType();
+        }
+    }
+
+    /**
+     * Abstract class that implements the standard special content behavior.
+     */
+    public abstract static class SpecialContent extends Content
+    {
+        public SpecialContent()
+        {
+            super(null);
+        }
+
+        @Override
+        public final ByteBuffer getByteBuffer()
+        {
+            throw new IllegalStateException(this + " has no buffer");
+        }
+
+        @Override
+        public final int get(byte[] buffer, int offset, int length)
+        {
+            throw new IllegalStateException(this + " has no buffer");
+        }
+
+        @Override
+        public final int skip(int length)
+        {
+            return 0;
+        }
+
+        @Override
+        public final boolean hasContent()
+        {
+            return false;
+        }
+
+        @Override
+        public final int remaining()
+        {
+            return 0;
+        }
+
+        @Override
+        public final boolean isEmpty()
+        {
+            return true;
+        }
+
+        @Override
+        public final boolean isSpecial()
+        {
+            return true;
+        }
+    }
+
+    /**
+     * EOF special content.
+     */
+    public static final class EofContent extends SpecialContent
+    {
+        @Override
+        public boolean isEof()
+        {
+            return true;
+        }
+
+        @Override
+        public String toString()
+        {
+            return getClass().getSimpleName();
+        }
+    }
+
+    /**
+     * Error special content.
+     */
+    public static final class ErrorContent extends SpecialContent
+    {
+        private final Throwable _error;
+
+        public ErrorContent(Throwable error)
+        {
+            _error = error;
+        }
+
+        @Override
+        public Throwable getError()
+        {
+            return _error;
+        }
+
+        @Override
+        public String toString()
+        {
+            return getClass().getSimpleName() + " [" + _error + "]";
         }
     }
 }

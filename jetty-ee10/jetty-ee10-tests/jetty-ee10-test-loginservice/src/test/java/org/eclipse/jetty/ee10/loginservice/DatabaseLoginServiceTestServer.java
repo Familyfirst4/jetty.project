@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -38,12 +38,12 @@ import org.eclipse.jetty.ee10.servlet.ServletContextHandler;
 import org.eclipse.jetty.ee10.servlet.ServletHolder;
 import org.eclipse.jetty.ee10.servlet.security.ConstraintMapping;
 import org.eclipse.jetty.ee10.servlet.security.ConstraintSecurityHandler;
-import org.eclipse.jetty.ee10.servlet.security.LoginService;
-import org.eclipse.jetty.ee10.servlet.security.authentication.BasicAuthenticator;
+import org.eclipse.jetty.security.Constraint;
+import org.eclipse.jetty.security.LoginService;
+import org.eclipse.jetty.security.authentication.BasicAuthenticator;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.toolchain.test.FS;
 import org.eclipse.jetty.util.IO;
-import org.eclipse.jetty.util.security.Constraint;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.MariaDBContainer;
@@ -75,26 +75,42 @@ public class DatabaseLoginServiceTestServer
 
     protected static File _dbRoot;
 
-    static
+    public static void beforeAll() throws Exception
     {
-        try
+        MARIA_DB =
+            new MariaDBContainer("mariadb:" + System.getProperty("mariadb.docker.version", "10.3.6"))
+            .withUsername(MARIA_DB_USER)
+            .withPassword(MARIA_DB_PASSWORD);
+        MARIA_DB = (MariaDBContainer)MARIA_DB.withInitScript("createdb.sql");
+        MARIA_DB = (MariaDBContainer)MARIA_DB.withLogConsumer(new Slf4jLogConsumer(MARIADB_LOG));
+        MARIA_DB.start();
+        MARIA_DB_URL = MARIA_DB.getJdbcUrl();
+        MARIA_DB_FULL_URL = MARIA_DB_URL + "?user=" + MARIA_DB_USER + "&password=" + MARIA_DB_PASSWORD;
+        MARIA_DB_DRIVER_CLASS = MARIA_DB.getDriverClassName();
+    }
+
+    public static void afterAll() throws Exception
+    {
+        MARIA_DB.close();
+    }
+    
+    public static class ExtendedDefaultServlet extends DefaultServlet
+    {
+        @Override
+        protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException
         {
-            MARIA_DB =
-                new MariaDBContainer("mariadb:" + System.getProperty("mariadb.docker.version", "10.3.6"))
-                .withUsername(MARIA_DB_USER)
-                .withPassword(MARIA_DB_PASSWORD);
-            MARIA_DB = (MariaDBContainer)MARIA_DB.withInitScript("createdb.sql");
-            MARIA_DB = (MariaDBContainer)MARIA_DB.withLogConsumer(new Slf4jLogConsumer(MARIADB_LOG));
-            MARIA_DB.start();
-            String containerIpAddress =  MARIA_DB.getContainerIpAddress();
-            int mariadbPort = MARIA_DB.getMappedPort(3306);
-            MARIA_DB_URL = MARIA_DB.getJdbcUrl();
-            MARIA_DB_FULL_URL = MARIA_DB_URL + "?user=" + MARIA_DB_USER + "&password=" + MARIA_DB_PASSWORD;
-            MARIA_DB_DRIVER_CLASS = MARIA_DB.getDriverClassName();
+            if (resp.getStatus() == HttpServletResponse.SC_OK)
+                return;
+            
+            super.doPost(req, resp);
         }
-        catch (Exception e)
+
+        @Override
+        protected void doPut(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException
         {
-            throw new RuntimeException(e.getMessage(), e);
+            if (resp.getStatus() == HttpServletResponse.SC_CREATED)
+                return;
+            super.doPut(req, resp);
         }
     }
     
@@ -119,12 +135,11 @@ public class DatabaseLoginServiceTestServer
             OutputStream out = null;
             if (req.getMethod().equals("PUT"))
             {
-                Path p = _resourcePath.resolve(URLDecoder.decode(req.getPathInfo(), "utf-8"));
-                
-                File file = p.toFile();
-                FS.ensureDirExists(file.getParentFile());
+                //remove leading slash from pathinfo
+                Path p = _resourcePath.resolve(URLDecoder.decode(req.getPathInfo().substring(1), "utf-8"));
+                FS.ensureDirExists(p.getParent());
 
-                out = new FileOutputStream(file);
+                out = new FileOutputStream(p.toFile());
                 res.setStatus(HttpServletResponse.SC_CREATED);
             }
 
@@ -203,10 +218,10 @@ public class DatabaseLoginServiceTestServer
 
         ConstraintSecurityHandler security = new ConstraintSecurityHandler();
 
-        Constraint constraint = new Constraint();
-        constraint.setName("auth");
-        constraint.setAuthenticate(true);
-        constraint.setRoles(new String[]{"user", "admin"});
+        Constraint constraint = new Constraint.Builder()
+            .name("auth")
+            .roles("user", "admin")
+            .build();
 
         ConstraintMapping mapping = new ConstraintMapping();
         mapping.setPathSpec("/*");
@@ -223,13 +238,13 @@ public class DatabaseLoginServiceTestServer
         ServletContextHandler root = new ServletContextHandler();
         root.setSecurityHandler(security);
         root.setContextPath("/");
-        root.setResourceBase(_resourceBase);
-        ServletHolder servletHolder = new ServletHolder(new DefaultServlet());
+        root.setBaseResourceAsPath(_resourceBase);
+        ServletHolder servletHolder = new ServletHolder(new ExtendedDefaultServlet());
         servletHolder.setInitParameter("gzip", "true");
         root.addServlet(servletHolder, "/*");
 
         _filter = new TestFilter(_resourceBase);
-        root.addFilter(_filter, "/", EnumSet.allOf(DispatcherType.class));
+        root.addFilter(_filter, "/*", EnumSet.allOf(DispatcherType.class));
         
         _server.setHandler(root);
     }

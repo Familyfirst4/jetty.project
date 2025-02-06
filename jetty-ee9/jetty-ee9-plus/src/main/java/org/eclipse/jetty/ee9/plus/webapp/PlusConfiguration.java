@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -17,8 +17,7 @@ import javax.naming.Context;
 import javax.naming.InitialContext;
 import javax.naming.NameNotFoundException;
 
-import org.eclipse.jetty.ee9.plus.annotation.InjectionCollection;
-import org.eclipse.jetty.ee9.plus.annotation.LifeCycleCallbackCollection;
+import org.eclipse.jetty.ee9.nested.ContextHandler;
 import org.eclipse.jetty.ee9.plus.jndi.Transaction;
 import org.eclipse.jetty.ee9.webapp.AbstractConfiguration;
 import org.eclipse.jetty.ee9.webapp.FragmentConfiguration;
@@ -26,7 +25,9 @@ import org.eclipse.jetty.ee9.webapp.JettyWebXmlConfiguration;
 import org.eclipse.jetty.ee9.webapp.MetaInfConfiguration;
 import org.eclipse.jetty.ee9.webapp.WebAppContext;
 import org.eclipse.jetty.ee9.webapp.WebXmlConfiguration;
-import org.eclipse.jetty.jndi.NamingContext;
+import org.eclipse.jetty.plus.annotation.InjectionCollection;
+import org.eclipse.jetty.plus.annotation.LifeCycleCallbackCollection;
+import org.eclipse.jetty.util.NanoTime;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -89,11 +90,18 @@ public class PlusConfiguration extends AbstractConfiguration
     {
         try
         {
-            Transaction.bindToENC();
+            Transaction.bindTransactionToENC(ContextHandler.ENVIRONMENT.getName());
         }
         catch (NameNotFoundException e)
         {
-            LOG.debug("No Transaction manager found - if your webapp requires one, please configure one.");
+            try
+            {
+                org.eclipse.jetty.plus.jndi.Transaction.bindTransactionToENC(ContextHandler.ENVIRONMENT.getName());
+            }
+            catch (NameNotFoundException x)
+            {
+                LOG.debug("No Transaction manager found - if your webapp requires one, please configure one.");
+            }
         }
     }
 
@@ -104,10 +112,10 @@ public class PlusConfiguration extends AbstractConfiguration
         Thread.currentThread().setContextClassLoader(wac.getClassLoader());
         try
         {
-            _key = (int)(this.hashCode() ^ System.nanoTime());
+            _key = (int)(this.hashCode() ^ NanoTime.now());
             Context context = new InitialContext();
             Context compCtx = (Context)context.lookup("java:comp");
-            compCtx.addToEnvironment(NamingContext.LOCK_PROPERTY, _key);
+            compCtx.addToEnvironment("org.eclipse.jetty.jndi.lock", _key);
         }
         finally
         {

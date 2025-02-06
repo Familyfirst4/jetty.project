@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -17,6 +17,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
@@ -39,7 +40,7 @@ import org.eclipse.jetty.toolchain.test.MavenTestingUtils;
 import org.eclipse.jetty.toolchain.test.Sha1Sum;
 import org.eclipse.jetty.util.IO;
 import org.eclipse.jetty.util.component.LifeCycle;
-import org.eclipse.jetty.util.resource.PathResource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
@@ -75,15 +76,17 @@ public class GzipDefaultServletTest extends AbstractGzipTest
         gzipHandler.setIncludedMethods("POST", "WIBBLE", "GET", "HEAD");
 
         server = new Server();
+        server.setStopTimeout(1000);
         LocalConnector localConnector = new LocalConnector(server);
         server.addConnector(localConnector);
 
-        Path contextDir = workDir.resolve("context");
+        Path contextDir = workDir.getEmptyPathDir().resolve("context");
         FS.ensureDirExists(contextDir);
 
         ServletContextHandler servletContextHandler = new ServletContextHandler();
         servletContextHandler.setContextPath("/context");
-        servletContextHandler.setBaseResource(new PathResource(contextDir));
+        servletContextHandler.setBaseResource(ResourceFactory.of(server).newResource(contextDir));
+        // The WibbleDefaultServlet overrides the method behaviors
         ServletHolder holder = new ServletHolder("default", WibbleDefaultServlet.class);
         holder.setInitParameter("etags", "true");
         servletContextHandler.addServlet(holder, "/");
@@ -140,6 +143,7 @@ public class GzipDefaultServletTest extends AbstractGzipTest
         {
             switch (req.getMethod())
             {
+                case "POST":
                 case "WIBBLE":
                     // Disregard the method given, use GET instead.
                     doGet(req, resp);
@@ -160,12 +164,12 @@ public class GzipDefaultServletTest extends AbstractGzipTest
         LocalConnector localConnector = new LocalConnector(server);
         server.addConnector(localConnector);
 
-        Path contextDir = workDir.resolve("context");
+        Path contextDir = workDir.getEmptyPathDir().resolve("context");
         FS.ensureDirExists(contextDir);
 
         ServletContextHandler servletContextHandler = new ServletContextHandler();
         servletContextHandler.setContextPath("/context");
-        servletContextHandler.setBaseResource(new PathResource(contextDir));
+        servletContextHandler.setBaseResource(ResourceFactory.of(server).newResource(contextDir));
         ServletHolder holder = new ServletHolder("default", DefaultServlet.class);
         holder.setInitParameter("etags", "true");
         servletContextHandler.addServlet(holder, "/");
@@ -223,12 +227,12 @@ public class GzipDefaultServletTest extends AbstractGzipTest
         LocalConnector localConnector = new LocalConnector(server);
         server.addConnector(localConnector);
 
-        Path contextDir = workDir.resolve("context");
+        Path contextDir = workDir.getEmptyPathDir().resolve("context");
         FS.ensureDirExists(contextDir);
 
         ServletContextHandler servletContextHandler = new ServletContextHandler();
         servletContextHandler.setContextPath("/context");
-        servletContextHandler.setBaseResource(new PathResource(contextDir));
+        servletContextHandler.setBaseResource(ResourceFactory.of(server).newResource(contextDir));
         ServletHolder holder = new ServletHolder("default", DefaultServlet.class);
         holder.setInitParameter("etags", "true");
         servletContextHandler.addServlet(holder, "/");
@@ -280,12 +284,12 @@ public class GzipDefaultServletTest extends AbstractGzipTest
         LocalConnector localConnector = new LocalConnector(server);
         server.addConnector(localConnector);
 
-        Path contextDir = workDir.resolve("context");
+        Path contextDir = workDir.getEmptyPathDir().resolve("context");
         FS.ensureDirExists(contextDir);
 
         ServletContextHandler servletContextHandler = new ServletContextHandler();
         servletContextHandler.setContextPath("/context");
-        servletContextHandler.setBaseResource(new PathResource(contextDir));
+        servletContextHandler.setBaseResource(ResourceFactory.of(server).newResource(contextDir));
         ServletHolder holder = new ServletHolder("default", DefaultServlet.class);
         holder.setInitParameter("etags", "true");
         servletContextHandler.addServlet(holder, "/");
@@ -306,8 +310,8 @@ public class GzipDefaultServletTest extends AbstractGzipTest
         request.setHeader("Host", "tester");
         request.setHeader("Connection", "close");
         request.setHeader("Accept-Encoding", "gzip");
-        long fourSecondsAgo = TimeUnit.NANOSECONDS.toMillis(System.nanoTime()) - 4000;
-        request.setHeader("If-Modified-Since", DateGenerator.formatDate(fourSecondsAgo));
+        Instant fourSecondsAgo = Instant.now().minusSeconds(4);
+        request.setHeader("If-Modified-Since", DateGenerator.formatDate(fourSecondsAgo.toEpochMilli()));
         request.setURI("/context/file.txt");
 
         // Issue request
@@ -340,12 +344,12 @@ public class GzipDefaultServletTest extends AbstractGzipTest
         LocalConnector localConnector = new LocalConnector(server);
         server.addConnector(localConnector);
 
-        Path contextDir = workDir.resolve("context");
+        Path contextDir = workDir.getEmptyPathDir().resolve("context");
         FS.ensureDirExists(contextDir);
 
         ServletContextHandler servletContextHandler = new ServletContextHandler();
         servletContextHandler.setContextPath("/context");
-        servletContextHandler.setBaseResource(new PathResource(contextDir));
+        servletContextHandler.setBaseResource(ResourceFactory.of(server).newResource(contextDir));
         ServletHolder holder = new ServletHolder("default", DefaultServlet.class);
         holder.setInitParameter("etags", "true");
         servletContextHandler.addServlet(holder, "/");
@@ -399,12 +403,12 @@ public class GzipDefaultServletTest extends AbstractGzipTest
         LocalConnector localConnector = new LocalConnector(server);
         server.addConnector(localConnector);
 
-        Path contextDir = workDir.resolve("context");
+        Path contextDir = workDir.getEmptyPathDir().resolve("context");
         FS.ensureDirExists(contextDir);
 
         ServletContextHandler servletContextHandler = new ServletContextHandler();
         servletContextHandler.setContextPath("/context");
-        servletContextHandler.setBaseResource(new PathResource(contextDir));
+        servletContextHandler.setBaseResource(ResourceFactory.of(server).newResource(contextDir));
         ServletHolder holder = new ServletHolder("default", DefaultServlet.class);
         holder.setInitParameter("etags", "true");
         servletContextHandler.addServlet(holder, "/");
@@ -465,12 +469,12 @@ public class GzipDefaultServletTest extends AbstractGzipTest
         LocalConnector localConnector = new LocalConnector(server);
         server.addConnector(localConnector);
 
-        Path contextDir = workDir.resolve("context");
+        Path contextDir = workDir.getEmptyPathDir().resolve("context");
         FS.ensureDirExists(contextDir);
 
         ServletContextHandler servletContextHandler = new ServletContextHandler();
         servletContextHandler.setContextPath("/context");
-        servletContextHandler.setBaseResource(new PathResource(contextDir));
+        servletContextHandler.setBaseResource(ResourceFactory.of(server).newResource(contextDir));
         ServletHolder holder = new ServletHolder("default", DefaultServlet.class);
         holder.setInitParameter("etags", "true");
         servletContextHandler.addServlet(holder, "/");
@@ -521,12 +525,12 @@ public class GzipDefaultServletTest extends AbstractGzipTest
         LocalConnector localConnector = new LocalConnector(server);
         server.addConnector(localConnector);
 
-        Path contextDir = workDir.resolve("context");
+        Path contextDir = workDir.getEmptyPathDir().resolve("context");
         FS.ensureDirExists(contextDir);
 
         ServletContextHandler servletContextHandler = new ServletContextHandler();
         servletContextHandler.setContextPath("/context");
-        servletContextHandler.setBaseResource(new PathResource(contextDir));
+        servletContextHandler.setBaseResource(ResourceFactory.of(server).newResource(contextDir));
         ServletHolder holder = new ServletHolder("default", DefaultServlet.class);
         holder.setInitParameter("etags", "true");
         servletContextHandler.addServlet(holder, "/");
@@ -577,12 +581,12 @@ public class GzipDefaultServletTest extends AbstractGzipTest
         LocalConnector localConnector = new LocalConnector(server);
         server.addConnector(localConnector);
 
-        Path contextDir = workDir.resolve("context");
+        Path contextDir = workDir.getEmptyPathDir().resolve("context");
         FS.ensureDirExists(contextDir);
 
         ServletContextHandler servletContextHandler = new ServletContextHandler();
         servletContextHandler.setContextPath("/context");
-        servletContextHandler.setBaseResource(new PathResource(contextDir));
+        servletContextHandler.setBaseResource(ResourceFactory.of(server).newResource(contextDir));
         ServletHolder holder = new ServletHolder("default", DefaultServlet.class);
         holder.setInitParameter("etags", "true");
         servletContextHandler.addServlet(holder, "/");
@@ -634,12 +638,12 @@ public class GzipDefaultServletTest extends AbstractGzipTest
         LocalConnector localConnector = new LocalConnector(server);
         server.addConnector(localConnector);
 
-        Path contextDir = workDir.resolve("context");
+        Path contextDir = workDir.getEmptyPathDir().resolve("context");
         FS.ensureDirExists(contextDir);
 
         ServletContextHandler servletContextHandler = new ServletContextHandler();
         servletContextHandler.setContextPath("/context");
-        servletContextHandler.setBaseResource(new PathResource(contextDir));
+        servletContextHandler.setBaseResource(ResourceFactory.of(server).newResource(contextDir));
         ServletHolder holder = new ServletHolder("default", DefaultServlet.class);
         holder.setInitParameter("etags", "true");
         servletContextHandler.addServlet(holder, "/");
@@ -691,12 +695,12 @@ public class GzipDefaultServletTest extends AbstractGzipTest
         LocalConnector localConnector = new LocalConnector(server);
         server.addConnector(localConnector);
 
-        Path contextDir = workDir.resolve("context");
+        Path contextDir = workDir.getEmptyPathDir().resolve("context");
         FS.ensureDirExists(contextDir);
 
         ServletContextHandler servletContextHandler = new ServletContextHandler();
         servletContextHandler.setContextPath("/context");
-        servletContextHandler.setBaseResource(new PathResource(contextDir));
+        servletContextHandler.setBaseResource(ResourceFactory.of(server).newResource(contextDir));
         servletContextHandler.getMimeTypes().addMimeMapping("txt", "text/plain;charset=UTF-8");
         ServletHolder holder = new ServletHolder("default", DefaultServlet.class);
         holder.setInitParameter("etags", "true");
@@ -749,12 +753,12 @@ public class GzipDefaultServletTest extends AbstractGzipTest
         LocalConnector localConnector = new LocalConnector(server);
         server.addConnector(localConnector);
 
-        Path contextDir = workDir.resolve("context");
+        Path contextDir = workDir.getEmptyPathDir().resolve("context");
         FS.ensureDirExists(contextDir);
 
         ServletContextHandler servletContextHandler = new ServletContextHandler();
         servletContextHandler.setContextPath("/context");
-        servletContextHandler.setBaseResource(new PathResource(contextDir));
+        servletContextHandler.setBaseResource(ResourceFactory.of(server).newResource(contextDir));
         ServletHolder holder = new ServletHolder("default", DefaultServlet.class);
         servletContextHandler.addServlet(holder, "/");
 
@@ -807,12 +811,12 @@ public class GzipDefaultServletTest extends AbstractGzipTest
         LocalConnector localConnector = new LocalConnector(server);
         server.addConnector(localConnector);
 
-        Path contextDir = workDir.resolve("context");
+        Path contextDir = workDir.getEmptyPathDir().resolve("context");
         FS.ensureDirExists(contextDir);
 
         ServletContextHandler servletContextHandler = new ServletContextHandler();
         servletContextHandler.setContextPath("/context");
-        servletContextHandler.setBaseResource(new PathResource(contextDir));
+        servletContextHandler.setBaseResource(ResourceFactory.of(server).newResource(contextDir));
         ServletHolder holder = new ServletHolder("default", DefaultServlet.class);
         servletContextHandler.addServlet(holder, "/");
 
@@ -886,12 +890,12 @@ public class GzipDefaultServletTest extends AbstractGzipTest
         LocalConnector localConnector = new LocalConnector(server);
         server.addConnector(localConnector);
 
-        Path contextDir = workDir.resolve("context");
+        Path contextDir = workDir.getEmptyPathDir().resolve("context");
         FS.ensureDirExists(contextDir);
 
         ServletContextHandler servletContextHandler = new ServletContextHandler();
         servletContextHandler.setContextPath("/context");
-        servletContextHandler.setBaseResource(new PathResource(contextDir));
+        servletContextHandler.setBaseResource(ResourceFactory.of(server).newResource(contextDir));
         ServletHolder holder = new ServletHolder("default", DefaultServlet.class);
         servletContextHandler.addServlet(holder, "/");
 
@@ -942,12 +946,12 @@ public class GzipDefaultServletTest extends AbstractGzipTest
         LocalConnector localConnector = new LocalConnector(server);
         server.addConnector(localConnector);
 
-        Path contextDir = workDir.resolve("context");
+        Path contextDir = workDir.getEmptyPathDir().resolve("context");
         FS.ensureDirExists(contextDir);
 
         ServletContextHandler servletContextHandler = new ServletContextHandler();
         servletContextHandler.setContextPath("/context");
-        servletContextHandler.setBaseResource(new PathResource(contextDir));
+        servletContextHandler.setBaseResource(ResourceFactory.of(server).newResource(contextDir));
         ServletHolder holder = new ServletHolder("default", DefaultServlet.class);
         holder.setInitParameter("etags", "true");
         servletContextHandler.addServlet(holder, "/");

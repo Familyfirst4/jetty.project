@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -20,6 +20,7 @@ import java.io.InputStreamReader;
 import java.io.StringWriter;
 import java.net.HttpURLConnection;
 import java.net.URI;
+import java.nio.file.Path;
 
 import org.eclipse.jetty.ee10.annotations.AnnotationConfiguration;
 import org.eclipse.jetty.ee10.webapp.Configurations;
@@ -31,24 +32,27 @@ import org.eclipse.jetty.toolchain.test.FS;
 import org.eclipse.jetty.toolchain.test.IO;
 import org.eclipse.jetty.toolchain.test.JAR;
 import org.eclipse.jetty.toolchain.test.MavenTestingUtils;
+import org.eclipse.jetty.toolchain.test.jupiter.WorkDir;
+import org.eclipse.jetty.toolchain.test.jupiter.WorkDirExtension;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.is;
 
-@Disabled //TODO
+@ExtendWith(WorkDirExtension.class)
 public class JspIncludeTest
 {
     private static Server server;
     private static URI baseUri;
 
     @BeforeAll
-    public static void startServer() throws Exception
+    public static void startServer(WorkDir workDir) throws Exception
     {
+        Path tmpPath = workDir.getEmptyPathDir();
         // Setup Server
         server = new Server();
         ServerConnector connector = new ServerConnector(server);
@@ -56,20 +60,22 @@ public class JspIncludeTest
         server.addConnector(connector);
         
         //Base dir for test
-        File testDir = MavenTestingUtils.getTargetTestingDir("jsp");
+        File testDir = tmpPath.toFile();
         File testLibDir = new File(testDir, "WEB-INF/lib");
         FS.ensureDirExists(testLibDir);
                 
         //Make a taglib jar
         File srcTagLibDir = MavenTestingUtils.getProjectDir("src/test/taglibjar");
-        File scratchTagLibDir = MavenTestingUtils.getTargetFile("tests/" + JspIncludeTest.class.getSimpleName() + "-taglib-scratch");
+        File scratchTagLibDir = new File(testDir, JspIncludeTest.class.getSimpleName() + "-taglib-scratch");
         IO.copy(srcTagLibDir, scratchTagLibDir);
         File tagLibJar =  new File(testLibDir, "testtaglib.jar");
         JAR.create(scratchTagLibDir, tagLibJar);
         
         //Copy content
+        File destWebAppDir = new File(testDir, "webapp");
+        FS.ensureDirExists(destWebAppDir);
         File srcWebAppDir = MavenTestingUtils.getProjectDir("src/test/webapp");
-        IO.copyDir(srcWebAppDir, testDir);
+        IO.copyDir(srcWebAppDir, destWebAppDir);
 
         // Configure WebAppContext
         Configurations.setServerDefault(server).add(new JettyWebXmlConfiguration(), new AnnotationConfiguration());
@@ -77,9 +83,9 @@ public class JspIncludeTest
         WebAppContext context = new WebAppContext();
         context.setContextPath("/");
 
-        File scratchDir = MavenTestingUtils.getTargetFile("tests/" + JspIncludeTest.class.getSimpleName() + "-scratch");
+        File scratchDir = new File(testDir, JspIncludeTest.class.getSimpleName() + "-scratch");
         FS.ensureEmpty(scratchDir);
-        JspConfig.init(context, testDir.toURI(), scratchDir);
+        JspConfig.init(context, destWebAppDir.toURI(), scratchDir);
 
         server.setHandler(context);
 
@@ -131,7 +137,6 @@ public class JspIncludeTest
             // System.out.printf("Response%n%s",response);
             assertThat("Response", response, containsString("<h2> Hello, this is the top page."));
             assertThat("Response", response, containsString("<h3> This is the included page"));
-
             assertThat("Response Header[main-page-key]", connection.getHeaderField("main-page-key"), is("main-page-value"));
             assertThat("Response Header[included-page-key]", connection.getHeaderField("included-page-key"), is("included-page-value"));
         }

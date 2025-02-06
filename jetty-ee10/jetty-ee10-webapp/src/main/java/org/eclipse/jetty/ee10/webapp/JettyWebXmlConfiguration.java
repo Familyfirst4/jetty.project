@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,9 +14,11 @@
 package org.eclipse.jetty.ee10.webapp;
 
 import java.io.IOException;
+import java.net.URI;
 import java.util.Map;
 
 import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.Resources;
 import org.eclipse.jetty.xml.XmlConfiguration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,10 +36,12 @@ public class JettyWebXmlConfiguration extends AbstractConfiguration
     public static final String PROPERTY_WEB_INF = "web-inf";
     public static final String XML_CONFIGURATION = "org.eclipse.jetty.webapp.JettyWebXmlConfiguration";
     public static final String JETTY_WEB_XML = "jetty-web.xml";
+    public static final String JETTY_EE10_WEB_XML = "jetty-ee10-web.xml";
 
     public JettyWebXmlConfiguration()
     {
-        addDependencies(WebXmlConfiguration.class, FragmentConfiguration.class, MetaInfConfiguration.class);
+        super(new Builder()
+            .addDependencies(WebXmlConfiguration.class, FragmentConfiguration.class, MetaInfConfiguration.class));
     }
 
     /**
@@ -53,41 +57,68 @@ public class JettyWebXmlConfiguration extends AbstractConfiguration
             LOG.debug("Configuring web-jetty.xml");
 
         Resource webInf = context.getWebInf();
-        // handle any WEB-INF descriptors
-        if (webInf != null && webInf.isDirectory())
+        // get the jetty-ee10-web.xml or jetty-web.xml
+        Resource jetty = resolveJettyWebXml(webInf);
+        if (Resources.isReadableFile(jetty))
         {
-            // do jetty.xml file
-            Resource jetty = webInf.addPath("jetty8-web.xml");
-            if (!jetty.exists())
-                jetty = webInf.addPath(JETTY_WEB_XML);
-            if (!jetty.exists())
-                jetty = webInf.addPath("web-jetty.xml");
+            if (LOG.isDebugEnabled())
+                LOG.debug("Configure: {}", jetty);
 
-            if (jetty.exists())
+            Object xmlAttr = context.getAttribute(XML_CONFIGURATION);
+            context.removeAttribute(XML_CONFIGURATION);
+            final XmlConfiguration jetty_config = xmlAttr instanceof XmlConfiguration ? (XmlConfiguration)xmlAttr : new XmlConfiguration(jetty);
+
+            setupXmlConfiguration(context, jetty_config, webInf);
+
+            try
             {
-                if (LOG.isDebugEnabled())
-                    LOG.debug("Configure: {}", jetty);
-
-                Object xmlAttr = context.getAttribute(XML_CONFIGURATION);
-                context.removeAttribute(XML_CONFIGURATION);
-                final XmlConfiguration jetty_config = xmlAttr instanceof XmlConfiguration ? (XmlConfiguration)xmlAttr : new XmlConfiguration(jetty);
-
-                setupXmlConfiguration(context, jetty_config, webInf);
-
-                try
+                WebAppClassLoader.runWithServerClassAccess(() ->
                 {
-                    WebAppClassLoader.runWithServerClassAccess(() ->
-                    {
-                        jetty_config.configure(context);
-                        return null;
-                    });
-                }
-                catch (Exception e)
-                {
-                    LOG.warn("Error applying {}", jetty);
-                    throw e;
-                }
+                    jetty_config.configure(context);
+                    return null;
+                });
             }
+            catch (Exception e)
+            {
+                LOG.warn("Error applying {}", jetty);
+                throw e;
+            }
+        }
+    }
+
+    /**
+     * Obtain a WEB-INF/jetty-ee10-web.xml, falling back to
+     * looking for WEB-INF/jetty-web.xml.
+     *
+     * @param webInf the WEB-INF of the context to search
+     * @return the file if it exists or null otherwise
+     */
+    private Resource resolveJettyWebXml(Resource webInf)
+    {
+        String xmlFile = JETTY_EE10_WEB_XML;
+        try
+        {
+            if (webInf == null || !webInf.isDirectory())
+                return null;
+
+            //try to find jetty-ee10-web.xml
+            Resource jetty = webInf.resolve(xmlFile);
+            if (!Resources.missing(jetty))
+                return jetty;
+
+            xmlFile = JETTY_WEB_XML;
+            //failing that, look for jetty-web.xml
+            jetty = webInf.resolve(xmlFile);
+            if (!Resources.missing(jetty))
+                return jetty;
+
+            return null;
+        }
+        catch (Exception e)
+        {
+            if (LOG.isDebugEnabled())
+                LOG.debug("Error resolving WEB-INF/" + xmlFile, e);
+            return null;
         }
     }
 
@@ -102,7 +133,14 @@ public class JettyWebXmlConfiguration extends AbstractConfiguration
     {
         jettyConfig.setJettyStandardIdsAndProperties(context.getServer(), null);
         Map<String, String> props = jettyConfig.getProperties();
-        props.put(PROPERTY_WEB_INF_URI, XmlConfiguration.normalizeURI(webInf.getURI().toString()));
+        URI uri = webInf.getURI();
+        if (uri == null)
+        {
+            if (LOG.isDebugEnabled())
+                LOG.debug("Unable to obtain unique URI for location of WEB-INF from {}", webInf.toString());
+            return;
+        }
+        props.put(PROPERTY_WEB_INF_URI, XmlConfiguration.normalizeURI(uri.toString()));
         props.put(PROPERTY_WEB_INF, webInf.toString());
     }
 }

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -43,11 +43,11 @@ public abstract class AbstractConnection implements Connection, Invocable
     private final Callback _readCallback;
     private int _inputBufferSize = 2048;
 
-    protected AbstractConnection(EndPoint endp, Executor executor)
+    protected AbstractConnection(EndPoint endPoint, Executor executor)
     {
         if (executor == null)
             throw new IllegalArgumentException("Executor must not be null!");
-        _endPoint = endp;
+        _endPoint = endPoint;
         _executor = executor;
         _readCallback = new ReadCallback();
     }
@@ -145,11 +145,6 @@ public abstract class AbstractConnection implements Connection, Invocable
         getEndPoint().fillInterested(_readCallback);
     }
 
-    public void tryFillInterested()
-    {
-        tryFillInterested(_readCallback);
-    }
-
     public void tryFillInterested(Callback callback)
     {
         getEndPoint().tryFillInterested(callback);
@@ -179,8 +174,8 @@ public abstract class AbstractConnection implements Connection, Invocable
         if (_endPoint.isOpen())
         {
             boolean close = true;
-            if (cause instanceof TimeoutException)
-                close = onReadTimeout(cause);
+            if (cause instanceof TimeoutException timeout)
+                close = onReadTimeout(timeout);
             if (close)
             {
                 if (_endPoint.isOutputShutdown())
@@ -200,7 +195,7 @@ public abstract class AbstractConnection implements Connection, Invocable
      * @param timeout the cause of the read timeout
      * @return true to signal that the endpoint must be closed, false to keep the endpoint open
      */
-    protected boolean onReadTimeout(Throwable timeout)
+    protected boolean onReadTimeout(TimeoutException timeout)
     {
         return true;
     }
@@ -273,7 +268,7 @@ public abstract class AbstractConnection implements Connection, Invocable
     }
 
     @Override
-    public boolean onIdleExpired()
+    public boolean onIdleExpired(TimeoutException timeoutException)
     {
         return true;
     }
@@ -328,7 +323,7 @@ public abstract class AbstractConnection implements Connection, Invocable
         }
 
         @Override
-        public void failed(final Throwable x)
+        public void failed(Throwable x)
         {
             onFillInterestedFailed(x);
         }
@@ -336,7 +331,7 @@ public abstract class AbstractConnection implements Connection, Invocable
         @Override
         public String toString()
         {
-            return String.format("AC.ReadCB@%h{%s}", AbstractConnection.this, AbstractConnection.this);
+            return String.format("%s@%x{%s}", getClass().getSimpleName(), hashCode(), AbstractConnection.this);
         }
 
         @Override

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -27,15 +27,8 @@ import org.slf4j.LoggerFactory;
  */
 public class SerializedExecutor implements Executor
 {
-    private final SerializedInvoker _invoker = new SerializedInvoker()
-    {
-        @Override
-        protected void onError(Runnable task, Throwable t)
-        {
-            SerializedExecutor.this.onError(task, t);
-        }
-    };
     private final Executor _executor;
+    private final SerializedInvoker _invoker;
 
     public SerializedExecutor()
     {
@@ -45,6 +38,14 @@ public class SerializedExecutor implements Executor
     public SerializedExecutor(Executor executor)
     {
         _executor = executor;
+        _invoker = new SerializedInvoker(SerializedExecutor.class.getSimpleName(), executor)
+        {
+            @Override
+            protected void onError(Runnable task, Throwable t)
+            {
+                SerializedExecutor.this.onError(task, t);
+            }
+        };
     }
 
     protected void onError(Runnable task, Throwable t)

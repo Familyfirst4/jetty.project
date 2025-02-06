@@ -1,76 +1,26 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
-  <parent>
-    <groupId>org.eclipse.jetty.http2</groupId>
-    <artifactId>http2</artifactId>
-    <version>12.0.0-SNAPSHOT</version>
-  </parent>
 
   <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>org.eclipse.jetty.http2</groupId>
+    <artifactId>jetty-http2</artifactId>
+    <version>12.0.17-SNAPSHOT</version>
+  </parent>
   <artifactId>jetty-http2-tests</artifactId>
-  <name>Jetty Core :: HTTP2 :: Tests</name>
+  <name>Core :: HTTP2 :: Tests</name>
 
-  <build>
-    <plugins>
-      <plugin>
-        <groupId>org.mortbay.jetty</groupId>
-        <artifactId>h2spec-maven-plugin</artifactId>
-        <version>1.0.10-SNAPSHOT</version>
-        <configuration>
-          <mainClass>org.eclipse.jetty.http2.tests.H2SpecServer</mainClass>
-          <skip>${skipTests}</skip>
-          <junitPackage>org.eclipse.jetty.h2spec</junitPackage>
-          <skipNoDockerAvailable>true</skipNoDockerAvailable>
-          <reportsDirectory>${project.build.directory}/h2spec-reports</reportsDirectory>
-          <excludeSpecs>
-            <excludeSpec>3.5 - Sends invalid connection preface</excludeSpec>
-            <excludeSpec>8.1.2.3 - 8.1.2.6. Malformed Requests and Responses</excludeSpec>
-          </excludeSpecs>
-        </configuration>
-        <executions>
-          <execution>
-            <id>h2spec</id>
-            <phase>test</phase>
-            <goals>
-              <goal>h2spec</goal>
-            </goals>
-          </execution>
-        </executions>
-      </plugin>
-    </plugins>
-  </build>
-
-  <profiles>
-    <profile>
-      <id>run-spec-server</id>
-      <build>
-        <plugins>
-          <plugin>
-            <groupId>org.codehaus.mojo</groupId>
-            <artifactId>exec-maven-plugin</artifactId>
-            <executions>
-              <execution>
-                <id>spec-server-run</id>
-                <phase>test</phase>
-                <configuration>
-                  <mainClass>org.eclipse.jetty.http2.tests.H2SpecServer</mainClass>
-                  <classpathScope>test</classpathScope>
-                  <arguments>
-                    <argument>${manual.test.port}</argument>
-                  </arguments>
-                </configuration>
-                <goals>
-                  <goal>java</goal>
-                </goals>
-              </execution>
-            </executions>
-          </plugin>
-        </plugins>
-      </build>
-    </profile>
-  </profiles>
+  <properties>
+    <h2spec.skip>${skipTests}</h2spec.skip>
+    <maven.deploy.skip>true</maven.deploy.skip>
+  </properties>
 
   <dependencies>
+    <dependency>
+      <groupId>org.awaitility</groupId>
+      <artifactId>awaitility</artifactId>
+      <scope>test</scope>
+    </dependency>
     <dependency>
       <groupId>org.eclipse.jetty</groupId>
       <artifactId>jetty-alpn-java-server</artifactId>
@@ -83,7 +33,7 @@
     </dependency>
     <dependency>
       <groupId>org.eclipse.jetty</groupId>
-      <artifactId>jetty-slf4j-impl</artifactId>
+      <artifactId>jetty-proxy</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -92,25 +42,97 @@
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.jetty.http2</groupId>
-      <artifactId>http2-client</artifactId>
+      <groupId>org.eclipse.jetty</groupId>
+      <artifactId>jetty-slf4j-impl</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.eclipse.jetty.http2</groupId>
-      <artifactId>http2-http-client-transport</artifactId>
+      <artifactId>jetty-http2-client</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.eclipse.jetty.http2</groupId>
-      <artifactId>http2-server</artifactId>
+      <artifactId>jetty-http2-client-transport</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.awaitility</groupId>
-      <artifactId>awaitility</artifactId>
+      <groupId>org.eclipse.jetty.http2</groupId>
+      <artifactId>jetty-http2-server</artifactId>
       <scope>test</scope>
     </dependency>
   </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <argLine>@{argLine} ${jetty.surefire.argLine}
+            --add-reads org.eclipse.jetty.http2.server=org.eclipse.jetty.logging</argLine>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+
+  <profiles>
+    <profile>
+      <id>h2spec</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.mortbay.jetty</groupId>
+            <artifactId>h2spec-maven-plugin</artifactId>
+            <version>1.0.13</version>
+            <configuration>
+              <mainClass>org.eclipse.jetty.http2.tests.H2SpecServer</mainClass>
+              <skip>${h2spec.skip}</skip>
+              <junitPackage>org.eclipse.jetty.h2spec</junitPackage>
+              <skipNoDockerAvailable>true</skipNoDockerAvailable>
+              <excludeSpecs>
+                <excludeSpec>3.5 - Sends invalid connection preface</excludeSpec>
+              </excludeSpecs>
+            </configuration>
+            <executions>
+              <execution>
+                <id>h2spec</id>
+                <goals>
+                  <goal>h2spec</goal>
+                </goals>
+                <phase>test</phase>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+    <profile>
+      <id>run-spec-server</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>spec-server-run</id>
+                <goals>
+                  <goal>java</goal>
+                </goals>
+                <phase>test</phase>
+                <configuration>
+                  <mainClass>org.eclipse.jetty.http2.tests.H2SpecServer</mainClass>
+                  <classpathScope>test</classpathScope>
+                  <arguments>
+                    <argument>${manual.test.port}</argument>
+                  </arguments>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 
 </project>

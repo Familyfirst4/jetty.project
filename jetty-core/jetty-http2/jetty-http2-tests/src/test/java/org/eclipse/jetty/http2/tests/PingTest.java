@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -31,12 +31,12 @@ public class PingTest extends AbstractTest
     @Test
     public void testPing() throws Exception
     {
-        start(new ServerSessionListener.Adapter());
+        start(new ServerSessionListener() {});
 
         final byte[] payload = new byte[8];
         new Random().nextBytes(payload);
         final CountDownLatch latch = new CountDownLatch(1);
-        Session session = newClientSession(new Session.Listener.Adapter()
+        Session session = newClientSession(new Session.Listener()
         {
             @Override
             public void onPing(Session session, PingFrame frame)

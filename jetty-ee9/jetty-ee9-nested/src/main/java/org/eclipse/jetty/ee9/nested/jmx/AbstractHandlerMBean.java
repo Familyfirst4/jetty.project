@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -81,16 +81,8 @@ public class AbstractHandlerMBean extends ObjectMBean
 
         if (name == null && context.getBaseResource() != null)
         {
-            try
-            {
-                if (context.getBaseResource().getFile() != null)
-                    name = context.getBaseResource().getFile().getName();
-            }
-            catch (IOException e)
-            {
-                LOG.trace("IGNORED", e);
-                name = context.getBaseResource().getName();
-            }
+            if (context.getBaseResource().getPath() != null)
+                name = context.getBaseResource().getPath().getFileName().toString();
         }
 
         if (context.getVirtualHosts() != null && context.getVirtualHosts().length > 0)

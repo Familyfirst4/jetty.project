@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -34,7 +34,6 @@ public class CookiePatternRule extends PatternRule
 
     public CookiePatternRule()
     {
-        this(null, null, null);
     }
 
     public CookiePatternRule(@Name("pattern") String pattern, @Name("name") String name, @Name("value") String value)
@@ -45,6 +44,7 @@ public class CookiePatternRule extends PatternRule
     }
 
     /**
+     * Get the response cookie name.
      * @return the response cookie name
      */
     public String getName()
@@ -53,6 +53,7 @@ public class CookiePatternRule extends PatternRule
     }
 
     /**
+     * Set the response cookie name.
      * @param name the response cookie name
      */
     public void setName(String name)
@@ -61,6 +62,7 @@ public class CookiePatternRule extends PatternRule
     }
 
     /**
+     * Get the response cookie value.
      * @return the response cookie value
      */
     public String getValue()
@@ -69,6 +71,7 @@ public class CookiePatternRule extends PatternRule
     }
 
     /**
+     * Set the response cookie value.
      * @param value the response cookie value
      */
     public void setValue(String value)
@@ -77,27 +80,23 @@ public class CookiePatternRule extends PatternRule
     }
 
     @Override
-    public Request.WrapperProcessor apply(Request.WrapperProcessor input) throws IOException
+    public Handler apply(Handler input) throws IOException
     {
-        // TODO: fix once Request.getCookies() is implemented (currently always returns null)
-        // Check that cookie is not already set
+        // Check that the cookie is not already set.
         List<HttpCookie> cookies = Request.getCookies(input);
-        if (cookies != null)
+        for (HttpCookie cookie : cookies)
         {
-            for (HttpCookie cookie : cookies)
-            {
-                if (_name.equals(cookie.getName()) && _value.equals(cookie.getValue()))
-                    return null;
-            }
+            if (_name.equals(cookie.getName()) && _value.equals(cookie.getValue()))
+                return null;
         }
 
-        return new Request.WrapperProcessor(input)
+        return new Handler(input)
         {
             @Override
-            public void process(Request ignored, Response response, Callback callback) throws Exception
+            protected boolean handle(Response response, Callback callback) throws Exception
             {
-                Response.addCookie(response, new HttpCookie(_name, _value));
-                super.process(this, response, callback);
+                Response.putCookie(response, HttpCookie.from(_name, _value));
+                return super.handle(response, callback);
             }
         };
     }

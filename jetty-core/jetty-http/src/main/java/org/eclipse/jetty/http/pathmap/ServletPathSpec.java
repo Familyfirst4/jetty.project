@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,7 +14,6 @@
 package org.eclipse.jetty.http.pathmap;
 
 import org.eclipse.jetty.util.StringUtil;
-import org.eclipse.jetty.util.URIUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -177,15 +176,15 @@ public class ServletPathSpec extends AbstractPathSpec
 
         if (info.startsWith("./"))
             info = info.substring(2);
-        if (base.endsWith(URIUtil.SLASH))
-            if (info.startsWith(URIUtil.SLASH))
+        if (base.endsWith("/"))
+            if (info.startsWith("/"))
                 path = base + info.substring(1);
             else
                 path = base + info;
-        else if (info.startsWith(URIUtil.SLASH))
+        else if (info.startsWith("/"))
             path = base + info;
         else
-            path = base + URIUtil.SLASH + info;
+            path = base + "/" + info;
         return path;
     }
 
@@ -290,7 +289,7 @@ public class ServletPathSpec extends AbstractPathSpec
 
     private static void assertValidServletPathSpec(String servletPathSpec)
     {
-        if ((servletPathSpec == null) || servletPathSpec.equals(""))
+        if ((servletPathSpec == null) || servletPathSpec.isEmpty())
         {
             return; // empty path spec
         }

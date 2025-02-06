@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -89,6 +89,28 @@ public class QuotedQualityCSV extends QuotedCSV implements Iterable<String>
     }
 
     /**
+     * Sorts values with equal quality according to given order.
+     *
+     * @param preferredOrder Array indicating the preferred order of known values
+     */
+    public QuotedQualityCSV(List<String> preferredOrder)
+    {
+        this((s) ->
+        {
+            for (int i = 0; i < preferredOrder.size(); ++i)
+            {
+                if (preferredOrder.get(i).equals(s))
+                    return preferredOrder.size() - i;
+            }
+
+            if ("*".equals(s))
+                return preferredOrder.size();
+
+            return 0;
+        });
+    }
+
+    /**
      * Orders values with equal quality with the given function.
      *
      * @param secondaryOrdering Function to apply an ordering other than specified by quality, highest values are sorted first.
@@ -99,7 +121,7 @@ public class QuotedQualityCSV extends QuotedCSV implements Iterable<String>
     }
 
     @Override
-    protected void parsedValueAndParams(StringBuffer buffer)
+    protected void parsedValueAndParams(StringBuilder buffer)
     {
         super.parsedValueAndParams(buffer);
 
@@ -109,7 +131,7 @@ public class QuotedQualityCSV extends QuotedCSV implements Iterable<String>
     }
 
     @Override
-    protected void parsedValue(StringBuffer buffer)
+    protected void parsedValue(StringBuilder buffer)
     {
         super.parsedValue(buffer);
 
@@ -122,7 +144,7 @@ public class QuotedQualityCSV extends QuotedCSV implements Iterable<String>
     }
 
     @Override
-    protected void parsedParam(StringBuffer buffer, int valueLength, int paramName, int paramValue)
+    protected void parsedParam(StringBuilder buffer, int valueLength, int paramName, int paramValue)
     {
         _sorted = false;
 

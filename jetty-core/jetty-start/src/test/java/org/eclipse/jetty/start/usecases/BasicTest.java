@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -50,7 +50,7 @@ public class BasicTest extends AbstractUseCase
 
         Files.write(homeDir.resolve("start.ini"),
             Collections.singletonList(
-                "--module=main"
+                "--modules=main"
             ),
             StandardCharsets.UTF_8);
     }
@@ -62,7 +62,7 @@ public class BasicTest extends AbstractUseCase
 
         Files.write(baseDir.resolve("start.ini"),
             Collections.singletonList(
-                "--module=main"
+                "--modules=main"
             ),
             StandardCharsets.UTF_8);
 
@@ -98,7 +98,7 @@ public class BasicTest extends AbstractUseCase
         PathAssert.assertDirExists("Required Directory: maindir/", results.baseHome.getPath("maindir/"));
 
         // === Validate home/base property uri values
-        Props props = results.startArgs.getCoreEnvironment().getProperties();
+        Props props = results.startArgs.getJettyEnvironment().getProperties();
 
         assertThat("Props(jetty.home)", props.getString("jetty.home"), is(results.baseHome.getHome()));
         assertThat("Props(jetty.home)", props.getString("jetty.home"), is(not(startsWith("file:"))));
@@ -120,8 +120,8 @@ public class BasicTest extends AbstractUseCase
 
         Files.write(baseDir.resolve("start.ini"),
             List.of(
-                "--module=main",
-                "--module=does-not-exist"
+                "--modules=main",
+                "--modules=does-not-exist"
             ),
             StandardCharsets.UTF_8);
 
@@ -146,9 +146,9 @@ public class BasicTest extends AbstractUseCase
 
         Files.write(baseDir.resolve("start.ini"),
             List.of(
-                "--module=main",
-                "--module=does-not-exist",
-                "--module=also-not-present"
+                "--modules=main",
+                "--modules=does-not-exist",
+                "--modules=also-not-present"
             ),
             StandardCharsets.UTF_8);
 
@@ -173,7 +173,7 @@ public class BasicTest extends AbstractUseCase
 
         Files.write(baseDir.resolve("start.ini"),
             Collections.singletonList(
-                "--module=server"
+                "--modules=server"
             ),
             StandardCharsets.UTF_8);
 
@@ -184,9 +184,7 @@ public class BasicTest extends AbstractUseCase
         ExecResults results = exec(runArgs, true);
 
         // === Validate Resulting XMLs
-        List<String> expectedXmls = Arrays.asList(
-            "${jetty.home}/etc/logging-a.xml"
-        );
+        List<String> expectedXmls = List.of("${jetty.home}/etc/logging-a.xml");
         List<String> actualXmls = results.getXmls();
         assertThat("XML Resolution Order", actualXmls, contains(expectedXmls.toArray()));
 
@@ -209,7 +207,7 @@ public class BasicTest extends AbstractUseCase
 
         Files.write(baseDir.resolve("start.ini"),
             Collections.singletonList(
-                "--module=server"
+                "--modules=server"
             ),
             StandardCharsets.UTF_8);
 
@@ -217,13 +215,11 @@ public class BasicTest extends AbstractUseCase
         List<String> runArgs = new ArrayList<>();
         runArgs.add("jetty.home=" + homePath);
         runArgs.add("--create-files");
-        runArgs.add("--module=logging-b");
+        runArgs.add("--modules=logging-b");
         ExecResults results = exec(runArgs, true);
 
         // === Validate Resulting XMLs
-        List<String> expectedXmls = Arrays.asList(
-            "${jetty.home}/etc/logging-b.xml"
-        );
+        List<String> expectedXmls = List.of("${jetty.home}/etc/logging-b.xml");
         List<String> actualXmls = results.getXmls();
         assertThat("XML Resolution Order", actualXmls, contains(expectedXmls.toArray()));
 
@@ -246,7 +242,7 @@ public class BasicTest extends AbstractUseCase
 
         Files.write(baseDir.resolve("start.ini"),
             Collections.singletonList(
-                "--module=main"
+                "--modules=main"
             ),
             StandardCharsets.UTF_8);
 
@@ -260,13 +256,13 @@ public class BasicTest extends AbstractUseCase
         runArgs.add("-Xmx1g");
 
         // Arbitrary Libs
-        Path extraJar = MavenTestingUtils.getTestResourceFile("extra-libs/example.jar").toPath().toRealPath();
-        Path extraDir = MavenTestingUtils.getTestResourceDir("extra-resources").toPath().toRealPath();
+        Path extraJar = MavenTestingUtils.getTestResourcePathFile("extra-libs/example.jar").toRealPath();
+        Path extraDir = MavenTestingUtils.getTestResourcePathDir("extra-resources").toRealPath();
 
         assertThat("Extra Jar exists: " + extraJar, Files.exists(extraJar), is(true));
         assertThat("Extra Dir exists: " + extraDir, Files.exists(extraDir), is(true));
 
-        String lib = "--lib=" + extraJar + File.pathSeparator + extraDir;
+        String lib = "--libs=" + extraJar + File.pathSeparator + extraDir;
         runArgs.add(lib);
 
         // Arbitrary XMLs
@@ -312,7 +308,7 @@ public class BasicTest extends AbstractUseCase
             "-Xms1g",
             "-Xmx1g"
         );
-        List<String> actualJvmArgs = results.startArgs.getJvmArgs();
+        List<String> actualJvmArgs = new ArrayList<>(results.startArgs.getJvmArgSources().keySet());
         assertThat("JVM Args", actualJvmArgs, contains(expectedJvmArgs.toArray()));
     }
 
@@ -323,7 +319,7 @@ public class BasicTest extends AbstractUseCase
 
         Files.write(baseDir.resolve("start.ini"),
             Collections.singletonList(
-                "--module=main"
+                "--modules=main"
             ),
             StandardCharsets.UTF_8);
 
@@ -333,7 +329,7 @@ public class BasicTest extends AbstractUseCase
         runArgs.add("java.version=1.8.0_31");
 
         // Modules
-        runArgs.add("--module=optional,extra");
+        runArgs.add("--modules=optional,extra");
 
         ExecResults results = exec(runArgs, true);
 
@@ -374,14 +370,14 @@ public class BasicTest extends AbstractUseCase
     @Test
     public void testHomeWithSpaces() throws Exception
     {
-        homeDir = workDir.getPath().resolve("jetty home with spaces");
+        homeDir = testdir.resolve("jetty home with spaces");
         FS.ensureDirExists(homeDir);
 
         setupDistHome();
 
         // === Execute Main
         List<String> runArgs = new ArrayList<>();
-        runArgs.add("--module=main");
+        runArgs.add("--modules=main");
         ExecResults results = exec(runArgs, true);
 
         // === Validate Resulting XMLs
@@ -408,7 +404,7 @@ public class BasicTest extends AbstractUseCase
         assertThat("Properties", actualProperties, containsInAnyOrder(expectedProperties.toArray()));
 
         // === Validate home/base property uri values
-        Props props = results.startArgs.getCoreEnvironment().getProperties();
+        Props props = results.startArgs.getJettyEnvironment().getProperties();
 
         assertThat("Props(jetty.home)", props.getString("jetty.home"), is(results.baseHome.getHome()));
         assertThat("Props(jetty.home)", props.getString("jetty.home"), is(not(startsWith("file:"))));

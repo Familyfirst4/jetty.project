@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -24,6 +24,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
@@ -31,58 +32,74 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.UnaryOperator;
+import java.util.stream.IntStream;
 
+import org.eclipse.jetty.client.AsyncRequestContent;
+import org.eclipse.jetty.client.CompletableResponseListener;
+import org.eclipse.jetty.client.Connection;
+import org.eclipse.jetty.client.ContentResponse;
+import org.eclipse.jetty.client.Destination;
 import org.eclipse.jetty.client.HttpClient;
-import org.eclipse.jetty.client.HttpConnection;
-import org.eclipse.jetty.client.HttpDestination;
+import org.eclipse.jetty.client.HttpClientTransport;
 import org.eclipse.jetty.client.HttpProxy;
+import org.eclipse.jetty.client.InputStreamResponseListener;
 import org.eclipse.jetty.client.Origin;
-import org.eclipse.jetty.client.api.ContentResponse;
+import org.eclipse.jetty.client.Response;
+import org.eclipse.jetty.client.Result;
+import org.eclipse.jetty.client.transport.HttpClientTransportDynamic;
 import org.eclipse.jetty.http.HttpFields;
+import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpMethod;
 import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.http.HttpURI;
 import org.eclipse.jetty.http.HttpVersion;
 import org.eclipse.jetty.http.MetaData;
+import org.eclipse.jetty.http2.ErrorCode;
+import org.eclipse.jetty.http2.HTTP2Connection;
+import org.eclipse.jetty.http2.HTTP2Session;
 import org.eclipse.jetty.http2.RateControl;
 import org.eclipse.jetty.http2.api.Session;
 import org.eclipse.jetty.http2.api.Stream;
 import org.eclipse.jetty.http2.api.server.ServerSessionListener;
 import org.eclipse.jetty.http2.client.HTTP2Client;
-import org.eclipse.jetty.http2.client.http.HttpClientTransportOverHTTP2;
-import org.eclipse.jetty.http2.client.http.internal.HttpChannelOverHTTP2;
-import org.eclipse.jetty.http2.client.http.internal.HttpConnectionOverHTTP2;
+import org.eclipse.jetty.http2.client.transport.ClientConnectionFactoryOverHTTP2;
+import org.eclipse.jetty.http2.client.transport.HttpClientTransportOverHTTP2;
+import org.eclipse.jetty.http2.client.transport.internal.HttpChannelOverHTTP2;
+import org.eclipse.jetty.http2.client.transport.internal.HttpConnectionOverHTTP2;
 import org.eclipse.jetty.http2.frames.DataFrame;
 import org.eclipse.jetty.http2.frames.GoAwayFrame;
 import org.eclipse.jetty.http2.frames.HeadersFrame;
 import org.eclipse.jetty.http2.frames.ResetFrame;
 import org.eclipse.jetty.http2.frames.SettingsFrame;
+import org.eclipse.jetty.http2.generator.Generator;
 import org.eclipse.jetty.http2.hpack.HpackException;
-import org.eclipse.jetty.http2.internal.ErrorCode;
-import org.eclipse.jetty.http2.internal.HTTP2Session;
-import org.eclipse.jetty.http2.internal.generator.Generator;
-import org.eclipse.jetty.http2.internal.parser.ServerParser;
+import org.eclipse.jetty.http2.parser.ServerParser;
 import org.eclipse.jetty.http2.server.RawHTTP2ServerConnectionFactory;
+import org.eclipse.jetty.io.ArrayByteBufferPool;
 import org.eclipse.jetty.io.ByteBufferPool;
 import org.eclipse.jetty.io.ClientConnector;
-import org.eclipse.jetty.io.MappedByteBufferPool;
+import org.eclipse.jetty.io.Content;
 import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.HttpConfiguration;
 import org.eclipse.jetty.server.Request;
-import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.util.BufferUtil;
 import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.ssl.SslContextFactory;
 import org.eclipse.jetty.util.thread.QueuedThreadPool;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import static org.awaitility.Awaitility.await;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
+import static org.hamcrest.Matchers.instanceOf;
+import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.notNullValue;
+import static org.hamcrest.Matchers.nullValue;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -91,30 +108,45 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public class HttpClientTransportOverHTTP2Test extends AbstractTest
 {
     @Test
-    public void testPropertiesAreForwarded() throws Exception
+    public void testPropertiesAreForwardedOverHTTP2() throws Exception
     {
-        HTTP2Client http2Client = new HTTP2Client();
-        HttpClient httpClient = new HttpClient(new HttpClientTransportOverHTTP2(http2Client));
-        Executor executor = new QueuedThreadPool();
-        httpClient.setExecutor(executor);
-        httpClient.setConnectTimeout(13);
-        httpClient.setIdleTimeout(17);
-        httpClient.setUseInputDirectByteBuffers(false);
-        httpClient.setUseOutputDirectByteBuffers(false);
+        ClientConnector clientConnector = new ClientConnector();
+        HTTP2Client http2Client = new HTTP2Client(clientConnector);
+        testPropertiesAreForwarded(http2Client, new HttpClientTransportOverHTTP2(http2Client));
+    }
 
-        httpClient.start();
+    @Test
+    public void testPropertiesAreForwardedDynamic() throws Exception
+    {
+        ClientConnector clientConnector = new ClientConnector();
+        HTTP2Client http2Client = new HTTP2Client(clientConnector);
+        testPropertiesAreForwarded(http2Client, new HttpClientTransportDynamic(clientConnector, new ClientConnectionFactoryOverHTTP2.HTTP2(http2Client)));
+    }
 
-        assertTrue(http2Client.isStarted());
-        assertSame(httpClient.getExecutor(), http2Client.getExecutor());
-        assertSame(httpClient.getScheduler(), http2Client.getScheduler());
-        assertSame(httpClient.getByteBufferPool(), http2Client.getByteBufferPool());
-        assertEquals(httpClient.getConnectTimeout(), http2Client.getConnectTimeout());
-        assertEquals(httpClient.getIdleTimeout(), http2Client.getIdleTimeout());
-        assertEquals(httpClient.isUseInputDirectByteBuffers(), http2Client.isUseInputDirectByteBuffers());
-        assertEquals(httpClient.isUseOutputDirectByteBuffers(), http2Client.isUseOutputDirectByteBuffers());
+    private void testPropertiesAreForwarded(HTTP2Client http2Client, HttpClientTransport httpClientTransport) throws Exception
+    {
+        try (HttpClient httpClient = new HttpClient(httpClientTransport))
+        {
+            Executor executor = new QueuedThreadPool();
+            httpClient.setExecutor(executor);
+            httpClient.setConnectTimeout(13);
+            httpClient.setIdleTimeout(17);
+            httpClient.setUseInputDirectByteBuffers(false);
+            httpClient.setUseOutputDirectByteBuffers(false);
 
-        httpClient.stop();
+            httpClient.start();
 
+            assertTrue(http2Client.isStarted());
+            assertSame(httpClient.getExecutor(), http2Client.getExecutor());
+            assertSame(httpClient.getScheduler(), http2Client.getScheduler());
+            assertSame(httpClient.getByteBufferPool(), http2Client.getByteBufferPool());
+            assertEquals(httpClient.getConnectTimeout(), http2Client.getConnectTimeout());
+            assertEquals(httpClient.getIdleTimeout(), http2Client.getIdleTimeout());
+            assertEquals(httpClient.isUseInputDirectByteBuffers(), http2Client.isUseInputDirectByteBuffers());
+            assertEquals(httpClient.isUseOutputDirectByteBuffers(), http2Client.isUseOutputDirectByteBuffers());
+            assertEquals(httpClient.getRequestBufferSize(), http2Client.getMaxRequestHeadersSize());
+            assertEquals(httpClient.getMaxResponseHeadersSize(), http2Client.getMaxResponseHeadersSize());
+        }
         assertTrue(http2Client.isStopped());
     }
 
@@ -122,17 +154,18 @@ public class HttpClientTransportOverHTTP2Test extends AbstractTest
     public void testRequestAbortSendsResetFrame() throws Exception
     {
         CountDownLatch resetLatch = new CountDownLatch(1);
-        start(new ServerSessionListener.Adapter()
+        start(new ServerSessionListener()
         {
             @Override
             public Stream.Listener onNewStream(Stream stream, HeadersFrame frame)
             {
-                return new Stream.Listener.Adapter()
+                return new Stream.Listener()
                 {
                     @Override
-                    public void onReset(Stream stream, ResetFrame frame)
+                    public void onReset(Stream stream, ResetFrame frame, Callback callback)
                     {
                         resetLatch.countDown();
+                        callback.succeeded();
                     }
                 };
             }
@@ -149,12 +182,12 @@ public class HttpClientTransportOverHTTP2Test extends AbstractTest
     public void testResponseAbortSendsResetFrame() throws Exception
     {
         CountDownLatch resetLatch = new CountDownLatch(1);
-        start(new ServerSessionListener.Adapter()
+        start(new ServerSessionListener()
         {
             @Override
             public Stream.Listener onNewStream(Stream stream, HeadersFrame frame)
             {
-                MetaData.Response metaData = new MetaData.Response(HttpVersion.HTTP_2, HttpStatus.OK_200, HttpFields.EMPTY);
+                MetaData.Response metaData = new MetaData.Response(HttpStatus.OK_200, null, HttpVersion.HTTP_2, HttpFields.EMPTY);
                 stream.headers(new HeadersFrame(stream.getId(), metaData, null, false), new Callback()
                 {
                     @Override
@@ -165,12 +198,13 @@ public class HttpClientTransportOverHTTP2Test extends AbstractTest
                     }
                 });
 
-                return new Stream.Listener.Adapter()
+                return new Stream.Listener()
                 {
                     @Override
-                    public void onReset(Stream stream, ResetFrame frame)
+                    public void onReset(Stream stream, ResetFrame frame, Callback callback)
                     {
                         resetLatch.countDown();
+                        callback.succeeded();
                     }
                 };
             }
@@ -186,14 +220,15 @@ public class HttpClientTransportOverHTTP2Test extends AbstractTest
     @Test
     public void testRequestHasHTTP2Version() throws Exception
     {
-        start(new Handler.Processor()
+        start(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, org.eclipse.jetty.server.Response response, Callback callback)
             {
                 HttpVersion version = HttpVersion.fromString(request.getConnectionMetaData().getProtocol());
                 response.setStatus(version == HttpVersion.HTTP_2 ? HttpStatus.OK_200 : HttpStatus.INTERNAL_SERVER_ERROR_500);
                 callback.succeeded();
+                return true;
             }
         });
 
@@ -209,9 +244,81 @@ public class HttpClientTransportOverHTTP2Test extends AbstractTest
     }
 
     @Test
+    public void testDelayDemandAfterHeaders() throws Exception
+    {
+        start(new Handler.Abstract()
+        {
+            @Override
+            public boolean handle(Request request, org.eclipse.jetty.server.Response response, Callback callback)
+            {
+                Callback.Completable.with(c -> response.write(false, ByteBuffer.allocate(1), c))
+                    .whenComplete((r, x) ->
+                    {
+                        if (x != null)
+                            callback.failed(x);
+                        else
+                            response.write(true, ByteBuffer.allocate(2), callback);
+                    });
+                return true;
+            }
+        });
+
+        AtomicReference<Runnable> demanderRef = new AtomicReference<>();
+        CountDownLatch beforeContentLatch = new CountDownLatch(1);
+        AtomicInteger contentCount = new AtomicInteger();
+        CountDownLatch latch = new CountDownLatch(1);
+        httpClient.newRequest("localhost", connector.getLocalPort())
+            .onResponseContentSource(new Response.ContentSourceListener()
+            {
+                @Override
+                public void onContentSource(Response response, Content.Source contentSource)
+                {
+                    Runnable demander = () -> contentSource.demand(() -> onContentSource(response, contentSource));
+                    if (demanderRef.getAndSet(demander) == null)
+                    {
+                        // 1st time, do not demand.
+                        beforeContentLatch.countDown();
+                        return;
+                    }
+
+                    Content.Chunk chunk = contentSource.read();
+                    if (chunk == null)
+                    {
+                        demander.run();
+                        return;
+                    }
+                    if (chunk.hasRemaining())
+                        contentCount.incrementAndGet();
+                    chunk.release();
+                    if (!chunk.isLast())
+                        demander.run();
+                }
+            })
+            .timeout(5, TimeUnit.SECONDS)
+            .send(result ->
+            {
+                assertTrue(result.isSucceeded());
+                assertEquals(HttpStatus.OK_200, result.getResponse().getStatus());
+                latch.countDown();
+            });
+
+        assertTrue(beforeContentLatch.await(5, TimeUnit.SECONDS));
+
+        // Verify that the response is not completed yet.
+        assertFalse(latch.await(1, TimeUnit.SECONDS));
+        assertEquals(0, contentCount.get());
+
+        // Demand to receive the content.
+        demanderRef.get().run();
+
+        assertTrue(latch.await(5, TimeUnit.SECONDS));
+        assertEquals(2, contentCount.get());
+    }
+
+    @Test
     public void testLastStreamId() throws Exception
     {
-        prepareServer(new RawHTTP2ServerConnectionFactory(new HttpConfiguration(), new ServerSessionListener.Adapter()
+        prepareServer(new RawHTTP2ServerConnectionFactory(new HttpConfiguration(), new ServerSessionListener()
         {
             @Override
             public Map<Integer, Integer> onPreface(Session session)
@@ -233,7 +340,7 @@ public class HttpClientTransportOverHTTP2Test extends AbstractTest
                 }
                 else
                 {
-                    MetaData.Response response = new MetaData.Response(HttpVersion.HTTP_2, HttpStatus.OK_200, HttpFields.EMPTY);
+                    MetaData.Response response = new MetaData.Response(HttpStatus.OK_200, null, HttpVersion.HTTP_2, HttpFields.EMPTY);
                     stream.headers(new HeadersFrame(stream.getId(), response, null, true), Callback.NOOP);
                 }
                 return null;
@@ -249,14 +356,14 @@ public class HttpClientTransportOverHTTP2Test extends AbstractTest
         httpClient = new HttpClient(new HttpClientTransportOverHTTP2(http2Client)
         {
             @Override
-            protected HttpConnectionOverHTTP2 newHttpConnection(HttpDestination destination, Session session)
+            protected Connection newConnection(Destination destination, Session session, HTTP2Connection connection)
             {
-                return new HttpConnectionOverHTTP2(destination, session)
+                return new HttpConnectionOverHTTP2(destination, session, connection)
                 {
                     @Override
                     protected HttpChannelOverHTTP2 newHttpChannel()
                     {
-                        return new HttpChannelOverHTTP2(getHttpDestination(), this, getSession())
+                        return new HttpChannelOverHTTP2(this, getSession())
                         {
                             @Override
                             public void setStream(Stream stream)
@@ -274,7 +381,7 @@ public class HttpClientTransportOverHTTP2Test extends AbstractTest
             }
 
             @Override
-            protected void onClose(HttpConnection connection, GoAwayFrame frame)
+            protected void onClose(Connection connection, GoAwayFrame frame)
             {
                 super.onClose(connection, frame);
                 lastStream.set(frame.getLastStreamId());
@@ -293,7 +400,7 @@ public class HttpClientTransportOverHTTP2Test extends AbstractTest
             .send();
         assertEquals(HttpStatus.OK_200, response.getStatus());
 
-        org.eclipse.jetty.client.api.Request request = httpClient.newRequest("localhost", connector.getLocalPort())
+        org.eclipse.jetty.client.Request request = httpClient.newRequest("localhost", connector.getLocalPort())
             .method(HttpMethod.HEAD)
             .path("/one");
         request.send(result ->
@@ -315,15 +422,16 @@ public class HttpClientTransportOverHTTP2Test extends AbstractTest
     {
         String path = "/path";
         String query = "a=b";
-        start(new Handler.Processor()
+        start(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, org.eclipse.jetty.server.Response response, Callback callback)
             {
                 HttpURI httpURI = request.getHttpURI();
                 assertEquals(path, httpURI.getPath());
                 assertEquals(query, httpURI.getQuery());
                 callback.succeeded();
+                return true;
             }
         });
 
@@ -340,20 +448,21 @@ public class HttpClientTransportOverHTTP2Test extends AbstractTest
     {
         String path = "/path";
         String query = "a=b";
-        start(new Handler.Processor()
+        start(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, org.eclipse.jetty.server.Response response, Callback callback)
             {
                 HttpURI httpURI = request.getHttpURI();
                 assertEquals(path, httpURI.getPath());
                 assertEquals(query, httpURI.getQuery());
                 callback.succeeded();
+                return true;
             }
         });
 
         int proxyPort = connector.getLocalPort();
-        httpClient.getProxyConfiguration().getProxies().add(new HttpProxy(new Origin.Address("localhost", proxyPort), false, new Origin.Protocol(List.of("h2c"), false)));
+        httpClient.getProxyConfiguration().addProxy(new HttpProxy(new Origin.Address("localhost", proxyPort), false, new Origin.Protocol(List.of("h2c"), false)));
 
         int serverPort = proxyPort + 1; // Any port will do, just not the same as the proxy.
         ContentResponse response = httpClient.newRequest("localhost", serverPort)
@@ -370,17 +479,18 @@ public class HttpClientTransportOverHTTP2Test extends AbstractTest
         long idleTimeout = 1000;
 
         CountDownLatch resetLatch = new CountDownLatch(1);
-        start(new ServerSessionListener.Adapter()
+        start(new ServerSessionListener()
         {
             @Override
             public Stream.Listener onNewStream(Stream stream, HeadersFrame frame)
             {
-                return new Stream.Listener.Adapter()
+                return new Stream.Listener()
                 {
                     @Override
-                    public void onReset(Stream stream, ResetFrame frame)
+                    public void onReset(Stream stream, ResetFrame frame, Callback callback)
                     {
                         resetLatch.countDown();
+                        callback.succeeded();
                     }
                 };
             }
@@ -402,17 +512,18 @@ public class HttpClientTransportOverHTTP2Test extends AbstractTest
     public void testRequestIdleTimeoutSendsResetFrame() throws Exception
     {
         CountDownLatch resetLatch = new CountDownLatch(1);
-        start(new ServerSessionListener.Adapter()
+        start(new ServerSessionListener()
         {
             @Override
             public Stream.Listener onNewStream(Stream stream, HeadersFrame frame)
             {
-                return new Stream.Listener.Adapter()
+                return new Stream.Listener()
                 {
                     @Override
-                    public void onReset(Stream stream, ResetFrame frame)
+                    public void onReset(Stream stream, ResetFrame frame, Callback callback)
                     {
                         resetLatch.countDown();
+                        callback.succeeded();
                     }
                 };
             }
@@ -439,10 +550,10 @@ public class HttpClientTransportOverHTTP2Test extends AbstractTest
             HttpClient client = new HttpClient(new HttpClientTransportOverHTTP2(h2Client)
             {
                 @Override
-                protected HttpConnection newHttpConnection(HttpDestination destination, Session session)
+                protected Connection newConnection(Destination destination, Session session, HTTP2Connection connection)
                 {
                     sessions.add(session);
-                    return super.newHttpConnection(destination, session);
+                    return super.newConnection(destination, session, connection);
                 }
             });
             QueuedThreadPool clientExecutor = new QueuedThreadPool();
@@ -458,9 +569,9 @@ public class HttpClientTransportOverHTTP2Test extends AbstractTest
                         resultLatch.countDown();
                 });
 
-            ByteBufferPool byteBufferPool = new MappedByteBufferPool();
-            ByteBufferPool.Lease lease = new ByteBufferPool.Lease(byteBufferPool);
-            Generator generator = new Generator(byteBufferPool);
+            ByteBufferPool bufferPool = new ArrayByteBufferPool();
+            ByteBufferPool.Accumulator accumulator = new ByteBufferPool.Accumulator();
+            Generator generator = new Generator(bufferPool);
 
             try (Socket socket = server.accept())
             {
@@ -468,7 +579,8 @@ public class HttpClientTransportOverHTTP2Test extends AbstractTest
                 OutputStream output = socket.getOutputStream();
                 InputStream input = socket.getInputStream();
 
-                ServerParser parser = new ServerParser(byteBufferPool, new ServerParser.Listener.Adapter()
+                ServerParser parser = new ServerParser(bufferPool, 8192, RateControl.NO_RATE_CONTROL);
+                parser.init(new ServerParser.Listener()
                 {
                     @Override
                     public void onPreface()
@@ -476,9 +588,9 @@ public class HttpClientTransportOverHTTP2Test extends AbstractTest
                         try
                         {
                             // Server's preface.
-                            generator.control(lease, new SettingsFrame(new HashMap<>(), false));
+                            generator.control(accumulator, new SettingsFrame(new HashMap<>(), false));
                             // Reply to client's SETTINGS.
-                            generator.control(lease, new SettingsFrame(new HashMap<>(), true));
+                            generator.control(accumulator, new SettingsFrame(new HashMap<>(), true));
                             writeFrames();
                         }
                         catch (HpackException x)
@@ -493,9 +605,9 @@ public class HttpClientTransportOverHTTP2Test extends AbstractTest
                         try
                         {
                             // Response.
-                            MetaData.Response metaData = new MetaData.Response(HttpVersion.HTTP_2, HttpStatus.OK_200, HttpFields.EMPTY);
+                            MetaData.Response metaData = new MetaData.Response(HttpStatus.OK_200, null, HttpVersion.HTTP_2, HttpFields.EMPTY);
                             HeadersFrame response = new HeadersFrame(request.getStreamId(), metaData, null, true);
-                            generator.control(lease, response);
+                            generator.control(accumulator, response);
                             writeFrames();
                         }
                         catch (HpackException x)
@@ -509,19 +621,18 @@ public class HttpClientTransportOverHTTP2Test extends AbstractTest
                         try
                         {
                             // Write the frames.
-                            for (ByteBuffer buffer : lease.getByteBuffers())
+                            for (ByteBuffer buffer : accumulator.getByteBuffers())
                             {
                                 output.write(BufferUtil.toArray(buffer));
                             }
-                            lease.recycle();
+                            accumulator.release();
                         }
                         catch (Throwable x)
                         {
                             x.printStackTrace();
                         }
                     }
-                }, 4096, 8192, RateControl.NO_RATE_CONTROL);
-                parser.init(UnaryOperator.identity());
+                });
 
                 byte[] bytes = new byte[1024];
                 while (true)
@@ -561,17 +672,15 @@ public class HttpClientTransportOverHTTP2Test extends AbstractTest
     public void test204WithContent() throws Exception
     {
         byte[] bytes = "No Content".getBytes(StandardCharsets.UTF_8);
-        start(new ServerSessionListener.Adapter()
+        start(new ServerSessionListener()
         {
             @Override
             public Stream.Listener onNewStream(Stream stream, HeadersFrame frame)
             {
-                int streamId = stream.getId();
-                MetaData.Response response = new MetaData.Response(HttpVersion.HTTP_2, HttpStatus.NO_CONTENT_204, HttpFields.EMPTY);
-                HeadersFrame responseFrame = new HeadersFrame(streamId, response, null, false);
-                Callback.Completable callback = new Callback.Completable();
-                stream.headers(responseFrame, callback);
-                callback.thenRun(() -> stream.data(new DataFrame(streamId, ByteBuffer.wrap(bytes), true), Callback.NOOP));
+                MetaData.Response response = new MetaData.Response(HttpStatus.NO_CONTENT_204, null, HttpVersion.HTTP_2, HttpFields.EMPTY);
+                HeadersFrame responseFrame = new HeadersFrame(stream.getId(), response, null, false);
+                stream.headers(responseFrame)
+                    .thenAccept(s -> s.data(new DataFrame(s.getId(), ByteBuffer.wrap(bytes), true)));
                 return null;
             }
         });
@@ -588,23 +697,22 @@ public class HttpClientTransportOverHTTP2Test extends AbstractTest
     @Test
     public void testInvalidResponseHPack() throws Exception
     {
-        start(new ServerSessionListener.Adapter()
+        start(new ServerSessionListener()
         {
             @Override
             public Stream.Listener onNewStream(Stream stream, HeadersFrame frame)
             {
                 // Disable checks for invalid headers.
-                ((HTTP2Session)stream.getSession()).getGenerator().setValidateHpackEncoding(false);
+                Generator generator = ((HTTP2Session)stream.getSession()).getGenerator();
+                generator.getHpackEncoder().setValidateEncoding(false);
                 // Produce an invalid HPACK block by adding a request pseudo-header to the response.
                 HttpFields fields = HttpFields.build()
                     .put(":method", "get");
-                MetaData.Response response = new MetaData.Response(HttpVersion.HTTP_2, HttpStatus.OK_200, fields, 0);
-                int streamId = stream.getId();
-                HeadersFrame responseFrame = new HeadersFrame(streamId, response, null, false);
-                Callback.Completable callback = new Callback.Completable();
-                stream.headers(responseFrame, callback);
+                MetaData.Response response = new MetaData.Response(HttpStatus.OK_200, null, HttpVersion.HTTP_2, fields, 0);
+                HeadersFrame responseFrame = new HeadersFrame(stream.getId(), response, null, false);
                 byte[] bytes = "hello".getBytes(StandardCharsets.US_ASCII);
-                callback.thenRun(() -> stream.data(new DataFrame(streamId, ByteBuffer.wrap(bytes), true), Callback.NOOP));
+                stream.headers(responseFrame)
+                    .thenAccept(s -> s.data(new DataFrame(s.getId(), ByteBuffer.wrap(bytes), true)));
                 return null;
             }
         });
@@ -621,25 +729,188 @@ public class HttpClientTransportOverHTTP2Test extends AbstractTest
         assertTrue(latch.await(5, TimeUnit.SECONDS));
     }
 
-    @Disabled
+    @Test
+    public void testInputStreamResponseListener() throws Exception
+    {
+        var bytes = 100_000;
+        start(new ServerSessionListener()
+        {
+            @Override
+            public Stream.Listener onNewStream(Stream stream, HeadersFrame frame)
+            {
+                int streamId = stream.getId();
+                MetaData.Response response = new MetaData.Response(HttpStatus.OK_200, null, HttpVersion.HTTP_2, HttpFields.EMPTY);
+                HeadersFrame responseFrame = new HeadersFrame(streamId, response, null, false);
+                stream.headers(responseFrame)
+                    .thenAccept(s -> s.data(new DataFrame(s.getId(), ByteBuffer.wrap(new byte[bytes]), true)));
+                return null;
+            }
+        });
+
+        var requestCount = 10_000;
+        IntStream.range(0, requestCount).forEach(i ->
+        {
+            try
+            {
+                InputStreamResponseListener listener = new InputStreamResponseListener();
+                httpClient.newRequest("localhost", connector.getLocalPort()).headers(httpFields -> httpFields.put("X-Request-Id", Integer.toString(i))).send(listener);
+                Response response = listener.get(15, TimeUnit.SECONDS);
+                assertEquals(HttpStatus.OK_200, response.getStatus());
+                assertEquals(bytes, listener.getInputStream().readAllBytes().length);
+            }
+            catch (Exception e)
+            {
+                throw new RuntimeException(e);
+            }
+        });
+    }
+
+    @Test
+    public void testResponseListenerAbortInOnBegin() throws Exception
+    {
+        start(new Handler.Abstract()
+        {
+            @Override
+            public boolean handle(Request request, org.eclipse.jetty.server.Response response, Callback callback)
+            {
+                callback.succeeded();
+                return true;
+            }
+        });
+
+        AtomicReference<Throwable> onContentSourceErrorRef = new AtomicReference<>();
+        AtomicReference<Result> resultRef = new AtomicReference<>();
+
+        org.eclipse.jetty.client.Request jettyRequest = httpClient.newRequest("localhost", connector.getLocalPort());
+        jettyRequest.send(new Response.Listener()
+        {
+            @Override
+            public void onBegin(org.eclipse.jetty.client.Response response)
+            {
+                response.abort(new ArrayStoreException("nothing is ever going to throw ArrayStoreException in our code"));
+            }
+
+            @Override
+            public void onContentSource(org.eclipse.jetty.client.Response response, Content.Source contentSource)
+            {
+                try
+                {
+                    Content.Chunk chunk = contentSource.read();
+                    chunk.release();
+                }
+                catch (Throwable x)
+                {
+                    onContentSourceErrorRef.set(x);
+                }
+            }
+
+            @Override
+            public void onComplete(Result result)
+            {
+                resultRef.set(result);
+            }
+        });
+
+        await().atMost(5, TimeUnit.SECONDS).until(resultRef::get, not(nullValue()));
+        assertThat(resultRef.get().getFailure(), instanceOf(ArrayStoreException.class));
+        assertThat(onContentSourceErrorRef.get(), is(nullValue()));
+    }
+
+    @Test
+    public void testRequestContentResponseContent() throws Exception
+    {
+        start(new Handler.Abstract()
+        {
+            @Override
+            public boolean handle(Request request, org.eclipse.jetty.server.Response response, Callback callback)
+            {
+                Content.copy(request, response, callback);
+                return true;
+            }
+        });
+
+        AsyncRequestContent content = new AsyncRequestContent();
+        var request = httpClient.newRequest("localhost", connector.getLocalPort())
+            .method(HttpMethod.POST)
+            .body(content);
+        CompletableFuture<ContentResponse> completable = new CompletableResponseListener(request).send();
+
+        for (int i = 0; i < 16; ++i)
+        {
+            content.write(false, ByteBuffer.allocate(512), Callback.NOOP);
+            Thread.sleep(10);
+        }
+        content.close();
+
+        ContentResponse response = completable.get(15, TimeUnit.SECONDS);
+
+        assertEquals(HttpStatus.OK_200, response.getStatus());
+    }
+
+    @Test
+    public void testUnreadRequestContentDrainsResponseContent() throws Exception
+    {
+        start(new Handler.Abstract()
+        {
+            @Override
+            public boolean handle(Request request, org.eclipse.jetty.server.Response response, Callback callback)
+            {
+                // Do not read the request content,
+                // the server will reset the stream,
+                // then send a response with content.
+                ByteBuffer content = ByteBuffer.allocate(1024);
+                response.getHeaders().put(HttpHeader.CONTENT_LENGTH, content.remaining());
+                response.write(true, content, callback);
+                return true;
+            }
+        });
+
+        AtomicReference<Content.Source> contentSourceRef = new AtomicReference<>();
+        AtomicReference<Content.Chunk> chunkRef = new AtomicReference<>();
+        CountDownLatch responseFailureLatch = new CountDownLatch(1);
+        AtomicReference<Result> resultRef = new AtomicReference<>();
+        httpClient.newRequest("localhost", connector.getLocalPort())
+            .method(HttpMethod.POST)
+            .body(new AsyncRequestContent(ByteBuffer.allocate(1024)))
+            .onResponseContentSource((response, contentSource) -> contentSourceRef.set(contentSource))
+            // The request is failed before the response, verify that
+            // reading at the request failure event yields a failure chunk.
+            .onRequestFailure((request, failure) -> chunkRef.set(contentSourceRef.get().read()))
+            .onResponseFailure((response, failure) -> responseFailureLatch.countDown())
+            .send(resultRef::set);
+
+        // Wait for the RST_STREAM to arrive and drain the response content.
+        assertTrue(responseFailureLatch.await(5, TimeUnit.SECONDS));
+
+        // Verify that the chunk read at the request failure event is a failure chunk.
+        Content.Chunk chunk = chunkRef.get();
+        assertTrue(Content.Chunk.isFailure(chunk, true));
+        // Reading more also yields a failure chunk.
+        chunk = contentSourceRef.get().read();
+        assertTrue(Content.Chunk.isFailure(chunk, true));
+
+        Result result = await().atMost(5, TimeUnit.SECONDS).until(resultRef::get, notNullValue());
+        assertEquals(HttpStatus.OK_200, result.getResponse().getStatus());
+        assertNotNull(result.getRequestFailure());
+        assertNotNull(result.getResponseFailure());
+    }
+
     @Test
     @Tag("external")
     public void testExternalServer() throws Exception
     {
         ClientConnector clientConnector = new ClientConnector();
         HTTP2Client http2Client = new HTTP2Client(clientConnector);
-        SslContextFactory.Client sslContextFactory = new SslContextFactory.Client();
-        clientConnector.setSslContextFactory(sslContextFactory);
-        HttpClient httpClient = new HttpClient(new HttpClientTransportOverHTTP2(http2Client));
-        Executor executor = new QueuedThreadPool();
-        clientConnector.setExecutor(executor);
-        httpClient.start();
+        try (HttpClient httpClient = new HttpClient(new HttpClientTransportOverHTTP2(http2Client)))
+        {
+            Executor executor = new QueuedThreadPool();
+            clientConnector.setExecutor(executor);
+            SslContextFactory.Client sslContextFactory = new SslContextFactory.Client();
+            clientConnector.setSslContextFactory(sslContextFactory);
+            httpClient.start();
 
-//        ContentResponse response = httpClient.GET("https://http2.akamai.com/");
-        ContentResponse response = httpClient.GET("https://webtide.com/");
-
-        assertEquals(HttpStatus.OK_200, response.getStatus());
-
-        httpClient.stop();
+            ContentResponse response = httpClient.GET("https://webtide.com/");
+            assertEquals(HttpStatus.OK_200, response.getStatus());
+        }
     }
 }

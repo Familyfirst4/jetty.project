@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,44 +13,54 @@
 
 package org.eclipse.jetty.ee9.webapp;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.Objects;
 
+import org.eclipse.jetty.io.IOResources;
 import org.eclipse.jetty.util.resource.Resource;
 import org.eclipse.jetty.xml.XmlParser;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.xml.sax.SAXException;
 
 public abstract class Descriptor
 {
+    private static final Logger LOG = LoggerFactory.getLogger(Descriptor.class);
+
     protected Resource _xml;
     protected XmlParser.Node _root;
     protected String _dtd;
 
-    public Descriptor(Resource xml)
+    public Descriptor(Resource resource)
     {
-        _xml = Objects.requireNonNull(xml);
+        _xml = Objects.requireNonNull(resource, "Resource must not be null");
+        if (_xml.isDirectory())
+            throw new IllegalArgumentException("Descriptor cannot be a directory");
     }
 
     public void parse(XmlParser parser)
         throws Exception
     {
-
         if (_root == null)
         {
             Objects.requireNonNull(parser);
-            try
+            try (InputStream is = IOResources.asInputStream(_xml))
             {
-                _root = parser.parse(_xml.getInputStream());
+                _root = parser.parse(is);
                 _dtd = parser.getDTD();
             }
-            finally
+            catch (SAXException | IOException e)
             {
-                _xml.close();
+                LOG.warn("Unable to parse {}", _xml, e);
+                throw e;
             }
         }
     }
 
-    public boolean isParsed()
+    public String getURI()
     {
-        return _root != null;
+        return _xml.getURI().toASCIIString();
     }
 
     public Resource getResource()
@@ -66,6 +76,6 @@ public abstract class Descriptor
     @Override
     public String toString()
     {
-        return this.getClass().getSimpleName() + "(" + _xml + ")";
+        return this.getClass().getSimpleName() + "(" + getURI() + ")";
     }
 }

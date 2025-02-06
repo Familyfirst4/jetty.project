@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -25,7 +25,6 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
-import java.nio.charset.UnsupportedCharsetException;
 import java.security.Principal;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -38,7 +37,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 import jakarta.servlet.AsyncContext;
@@ -65,9 +63,8 @@ import jakarta.servlet.http.Part;
 import jakarta.servlet.http.PushBuilder;
 import org.eclipse.jetty.http.BadMessageException;
 import org.eclipse.jetty.http.ComplianceViolation;
-import org.eclipse.jetty.http.HttpCompliance;
+import org.eclipse.jetty.http.CookieCompliance;
 import org.eclipse.jetty.http.HttpCookie;
-import org.eclipse.jetty.http.HttpCookie.SetCookieHttpField;
 import org.eclipse.jetty.http.HttpField;
 import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpHeader;
@@ -78,13 +75,22 @@ import org.eclipse.jetty.http.HttpURI;
 import org.eclipse.jetty.http.HttpVersion;
 import org.eclipse.jetty.http.MetaData;
 import org.eclipse.jetty.http.MimeTypes;
+import org.eclipse.jetty.http.MultiPartCompliance;
+import org.eclipse.jetty.http.SetCookieParser;
+import org.eclipse.jetty.http.UriCompliance;
 import org.eclipse.jetty.io.Connection;
 import org.eclipse.jetty.io.RuntimeIOException;
+import org.eclipse.jetty.security.UserIdentity;
+import org.eclipse.jetty.server.CookieCache;
+import org.eclipse.jetty.server.FormFields;
+import org.eclipse.jetty.server.HttpCookieUtils;
 import org.eclipse.jetty.server.Server;
-import org.eclipse.jetty.session.Session;
+import org.eclipse.jetty.server.Session;
+import org.eclipse.jetty.session.AbstractSessionManager;
+import org.eclipse.jetty.session.ManagedSession;
 import org.eclipse.jetty.session.SessionManager;
 import org.eclipse.jetty.util.Attributes;
-import org.eclipse.jetty.util.AttributesMap;
+import org.eclipse.jetty.util.Fields;
 import org.eclipse.jetty.util.HostPort;
 import org.eclipse.jetty.util.IO;
 import org.eclipse.jetty.util.MultiMap;
@@ -99,16 +105,30 @@ import org.slf4j.LoggerFactory;
  */
 public class Request implements HttpServletRequest
 {
-    public static final String __MULTIPART_CONFIG_ELEMENT = "org.eclipse.jetty.multipartConfig";
+    /**
+     * The name of the MultiPartConfig request attribute
+     */
+    public static final String MULTIPART_CONFIG_ELEMENT = "org.eclipse.jetty.multipartConfig";
+
+    /**
+     * @deprecated use {@link #MULTIPART_CONFIG_ELEMENT}
+     */
+    @Deprecated
+    public static final String __MULTIPART_CONFIG_ELEMENT = MULTIPART_CONFIG_ELEMENT;
+
+    public static final String SSL_CIPHER_SUITE = "jakarta.servlet.request.cipher_suite";
+    public static final String SSL_KEY_SIZE = "jakarta.servlet.request.key_size";
+    public static final String SSL_SESSION_ID = "jakarta.servlet.request.ssl_session_id";
+    public static final String PEER_CERTIFICATES = "jakarta.servlet.request.X509Certificate";
 
     private static final Logger LOG = LoggerFactory.getLogger(Request.class);
+    private static final SetCookieParser SET_COOKIE_PARSER = SetCookieParser.newInstance();
     private static final Collection<Locale> __defaultLocale = Collections.singleton(Locale.getDefault());
     private static final int INPUT_NONE = 0;
     private static final int INPUT_STREAM = 1;
     private static final int INPUT_READER = 2;
-
-    private static final MultiMap<String> NO_PARAMS = new MultiMap<>();
-    private static final MultiMap<String> BAD_PARAMS = new MultiMap<>();
+    private static final Fields NO_PARAMS = Fields.EMPTY;
+    private static final Fields BAD_PARAMS = new Fields(true);
 
     /**
      * Compare inputParameters to NO_PARAMS by Reference
@@ -116,7 +136,7 @@ public class Request implements HttpServletRequest
      * @param inputParameters The parameters to compare to NO_PARAMS
      * @return True if the inputParameters reference is equal to NO_PARAMS otherwise False
      */
-    private static boolean isNoParams(MultiMap<String> inputParameters)
+    private static boolean isNoParams(Fields inputParameters)
     {
         @SuppressWarnings("ReferenceEquality")
         boolean isNoParams = (inputParameters == NO_PARAMS);
@@ -151,10 +171,11 @@ public class Request implements HttpServletRequest
     }
 
     private final HttpChannel _channel;
-    private final ContextHandler.APIContext _context;
+    private ContextHandler.APIContext _context;
     private final List<ServletRequestAttributeListener> _requestAttributeListeners = new ArrayList<>();
     private final HttpInput _input;
-    private org.eclipse.jetty.server.Request _coreRequest;
+    private final boolean _crossContextDispatchSupported;
+    private ContextHandler.CoreContextRequest _coreRequest;
     private MetaData.Request _metaData;
     private HttpFields _httpFields;
     private HttpFields _trailers;
@@ -164,36 +185,31 @@ public class Request implements HttpServletRequest
     private ServletPathMapping _servletPathMapping;
     private Object _asyncNotSupportedSource = null;
     private boolean _secure;
-    private boolean _cookiesExtracted = false;
     private boolean _handled = false;
-    private boolean _contentParamsExtracted;
-    private boolean _requestedSessionIdFromCookie = false;
     private Attributes _attributes;
     private Authentication _authentication;
     private String _contentType;
     private String _characterEncoding;
-    private Cookies _cookies;
     private DispatcherType _dispatcherType;
     private int _inputState = INPUT_NONE;
     private BufferedReader _reader;
     private String _readerEncoding;
-    private MultiMap<String> _queryParameters;
-    private MultiMap<String> _contentParameters;
-    private MultiMap<String> _parameters;
+    private Fields _queryParameters;
+    private Fields _contentParameters;
+    private Fields _parameters;
     private Charset _queryEncoding;
-    private String _requestedSessionId;
-    private UserIdentity.Scope _scope;
-    private Session _coreSession;
-    private SessionManager _sessionManager;
+    private UserIdentityScope _scope;
     private long _timeStamp;
-    private MultiPartFormInputStream _multiParts; //if the request is a multi-part mime
+    private MultiPart.Parser _multiParts; // parser for multipart/form-data request content
     private AsyncContextState _async;
+    private String _lastPathInContext;
+    private ContextHandler.APIContext _lastContext;
 
     public Request(HttpChannel channel, HttpInput input)
     {
         _channel = channel;
         _input = input;
-        _context = channel.getContextHandler().getServletContext();
+        _crossContextDispatchSupported = _channel.getContextHandler().getCoreContextHandler().isCrossContextDispatchSupported();
     }
 
     public HttpFields getHttpFields()
@@ -215,9 +231,9 @@ public class Request implements HttpServletRequest
         Map<String, String> trailers = new HashMap<>();
         for (HttpField field : trailersFields)
         {
-            String key = field.getName().toLowerCase();
-            String value = trailers.get(key);
-            trailers.put(key, value == null ? field.getValue() : value + "," + field.getValue());
+            String key = field.getLowerCaseName();
+            // Servlet spec requires field names to be lower case.
+            trailers.merge(key, field.getValue(), (existing, value) -> existing + "," + value);
         }
         return trailers;
     }
@@ -244,7 +260,7 @@ public class Request implements HttpServletRequest
 
     public boolean isPushSupported()
     {
-        return !isPush() && getCoreRequest().isPushSupported();
+        return !isPush() && getCoreRequest().getConnectionMetaData().isPushSupported();
     }
 
     private static final EnumSet<HttpHeader> NOT_PUSHED_HEADERS = EnumSet.of(
@@ -275,7 +291,7 @@ public class Request implements HttpServletRequest
         String id;
         try
         {
-            HttpSession session = getSession();
+            HttpSession session = getSession(false);
             if (session != null)
             {
                 session.getLastAccessedTime(); // checks if session is valid
@@ -289,46 +305,44 @@ public class Request implements HttpServletRequest
             id = getRequestedSessionId();
         }
 
-        Map<String, String> cookies = new HashMap<>();
-        Cookie[] existingCookies = getCookies();
-        if (existingCookies != null)
+        StringBuilder cookieBuilder = new StringBuilder();
+        Cookie[] cookies = getCookies();
+        if (cookies != null)
         {
-            for (Cookie c : getCookies())
+            for (Cookie cookie : cookies)
             {
-                cookies.put(c.getName(), c.getValue());
+                if (!cookieBuilder.isEmpty())
+                    cookieBuilder.append("; ");
+                cookieBuilder.append(cookie.getName()).append("=").append(cookie.getValue());
             }
         }
-
-        //Any Set-Cookies that were set on the response must be set as Cookies on the
-        //PushBuilder, unless the max-age of the cookie is <= 0
-        HttpFields responseFields = getResponse().getHttpFields();
-        for (HttpField field : responseFields)
+        // Any Set-Cookie in the response should be present in the push.
+        for (HttpField field : getResponse().getHttpFields())
         {
             HttpHeader header = field.getHeader();
-            if (header == HttpHeader.SET_COOKIE)
+            if (header == HttpHeader.SET_COOKIE || header == HttpHeader.SET_COOKIE2)
             {
-                HttpCookie cookie = ((SetCookieHttpField)field).getHttpCookie();
-                if (cookie.getMaxAge() > 0)
-                    cookies.put(cookie.getName(), cookie.getValue());
+                HttpCookie httpCookie;
+                if (field instanceof HttpCookieUtils.SetCookieHttpField set)
+                    httpCookie = set.getHttpCookie();
                 else
-                    cookies.remove(cookie.getName());
+                    httpCookie = SET_COOKIE_PARSER.parse(field.getValue());
+                if (httpCookie == null || httpCookie.isExpired())
+                    continue;
+                if (!cookieBuilder.isEmpty())
+                    cookieBuilder.append("; ");
+                cookieBuilder.append(httpCookie.getName()).append("=").append(httpCookie.getValue());
             }
         }
+        if (!cookieBuilder.isEmpty())
+            fields.put(HttpHeader.COOKIE, cookieBuilder.toString());
 
-        if (!cookies.isEmpty())
-        {
-            StringBuilder buff = new StringBuilder();
-            for (Map.Entry<String, String> entry : cookies.entrySet())
-            {
-                if (buff.length() > 0)
-                    buff.append("; ");
-                buff.append(entry.getKey()).append('=').append(entry.getValue());
-            }
-            fields.add(new HttpField(HttpHeader.COOKIE, buff.toString()));
-        }
-
-        PushBuilder builder = new PushBuilderImpl(this, fields, getMethod(), getQueryString(), id);
-        builder.addHeader("referer", getRequestURL().toString());
+        String query = getQueryString();
+        PushBuilder builder = new PushBuilderImpl(this, fields, getMethod(), query, id);
+        String referrer = getRequestURL().toString();
+        if (query != null)
+            referrer += "?" + query;
+        builder.addHeader("referer", referrer);
 
         return builder;
     }
@@ -341,36 +355,18 @@ public class Request implements HttpServletRequest
             throw new IllegalArgumentException(listener.getClass().toString());
     }
 
-    /**
-     * A response is being committed for a session,
-     * potentially write the session out before the
-     * client receives the response.
-     *
-     * @param session the session
-     */
-    private void commitSession(Session session)
+    Fields peekParameters()
     {
-        if (LOG.isDebugEnabled())
-            LOG.debug("Response {} committing for session {}", this, session);
-
-        //try and scope to a request and context before committing the session
-        HttpSession httpSession = session.getAPISession();
-        ServletContext ctx = httpSession.getServletContext();
-        ContextHandler handler = ContextHandler.getContextHandler(ctx);
-        if (handler == null)
-            session.commit();
-        else
-            handler.handle(this, session::commit);
+        return _parameters;
     }
 
-    private MultiMap<String> getParameters()
+    private Fields getParameters()
     {
-        if (!_contentParamsExtracted)
+        // protect against calls to recycled requests (which is illegal, but
+        // this gives better failures
+        Fields parameters = _parameters;
+        if (parameters == null)
         {
-            // content parameters need boolean protection as they can only be read
-            // once, but may be reset to null by a reset
-            _contentParamsExtracted = true;
-
             // Extract content parameters; these cannot be replaced by a forward()
             // once extracted and may have already been extracted by getParts() or
             // by a processing happening after a form-based authentication.
@@ -386,46 +382,86 @@ public class Request implements HttpServletRequest
                     throw new BadMessageException("Unable to parse form content", e);
                 }
             }
+
+
+            // Extract query string parameters; these may be replaced by a forward()
+            // and may have already been extracted by mergeQueryParameters().
+            if (_queryParameters == null)
+                extractQueryParameters();
+
+            // Do parameters need to be combined?
+            if (isNoParams(_queryParameters) || _queryParameters.getSize() == 0)
+                _parameters = _contentParameters;
+            else if (isNoParams(_contentParameters) || _contentParameters.getSize() == 0)
+                _parameters = _queryParameters;
+            else if (_parameters == null)
+            {
+                _parameters = new Fields(true);
+                _parameters.addAll(_queryParameters);
+                _parameters.addAll(_contentParameters);
+            }
+            parameters = _parameters;
         }
 
-        // Extract query string parameters; these may be replaced by a forward()
-        // and may have already been extracted by mergeQueryParameters().
-        if (_queryParameters == null)
-            extractQueryParameters();
-
-        // Do parameters need to be combined?
-        if (isNoParams(_queryParameters) || _queryParameters.size() == 0)
-            _parameters = _contentParameters;
-        else if (isNoParams(_contentParameters) || _contentParameters.size() == 0)
-            _parameters = _queryParameters;
-        else if (_parameters == null)
-        {
-            _parameters = new MultiMap<>();
-            _parameters.addAllValues(_queryParameters);
-            _parameters.addAllValues(_contentParameters);
-        }
-
-        // protect against calls to recycled requests (which is illegal, but
-        // this gives better failures
-        MultiMap<String> parameters = _parameters;
         return parameters == null ? NO_PARAMS : parameters;
     }
 
     private void extractQueryParameters()
     {
-        if (_uri == null || StringUtil.isEmpty(_uri.getQuery()))
+        if (_uri == null)
+        {
+            _queryParameters = NO_PARAMS;
+            return;
+        }
+
+        String query = _uri.getQuery();
+        if (StringUtil.isEmpty(query))
             _queryParameters = NO_PARAMS;
         else
         {
             try
             {
-                _queryParameters = new MultiMap<>();
-                UrlEncoded.decodeTo(_uri.getQuery(), _queryParameters, _queryEncoding);
+                _queryParameters = new Fields(true);
+
+                if (StandardCharsets.UTF_8.equals(_queryEncoding) || _queryEncoding == null && UrlEncoded.ENCODING.equals(StandardCharsets.UTF_8))
+                {
+                    UriCompliance uriCompliance = getHttpChannel().getHttpConfiguration().getUriCompliance();
+                    boolean allowBadUtf8 = uriCompliance.allows(UriCompliance.Violation.BAD_UTF8_ENCODING);
+                    if (!UrlEncoded.decodeUtf8To(query, 0, query.length(), _queryParameters::add, allowBadUtf8))
+                    {
+                        ComplianceViolation.Listener complianceViolationListener = getComplianceViolationListener();
+                        if (complianceViolationListener != null)
+                            complianceViolationListener.onComplianceViolation(new ComplianceViolation.Event(uriCompliance, UriCompliance.Violation.BAD_UTF8_ENCODING, "query=" + query));
+                    }
+                }
+                else
+                {
+                    UrlEncoded.decodeTo(query, _queryParameters::add, _queryEncoding);
+                }
             }
             catch (IllegalStateException | IllegalArgumentException e)
             {
                 _queryParameters = BAD_PARAMS;
                 throw new BadMessageException("Unable to parse URI query", e);
+            }
+        }
+
+        if (_crossContextDispatchSupported)
+        {
+            String dispatcherType = _coreRequest.getContext().getCrossContextDispatchType(_coreRequest);
+            if (dispatcherType != null)
+            {
+                String sourceQuery = (String)_coreRequest.getAttribute(
+                    DispatcherType.valueOf(dispatcherType) == DispatcherType.FORWARD
+                    ? RequestDispatcher.FORWARD_QUERY_STRING : CrossContextDispatcher.ORIGINAL_QUERY_STRING);
+
+                if (!StringUtil.isBlank(sourceQuery))
+                {
+                    if (_queryParameters == NO_PARAMS)
+                        _queryParameters = new Fields(true);
+
+                    UrlEncoded.decodeTo(sourceQuery, _queryParameters::add, _queryEncoding);
+                }
             }
         }
     }
@@ -446,11 +482,28 @@ public class Request implements HttpServletRequest
             _contentParameters = NO_PARAMS;
         else
         {
-            _contentParameters = new MultiMap<>();
+            if (_crossContextDispatchSupported && _coreRequest.getContext().isCrossContextDispatch(_coreRequest))
+            {
+                try
+                {
+                    _contentParameters = FormFields.getFields(_coreRequest);
+                    return;
+                }
+                catch (RuntimeException e)
+                {
+                    throw e;
+                }
+                catch (Throwable t)
+                {
+                    throw new RuntimeException(t);
+                }
+            }
+
+            _contentParameters = new Fields(true);
             int contentLength = getContentLength();
             if (contentLength != 0 && _inputState == INPUT_NONE)
             {
-                String baseType = HttpField.valueParameters(contentType, null);
+                String baseType = HttpField.getValueParameters(contentType, null);
                 if (MimeTypes.Type.FORM_ENCODED.is(baseType) &&
                     _channel.getHttpConfiguration().isFormEncodedMethod(getMethod()))
                 {
@@ -462,7 +515,7 @@ public class Request implements HttpServletRequest
                     extractFormParameters(_contentParameters);
                 }
                 else if (MimeTypes.Type.MULTIPART_FORM_DATA.is(baseType) &&
-                    getAttribute(__MULTIPART_CONFIG_ELEMENT) != null &&
+                    getAttribute(MULTIPART_CONFIG_ELEMENT) != null &&
                     _multiParts == null)
                 {
                     try
@@ -478,14 +531,14 @@ public class Request implements HttpServletRequest
                         String msg = "Unable to extract content parameters";
                         if (LOG.isDebugEnabled())
                             LOG.debug(msg, e);
-                        throw new RuntimeIOException(msg, e);
+                        throw new BadMessageException(msg, e);
                     }
                 }
             }
         }
     }
 
-    public void extractFormParameters(MultiMap<String> params)
+    public void extractFormParameters(Fields params)
     {
         try
         {
@@ -507,7 +560,7 @@ public class Request implements HttpServletRequest
             if (_input.isAsync())
                 throw new IllegalStateException("Cannot extract parameters with async IO");
 
-            UrlEncoded.decodeTo(in, params, getCharacterEncoding(), maxFormContentSize, maxFormKeys);
+            UrlEncoded.decodeTo(in, params::add, UrlEncoded.decodeCharset(getCharacterEncoding()), maxFormContentSize, maxFormKeys);
         }
         catch (IOException e)
         {
@@ -543,19 +596,13 @@ public class Request implements HttpServletRequest
         return _channel.getState();
     }
 
+    /**
+     * @deprecated use core level ComplianceViolation.Listener instead. - will be removed in Jetty 12.1.0
+     */
+    @Deprecated(since = "12.0.6", forRemoval = true)
     public ComplianceViolation.Listener getComplianceViolationListener()
     {
-        if (_channel instanceof ComplianceViolation.Listener)
-        {
-            return (ComplianceViolation.Listener)_channel;
-        }
-
-        ComplianceViolation.Listener listener = _channel.getConnector().getBean(ComplianceViolation.Listener.class);
-        if (listener == null)
-        {
-            listener = _channel.getServer().getBean(ComplianceViolation.Listener.class);
-        }
-        return listener;
+        return org.eclipse.jetty.server.HttpChannel.from(getCoreRequest()).getComplianceViolationListener();
     }
 
     /**
@@ -583,6 +630,8 @@ public class Request implements HttpServletRequest
                 return _channel;
             if (Connection.class.getName().equals(name))
                 return _channel.getCoreRequest().getConnectionMetaData().getConnection();
+            if (MultiPart.Parser.class.getName().equals(name))
+                return _multiParts;
         }
         return (_attributes == null) ? null : _attributes.getAttribute(name);
     }
@@ -593,7 +642,7 @@ public class Request implements HttpServletRequest
         if (_attributes == null)
             return Collections.enumeration(Collections.emptyList());
 
-        return AttributesMap.getAttributeNamesCopy(_attributes);
+        return Collections.enumeration(_attributes.getAttributeNameSet());
     }
 
     public Attributes getAttributes()
@@ -685,32 +734,55 @@ public class Request implements HttpServletRequest
         if (_contentType == null)
         {
             MetaData.Request metadata = _metaData;
-            _contentType = metadata == null ? null : metadata.getFields().get(HttpHeader.CONTENT_TYPE);
+            _contentType = metadata == null ? null : metadata.getHttpFields().get(HttpHeader.CONTENT_TYPE);
         }
         return _contentType;
     }
 
     /**
-     * @return The {@link ContextHandler.APIContext context} used for this request. Never null.
+     * @return The {@link ContextHandler.APIContext context} used for this request.
      */
     public ContextHandler.APIContext getContext()
     {
         return _context;
     }
 
-    /**
-     * @return The current {@link ContextHandler.APIContext context} used for this error handling for this request.  If the request is asynchronous,
-     * then it is the context that called async. Otherwise it is the last non-null context passed to #setContext
-     */
-    public ContextHandler.APIContext getErrorContext()
+    public void setContext(ContextHandler.APIContext context, String pathInContext)
     {
-        return _context;
+        _context = context;
+        _pathInContext = pathInContext;
+        if (context != null)
+        {
+            _lastContext = context;
+            _lastPathInContext = pathInContext;
+        }
+    }
+
+    public ContextHandler.APIContext getLastContext()
+    {
+        return _lastContext;
+    }
+
+    public String getLastPathInContext()
+    {
+        return _lastPathInContext;
     }
 
     @Override
     public String getContextPath()
     {
-        // The context path returned is normally for the current context.  Except during a cross context
+        //During a cross context INCLUDE dispatch, the context path is that of the originating
+        //request
+        if (_crossContextDispatchSupported)
+        {
+            String crossContextDispatchType = _coreRequest.getContext().getCrossContextDispatchType(_coreRequest);
+            if (DispatcherType.INCLUDE.toString().equals(crossContextDispatchType))
+            {
+                return (String)_coreRequest.getAttribute(CrossContextDispatcher.ORIGINAL_CONTEXT_PATH);
+            }
+        }
+
+        // The context path returned is normally for the current context.  Except during an
         // INCLUDE dispatch, in which case this method returns the context path of the source context,
         // which we recover from the IncludeAttributes wrapper.
         ContextHandler.APIContext context;
@@ -730,9 +802,8 @@ public class Request implements HttpServletRequest
         return context.getContextHandler().getRequestContextPath();
     }
 
-    /** Get the path in the context.
-     *
-     * The path relative to the context path, analogous to {@link #getServletPath()} + {@link #getPathInfo()}.
+    /**
+     * Get the path relative to the context path, analogous to {@link #getServletPath()} + {@link #getPathInfo()}.
      * If no context is set, then the path in context is the full path.
      * @return The decoded part of the {@link #getRequestURI()} path after any {@link #getContextPath()}
      *         up to any {@link #getQueryString()}, excluding path parameters.
@@ -745,39 +816,55 @@ public class Request implements HttpServletRequest
     @Override
     public Cookie[] getCookies()
     {
-        MetaData.Request metadata = _metaData;
-        if (metadata == null || _cookiesExtracted)
+        return CookieCache.getApiCookies(getCoreRequest(), Cookie.class, this::convertCookie);
+    }
+
+    private Cookie convertCookie(HttpCookie cookie)
+    {
+        try
         {
-            if (_cookies == null || _cookies.getCookies().length == 0)
-                return null;
+            Cookie result = new Cookie(cookie.getName(), cookie.getValue());
 
-            return _cookies.getCookies();
-        }
-
-        _cookiesExtracted = true;
-
-        for (HttpField field : metadata.getFields())
-        {
-            if (field.getHeader() == HttpHeader.COOKIE)
+            if (getCoreRequest().getConnectionMetaData().getHttpConfiguration().getRequestCookieCompliance().allows(CookieCompliance.Violation.ATTRIBUTE_VALUES))
             {
-                if (_cookies == null)
-                    _cookies = new Cookies(getHttpChannel().getHttpConfiguration().getRequestCookieCompliance(), getComplianceViolationListener());
-                _cookies.addCookieField(field.getValue());
+                if (cookie.getVersion() > 0)
+                    result.setVersion(cookie.getVersion());
+
+                String path = cookie.getPath();
+                if (StringUtil.isNotBlank(path))
+                    result.setPath(path);
+
+                String domain = cookie.getDomain();
+                if (StringUtil.isNotBlank(domain))
+                    result.setDomain(domain);
+
+                String comment = cookie.getComment();
+                if (StringUtil.isNotBlank(comment))
+                    result.setComment(comment);
             }
+            return result;
         }
-
-        //Javadoc for Request.getCookies() stipulates null for no cookies
-        if (_cookies == null || _cookies.getCookies().length == 0)
-            return null;
-
-        return _cookies.getCookies();
+        catch (Exception x)
+        {
+            if (LOG.isDebugEnabled())
+                LOG.debug("Bad Cookie", x);
+        }
+        return null;
     }
 
     @Override
     public long getDateHeader(String name)
     {
         HttpFields fields = _httpFields;
-        return fields == null ? -1 : fields.getDateField(name);
+        if (fields == null)
+            return -1;
+        HttpField field = fields.getField(name);
+        if (field == null)
+            return -1;
+        long date = fields.getDateField(name);
+        if (date == -1)
+            throw new IllegalArgumentException("Cannot parse date");
+        return date;
     }
 
     @Override
@@ -797,7 +884,7 @@ public class Request implements HttpServletRequest
     public Enumeration<String> getHeaderNames()
     {
         HttpFields fields = _httpFields;
-        return fields == null ? Collections.emptyEnumeration() : fields.getFieldNames();
+        return fields == null ? Collections.emptyEnumeration() : Collections.enumeration(fields.getFieldNamesCollection());
     }
 
     @Override
@@ -826,10 +913,8 @@ public class Request implements HttpServletRequest
         if (_inputState != INPUT_NONE && _inputState != INPUT_STREAM)
             throw new IllegalStateException("READER");
         _inputState = INPUT_STREAM;
-
-        if (_channel.isExpecting100Continue())
-            _channel.continue100(_input.available());
-
+        // Try to write a 100 continue, ignoring failure result if it was not necessary.
+        _channel.getCoreResponse().writeInterim(HttpStatus.CONTINUE_100, HttpFields.EMPTY);
         return _input;
     }
 
@@ -938,7 +1023,7 @@ public class Request implements HttpServletRequest
     @Override
     public String getParameter(String name)
     {
-        return getParameters().getValue(name, 0);
+        return getParameters().getValue(name);
     }
 
     @Override
@@ -950,7 +1035,7 @@ public class Request implements HttpServletRequest
     @Override
     public Enumeration<String> getParameterNames()
     {
-        return Collections.enumeration(getParameters().keySet());
+        return Collections.enumeration(getParameters().getNames());
     }
 
     @Override
@@ -962,19 +1047,37 @@ public class Request implements HttpServletRequest
         return vals.toArray(new String[0]);
     }
 
+    @Deprecated
     public MultiMap<String> getQueryParameters()
+    {
+        return _queryParameters == null ? null : _queryParameters.toMultiMap();
+    }
+
+    public Fields getQueryFields()
     {
         return _queryParameters;
     }
 
-    public void setQueryParameters(MultiMap<String> queryParameters)
+    public void setQueryFields(Fields queryParameters)
     {
         _queryParameters = queryParameters;
     }
 
-    public void setContentParameters(MultiMap<String> contentParameters)
+    @Deprecated
+    public void setQueryParameters(MultiMap<String> queryParameters)
+    {
+        _queryParameters = queryParameters == null ? null : new Fields(queryParameters);
+    }
+
+    public void setContentFields(Fields contentParameters)
     {
         _contentParameters = contentParameters;
+    }
+
+    @Deprecated
+    public void setContentParameters(MultiMap<String> contentParameters)
+    {
+        _contentParameters = contentParameters == null ? NO_PARAMS : new Fields(contentParameters);
     }
 
     public void resetParameters()
@@ -1035,6 +1138,15 @@ public class Request implements HttpServletRequest
     @Override
     public String getQueryString()
     {
+        if (_crossContextDispatchSupported)
+        {
+            String crossContextDispatchType = _coreRequest.getContext().getCrossContextDispatchType(_coreRequest);
+            if (DispatcherType.INCLUDE.toString().equals(crossContextDispatchType))
+            {
+                return (String)_coreRequest.getAttribute(CrossContextDispatcher.ORIGINAL_QUERY_STRING);
+            }
+        }
+
         return _uri == null ? null : _uri.getQuery();
     }
 
@@ -1049,17 +1161,24 @@ public class Request implements HttpServletRequest
 
         String encoding = getCharacterEncoding();
         if (encoding == null)
-            encoding = StringUtil.__ISO_8859_1;
+            encoding = MimeTypes.ISO_8859_1;
 
-        if (_reader == null || !encoding.equalsIgnoreCase(_readerEncoding))
+        if (_reader != null && encoding.equalsIgnoreCase(_readerEncoding))
         {
-            final ServletInputStream in = getInputStream();
+            // Try to write a 100 continue, ignoring failure result if it was not necessary.
+            _channel.getCoreResponse().writeInterim(HttpStatus.CONTINUE_100, HttpFields.EMPTY);
+        }
+        else
+        {
+            ServletInputStream in = getInputStream();
             _readerEncoding = encoding;
             _reader = new BufferedReader(new InputStreamReader(in, encoding))
             {
                 @Override
                 public void close() throws IOException
                 {
+                    // Do not call super to avoid marking this reader as closed,
+                    // but do close the ServletInputStream that can be reopened.
                     in.close();
                 }
             };
@@ -1142,12 +1261,21 @@ public class Request implements HttpServletRequest
     @Override
     public String getRequestedSessionId()
     {
-        return _requestedSessionId;
+        AbstractSessionManager.RequestedSession requestedSession = _coreRequest.getRequestedSession();
+        return requestedSession == null ? null : requestedSession.sessionId();
     }
 
     @Override
     public String getRequestURI()
     {
+        if (_crossContextDispatchSupported)
+        {
+            String crossContextDispatchType = _coreRequest.getContext().getCrossContextDispatchType(_coreRequest);
+            if (DispatcherType.INCLUDE.toString().equals(crossContextDispatchType))
+            {
+                return (String)_coreRequest.getAttribute(CrossContextDispatcher.ORIGINAL_URI);
+            }
+        }
         return _uri == null ? null : _uri.getPath();
     }
 
@@ -1156,7 +1284,9 @@ public class Request implements HttpServletRequest
     {
         final StringBuffer url = new StringBuffer(128);
         URIUtil.appendSchemeHostPort(url, getScheme(), getServerName(), getServerPort());
-        url.append(getRequestURI());
+        String path = getRequestURI();
+        if (path != null)
+            url.append(path);
         return url;
     }
 
@@ -1170,16 +1300,14 @@ public class Request implements HttpServletRequest
      * path.
      * <p>
      * Because this method returns a <code>StringBuffer</code>, not a string, you can modify the URL easily, for example, to append path and query parameters.
-     *
+     * <p>
      * This method is useful for creating redirect messages and for reporting errors.
      *
      * @return "scheme://host:port"
      */
     public StringBuilder getRootURL()
     {
-        StringBuilder url = new StringBuilder(128);
-        URIUtil.appendSchemeHostPort(url, getScheme(), getServerName(), getServerPort());
-        return url;
+        return new StringBuilder(HttpURI.from(getScheme(), getServerName(), getServerPort(), null).asString());
     }
 
     @Override
@@ -1223,6 +1351,7 @@ public class Request implements HttpServletRequest
     @Override
     public ServletContext getServletContext()
     {
+        //TODO cross context include must return the context of the originating request
         return _context;
     }
 
@@ -1251,23 +1380,10 @@ public class Request implements HttpServletRequest
     @Override
     public String changeSessionId()
     {
-        if (_coreSession == null)
-            return null;
-        if (_coreSession.isInvalid())
-            return _coreSession.getId();
-
-        HttpSession httpSession = _coreSession.getAPISession();
-        if (httpSession == null)
-            throw new IllegalStateException("No session");
-
-        Session session = _coreSession;
-        session.renewId(getCoreRequest());
-        if (getRemoteUser() != null)
-            session.setAttribute(Session.SESSION_CREATED_SECURE, Boolean.TRUE);
-        if (session.isSetCookieNeeded())
-            _channel.getResponse().replaceCookie(_sessionManager.getSessionCookie(session, getContextPath(), isSecure()));
-
-        return httpSession.getId();
+        String newId = _coreRequest.changeSessionId();
+        if (newId != null && getRemoteUser() != null)
+            _coreRequest.getManagedSession().setAttribute(ManagedSession.SESSION_CREATED_SECURE, Boolean.TRUE);
+        return newId;
     }
 
     /**
@@ -1277,29 +1393,22 @@ public class Request implements HttpServletRequest
      */
     public void onCompleted()
     {
-        _input.releaseContent();
+        // Clean up unread content.
+        _input.consumeAll();
 
-        //Clean up any tmp files created by MultiPartInputStream
+        // Clean up any tmp files created by MultiPartInputStream.
         if (_multiParts != null)
         {
             try
             {
-                _multiParts.deleteParts();
+                if (!_crossContextDispatchSupported || !_coreRequest.getContext().isCrossContextDispatch(_coreRequest))
+                    _multiParts.deleteParts();
             }
             catch (Throwable e)
             {
                 LOG.warn("Errors deleting multipart tmp files", e);
             }
         }
-    }
-
-    /**
-     * Called when a response is about to be committed, ie sent
-     * back to the client
-     */
-    public void onResponseCommit()
-    {
-        // TODO remove this method?
     }
 
     /**
@@ -1311,8 +1420,9 @@ public class Request implements HttpServletRequest
      */
     public HttpSession getSession(SessionManager sessionManager)
     {
-        if (_coreSession != null && _coreSession.getSessionManager() == sessionManager)
-            return _coreSession.getAPISession();
+        ManagedSession managedSession = _coreRequest.getManagedSession();
+        if (managedSession != null && managedSession.getSessionManager() == sessionManager)
+            return managedSession.getApi();
         return null;
     }
 
@@ -1325,41 +1435,10 @@ public class Request implements HttpServletRequest
     @Override
     public HttpSession getSession(boolean create)
     {
-        if (_coreSession != null)
-        {
-            if (_sessionManager != null && !_coreSession.isValid())
-                _coreSession = null;
-            else
-                return _coreSession.getAPISession();
-        }
-
-        if (!create)
-            return null;
-
-        if (getResponse().isCommitted())
-            throw new IllegalStateException("Response is committed");
-
-        if (_sessionManager == null)
-            throw new IllegalStateException("No SessionManager");
-
-        _sessionManager.newSession(getCoreRequest(), getRequestedSessionId(), this::setCoreSession);
-
-        if (_coreSession == null)
-            throw new IllegalStateException("Create session failed");
-
-        HttpCookie cookie = _sessionManager.getSessionCookie(_coreSession, getContextPath(), isSecure());
-        if (cookie != null)
-            _channel.getResponse().replaceCookie(cookie);
-
-        return _coreSession.getAPISession();
-    }
-
-    /**
-     * @return Returns the sessionManager.
-     */
-    public SessionManager getSessionManager()
-    {
-        return _sessionManager;
+        Session session = _coreRequest.getSession(create);
+        if (session != null && session.isNew() && getAuthentication() instanceof Authentication.User)
+            session.setAttribute(ManagedSession.SESSION_CREATED_SECURE, Boolean.TRUE);
+        return session == null ? null : session.getApi();
     }
 
     /**
@@ -1377,13 +1456,11 @@ public class Request implements HttpServletRequest
         return _uri;
     }
 
-    public void onDispatch(HttpURI uri, String decodedPathInContext)
+    public void setHttpURI(HttpURI uri)
     {
         if (_uri != null && !Objects.equals(_uri.getQuery(), uri.getQuery()) && _queryParameters != BAD_PARAMS)
             _parameters = _queryParameters = null;
         _uri = uri.asImmutable();
-        _pathInContext = decodedPathInContext;
-        _servletPathMapping = null;
     }
 
     /**
@@ -1394,7 +1471,7 @@ public class Request implements HttpServletRequest
         MetaData.Request metadata = _metaData;
         if (metadata == null)
             return null;
-        HttpURI uri = metadata.getURI();
+        HttpURI uri = metadata.getHttpURI();
         if (uri == null)
             return null;
         return uri.isAbsolute() && metadata.getHttpVersion() == HttpVersion.HTTP_2 ? uri.getPathQuery() : uri.toString();
@@ -1421,7 +1498,7 @@ public class Request implements HttpServletRequest
         return null;
     }
 
-    public UserIdentity.Scope getUserIdentityScope()
+    public UserIdentityScope getUserIdentityScope()
     {
         return _scope;
     }
@@ -1461,29 +1538,37 @@ public class Request implements HttpServletRequest
     @Override
     public boolean isRequestedSessionIdFromCookie()
     {
-        return _requestedSessionId != null && _requestedSessionIdFromCookie;
+        AbstractSessionManager.RequestedSession requestedSession = _coreRequest.getRequestedSession();
+        return requestedSession != null && requestedSession.sessionId() != null && requestedSession.sessionIdFromCookie();
     }
 
     @Override
     @Deprecated(since = "Servlet API 2.1")
     public boolean isRequestedSessionIdFromUrl()
     {
-        return _requestedSessionId != null && !_requestedSessionIdFromCookie;
+        return isRequestedSessionIdFromURL();
     }
 
     @Override
     public boolean isRequestedSessionIdFromURL()
     {
-        return _requestedSessionId != null && !_requestedSessionIdFromCookie;
+        AbstractSessionManager.RequestedSession requestedSession = _coreRequest.getRequestedSession();
+        return requestedSession != null && requestedSession.sessionId() != null && !requestedSession.sessionIdFromCookie();
     }
 
     @Override
     public boolean isRequestedSessionIdValid()
     {
-        if (getRequestedSessionId() == null || _coreSession == null)
-            return false;
-
-        return (_sessionManager.getSessionIdManager().getId(getRequestedSessionId()).equals(_coreSession.getId()));
+        AbstractSessionManager.RequestedSession requestedSession = _coreRequest.getRequestedSession();
+        SessionManager sessionManager = _coreRequest.getSessionManager();
+        ManagedSession managedSession = _coreRequest.getManagedSession();
+        return requestedSession != null &&
+            sessionManager != null &&
+            managedSession != null &&
+            requestedSession.sessionId() != null &&
+            requestedSession.session() != null &&
+            requestedSession.session().isValid() &&
+            sessionManager.getSessionIdManager().getId(requestedSession.sessionId()).equals(managedSession.getId());
     }
 
     @Override
@@ -1497,6 +1582,16 @@ public class Request implements HttpServletRequest
         _secure = secure;
     }
 
+    /**
+     * <p>Get the nanoTime at which the request arrived to a connector, obtained via {@link System#nanoTime()}.
+     * This method can be used when measuring latencies.</p>
+     * @return The nanoTime at which the request was received/created in nanoseconds
+     */
+    public long getBeginNanoTime()
+    {
+        return _metaData.getBeginNanoTime();
+    }
+
     @Override
     public boolean isUserInRole(String role)
     {
@@ -1508,29 +1603,34 @@ public class Request implements HttpServletRequest
         return false;
     }
 
-    void onRequest(org.eclipse.jetty.server.Request coreRequest)
+    void onRequest(ContextHandler.CoreContextRequest coreRequest)
     {
         _input.reopen();
         _channel.getResponse().getHttpOutput().reopen();
 
         _coreRequest = coreRequest;
+        setTimeStamp(org.eclipse.jetty.server.Request.getTimeStamp(coreRequest));
+
         _metaData = new MetaData.Request(
-            _coreRequest.getMethod(),
-            _coreRequest.getHttpURI(),
-            _coreRequest.getConnectionMetaData().getHttpVersion(),
-            _coreRequest.getHeaders());
+            coreRequest.getBeginNanoTime(),
+            coreRequest.getMethod(),
+            coreRequest.getHttpURI(),
+            coreRequest.getConnectionMetaData().getHttpVersion(),
+            coreRequest.getHeaders());
 
         _attributes = new ServletAttributes(coreRequest);
 
-        _method = _coreRequest.getMethod();
-        _uri = _coreRequest.getHttpURI();
-        _pathInContext = URIUtil.decodePath(_coreRequest.getPathInContext());
-        _httpFields = _coreRequest.getHeaders();
+        _method = coreRequest.getMethod();
+        _uri = coreRequest.getHttpURI();
+        _httpFields = coreRequest.getHeaders();
 
-        setSecure(_coreRequest.isSecure());
+        // This is further modified inside ContextHandler.doScope().
+        _pathInContext = URIUtil.decodePath(coreRequest.getHttpURI().getCanonicalPath());
+
+        setSecure(coreRequest.isSecure());
     }
 
-    public org.eclipse.jetty.server.Request getCoreRequest()
+    public ContextHandler.CoreContextRequest getCoreRequest()
     {
         return _coreRequest;
     }
@@ -1578,16 +1678,11 @@ public class Request implements HttpServletRequest
         _servletPathMapping = null;
         _asyncNotSupportedSource = null;
         _secure = false;
-        _cookiesExtracted = false;
         _handled = false;
-        _contentParamsExtracted = false;
-        _requestedSessionIdFromCookie = false;
         _attributes = null;
-        setAuthentication(Authentication.NOT_CHECKED);
+        _authentication = Authentication.NOT_CHECKED;
         _contentType = null;
         _characterEncoding = null;
-        if (_cookies != null)
-            _cookies.reset();
         _dispatcherType = null;
         _inputState = INPUT_NONE;
         // _reader can be reused
@@ -1596,10 +1691,7 @@ public class Request implements HttpServletRequest
         _contentParameters = null;
         _parameters = null;
         _queryEncoding = null;
-        _requestedSessionId = null;
         _scope = null;
-        _coreSession = null;
-        _sessionManager = null;
         _timeStamp = 0;
         _multiParts = null;
         if (_async != null)
@@ -1757,6 +1849,8 @@ public class Request implements HttpServletRequest
     public void setAuthentication(Authentication authentication)
     {
         _authentication = authentication;
+        if (_coreRequest != null)
+            org.eclipse.jetty.server.Request.setAuthenticationState(_coreRequest, authentication);
     }
 
     @Override
@@ -1765,20 +1859,8 @@ public class Request implements HttpServletRequest
         if (_inputState != INPUT_NONE)
             return;
 
+        MimeTypes.getKnownCharset(encoding);
         _characterEncoding = encoding;
-
-        // check encoding is supported
-        if (!StringUtil.isUTF8(encoding))
-        {
-            try
-            {
-                Charset.forName(encoding);
-            }
-            catch (UnsupportedCharsetException e)
-            {
-                throw new UnsupportedEncodingException(e.getMessage());
-            }
-        }
     }
 
     /*
@@ -1795,16 +1877,6 @@ public class Request implements HttpServletRequest
     public void setContentType(String contentType)
     {
         _contentType = contentType;
-    }
-
-    /**
-     * @param cookies The cookies to set.
-     */
-    public void setCookies(Cookie[] cookies)
-    {
-        if (_cookies == null)
-            _cookies = new Cookies(getHttpChannel().getHttpConfiguration().getRequestCookieCompliance(), getComplianceViolationListener());
-        _cookies.setCookies(cookies);
     }
 
     public void setDispatcherType(DispatcherType type)
@@ -1831,9 +1903,9 @@ public class Request implements HttpServletRequest
     }
 
     /**
-     * Set the character encoding used for the query string. This call will effect the return of getQueryString and getParamaters. It must be called before any
+     * Set the character encoding used for the query string. This call will effect the return of getQueryString and getParameters. It must be called before any
      * getParameter methods.
-     *
+     * <p>
      * The request attribute "org.eclipse.jetty.server.Request.queryEncoding" may be set as an alternate method of calling setQueryEncoding.
      *
      * @param queryEncoding the URI query character encoding
@@ -1843,49 +1915,12 @@ public class Request implements HttpServletRequest
         _queryEncoding = Charset.forName(queryEncoding);
     }
 
-    /**
-     * @param requestedSessionId The requestedSessionId to set.
-     */
-    public void setRequestedSessionId(String requestedSessionId)
-    {
-        _requestedSessionId = requestedSessionId;
-    }
-
-    /**
-     * @param requestedSessionIdCookie The requestedSessionIdCookie to set.
-     */
-    public void setRequestedSessionIdFromCookie(boolean requestedSessionIdCookie)
-    {
-        _requestedSessionIdFromCookie = requestedSessionIdCookie;
-    }
-
-    /**
-     * @param coreSession The session to set.
-     */
-    public void setCoreSession(Session coreSession)
-    {
-        _coreSession = coreSession;
-    }
-
-    public Session getCoreSession()
-    {
-        return _coreSession;
-    }
-
-    /**
-     * @param sessionManager The SessionHandler to set.
-     */
-    public void setSessionManager(SessionManager sessionManager)
-    {
-        _sessionManager = sessionManager;
-    }
-
     public void setTimeStamp(long ts)
     {
         _timeStamp = ts;
     }
 
-    public void setUserIdentityScope(UserIdentity.Scope scope)
+    public void setUserIdentityScope(UserIdentityScope scope)
     {
         _scope = scope;
     }
@@ -1983,22 +2018,64 @@ public class Request implements HttpServletRequest
     public Collection<Part> getParts() throws IOException, ServletException
     {
         String contentType = getContentType();
-        if (contentType == null || !MimeTypes.Type.MULTIPART_FORM_DATA.is(HttpField.valueParameters(contentType, null)))
+        if (contentType == null || !MimeTypes.Type.MULTIPART_FORM_DATA.is(HttpField.getValueParameters(contentType, null)))
             throw new ServletException("Unsupported Content-Type [" + contentType + "], expected [multipart/form-data]");
         return getParts(null);
     }
 
-    private Collection<Part> getParts(MultiMap<String> params) throws IOException
+    private Collection<Part> getParts(Fields params) throws IOException
     {
         if (_multiParts == null)
         {
-            MultipartConfigElement config = (MultipartConfigElement)getAttribute(__MULTIPART_CONFIG_ELEMENT);
+            if (_crossContextDispatchSupported)
+            {
+                // the request prior or after dispatch may have parsed the multipart
+                Object multipart = _coreRequest.getAttribute(MultiPart.Parser.class.getName());
+                //TODO support cross environment multipart
+                if (multipart instanceof MultiPart.Parser multiPartParser)
+                {
+                    _multiParts = multiPartParser;
+                    return _multiParts.getParts();
+                }
+            }
+
+            MultipartConfigElement config = (MultipartConfigElement)getAttribute(MULTIPART_CONFIG_ELEMENT);
             if (config == null)
                 throw new IllegalStateException("No multipart config for servlet");
 
-            _multiParts = newMultiParts(config);
-            Collection<Part> parts = _multiParts.getParts();
-            setNonComplianceViolationsOnRequest();
+            int maxFormContentSize = ContextHandler.DEFAULT_MAX_FORM_CONTENT_SIZE;
+            int maxFormKeys = ContextHandler.DEFAULT_MAX_FORM_KEYS;
+            if (_context != null)
+            {
+                ContextHandler contextHandler = _context.getContextHandler();
+                maxFormContentSize = contextHandler.getMaxFormContentSize();
+                maxFormKeys = contextHandler.getMaxFormKeys();
+            }
+            else
+            {
+                maxFormContentSize = lookupServerAttribute(ContextHandler.MAX_FORM_CONTENT_SIZE_KEY, maxFormContentSize);
+                maxFormKeys = lookupServerAttribute(ContextHandler.MAX_FORM_KEYS_KEY, maxFormKeys);
+            }
+
+            MultiPartCompliance multiPartCompliance = getHttpChannel().getHttpConfiguration().getMultiPartCompliance();
+
+            _multiParts = newMultiParts(multiPartCompliance, config, maxFormKeys);
+
+            Collection<Part> parts;
+            try
+            {
+                parts = _multiParts.getParts();
+            }
+            catch (BadMessageException e)
+            {
+                throw e;
+            }
+            // Catch RuntimeException to handle IllegalStateException, IllegalArgumentException, CharacterEncodingException, etc .. (long list)
+            catch (RuntimeException | IOException e)
+            {
+                throw new BadMessageException("Unable to parse form content", e);
+            }
+            reportComplianceViolations();
 
             String formCharset = null;
             Part charsetPart = _multiParts.getPart("_charset_");
@@ -2030,11 +2107,16 @@ public class Request implements HttpServletRequest
             else
                 defaultCharset = StandardCharsets.UTF_8;
 
+            long formContentSize = 0;
             ByteArrayOutputStream os = null;
             for (Part p : parts)
             {
                 if (p.getSubmittedFileName() == null)
                 {
+                    formContentSize = Math.addExact(formContentSize, p.getSize());
+                    if (maxFormContentSize >= 0 && formContentSize > maxFormContentSize)
+                        throw new IllegalStateException("Form is larger than max length " + maxFormContentSize);
+
                     // Servlet Spec 3.0 pg 23, parts without filename must be put into params.
                     String charset = null;
                     if (p.getContentType() != null)
@@ -2048,37 +2130,32 @@ public class Request implements HttpServletRequest
 
                         String content = os.toString(charset == null ? defaultCharset : Charset.forName(charset));
                         if (_contentParameters == null)
-                            _contentParameters = params == null ? new MultiMap<>() : params;
+                            _contentParameters = params == null ? new Fields(true) : params;
                         _contentParameters.add(p.getName(), content);
                     }
                     os.reset();
                 }
             }
+
+            if (_crossContextDispatchSupported)
+                _coreRequest.setAttribute(MultiPart.Parser.class.getName(), _multiParts);
         }
 
         return _multiParts.getParts();
     }
 
-    private void setNonComplianceViolationsOnRequest()
+    private void reportComplianceViolations()
     {
-        @SuppressWarnings("unchecked")
-        List<String> violations = (List<String>)getAttribute(HttpCompliance.VIOLATIONS_ATTR);
-        if (violations != null)
-            return;
-
-        EnumSet<MultiPartFormInputStream.NonCompliance> nonComplianceWarnings = _multiParts.getNonComplianceWarnings();
-        violations = new ArrayList<>();
-        for (MultiPartFormInputStream.NonCompliance nc : nonComplianceWarnings)
-        {
-            violations.add(nc.name() + ": " + nc.getURL());
-        }
-        setAttribute(HttpCompliance.VIOLATIONS_ATTR, violations);
+        ComplianceViolation.Listener complianceViolationListener = org.eclipse.jetty.server.HttpChannel.from(getCoreRequest()).getComplianceViolationListener();
+        List<ComplianceViolation.Event> nonComplianceWarnings = _multiParts.getNonComplianceWarnings();
+        for (ComplianceViolation.Event nc : nonComplianceWarnings)
+            complianceViolationListener.onComplianceViolation(new ComplianceViolation.Event(nc.mode(), nc.violation(), nc.details()));
     }
 
-    private MultiPartFormInputStream newMultiParts(MultipartConfigElement config) throws IOException
+    private MultiPart.Parser newMultiParts(MultiPartCompliance multiPartCompliance, MultipartConfigElement config, int maxParts) throws IOException
     {
-        return new MultiPartFormInputStream(getInputStream(), getContentType(), config,
-            (_context != null ? (File)_context.getAttribute("jakarta.servlet.context.tempdir") : null));
+        File contextTmpDir = (_context != null ? (File)_context.getAttribute(ServletContext.TEMPDIR) : null);
+        return MultiPart.newFormDataParser(multiPartCompliance, getInputStream(), getContentType(), config, contextTmpDir, maxParts);
     }
 
     @Override
@@ -2107,50 +2184,50 @@ public class Request implements HttpServletRequest
 
     public void mergeQueryParameters(String oldQuery, String newQuery)
     {
-        MultiMap<String> newQueryParams = null;
+        Fields newQueryParams = null;
         // Have to assume ENCODING because we can't know otherwise.
         if (newQuery != null)
         {
-            newQueryParams = new MultiMap<>();
-            UrlEncoded.decodeTo(newQuery, newQueryParams, UrlEncoded.ENCODING);
+            newQueryParams = new Fields(true);
+            UrlEncoded.decodeTo(newQuery, newQueryParams::add, UrlEncoded.ENCODING);
         }
 
-        MultiMap<String> oldQueryParams = _queryParameters;
+        Fields oldQueryParams = _queryParameters;
         if (oldQueryParams == null && oldQuery != null)
         {
-            oldQueryParams = new MultiMap<>();
+            oldQueryParams = new Fields(true);
             try
             {
-                UrlEncoded.decodeTo(oldQuery, oldQueryParams, getQueryCharset());
+                UrlEncoded.decodeTo(oldQuery, oldQueryParams::add, getQueryCharset());
             }
             catch (Throwable th)
             {
                 _queryParameters = BAD_PARAMS;
-                throw new BadMessageException(400, "Bad query encoding", th);
+                throw new BadMessageException("Bad query encoding", th);
             }
         }
 
-        MultiMap<String> mergedQueryParams;
-        if (newQueryParams == null || newQueryParams.size() == 0)
+        Fields mergedQueryParams;
+        if (newQueryParams == null || newQueryParams.getSize() == 0)
             mergedQueryParams = oldQueryParams == null ? NO_PARAMS : oldQueryParams;
-        else if (oldQueryParams == null || oldQueryParams.size() == 0)
+        else if (oldQueryParams == null || oldQueryParams.getSize() == 0)
             mergedQueryParams = newQueryParams;
         else
         {
             // Parameters values are accumulated.
-            mergedQueryParams = new MultiMap<>(newQueryParams);
-            mergedQueryParams.addAllValues(oldQueryParams);
+            mergedQueryParams = new Fields(newQueryParams);
+            mergedQueryParams.addAll(oldQueryParams);
         }
 
-        setQueryParameters(mergedQueryParams);
+        setQueryFields(mergedQueryParams);
         resetParameters();
     }
 
     @Override
     public <T extends HttpUpgradeHandler> T upgrade(Class<T> handlerClass) throws IOException, ServletException
     {
-        // TODO ???
-        return null;
+        // Not implemented. Throw ServletException as per spec
+        throw new ServletException("Not implemented");
     }
 
     /**
@@ -2159,6 +2236,30 @@ public class Request implements HttpServletRequest
      */
     public void setServletPathMapping(ServletPathMapping servletPathMapping)
     {
+        // Change request to cross context dispatch
+        if (_crossContextDispatchSupported && _dispatcherType == DispatcherType.REQUEST && _servletPathMapping == null)
+        {
+            String crossContextDispatchType = _coreRequest.getContext().getCrossContextDispatchType(_coreRequest);
+            if (crossContextDispatchType != null)
+            {
+                _dispatcherType = DispatcherType.valueOf(crossContextDispatchType);
+                if (_dispatcherType == DispatcherType.INCLUDE)
+                {
+                    // make a ServletPathMapping with the original data returned by findServletPathMapping method
+                    Object attribute = _coreRequest.getAttribute(CrossContextDispatcher.ORIGINAL_SERVLET_MAPPING);
+                    ServletPathMapping originalMapping = ServletPathMapping.from(attribute);
+                    if (originalMapping != attribute)
+                        _coreRequest.setAttribute(CrossContextDispatcher.ORIGINAL_SERVLET_MAPPING, originalMapping);
+
+                    // Set the include attributes to the target mapping
+                    _coreRequest.setAttribute(RequestDispatcher.INCLUDE_MAPPING, servletPathMapping);
+                    _coreRequest.setAttribute(RequestDispatcher.INCLUDE_SERVLET_PATH, servletPathMapping.getServletPath());
+                    _coreRequest.setAttribute(RequestDispatcher.INCLUDE_PATH_INFO, servletPathMapping.getPathInfo());
+                    _coreRequest.setAttribute(RequestDispatcher.INCLUDE_CONTEXT_PATH, getContext().getContextPath());
+                    _coreRequest.setAttribute(RequestDispatcher.INCLUDE_QUERY_STRING, getHttpURI().getQuery());
+                }
+            }
+        }
         _servletPathMapping = servletPathMapping;
     }
 
@@ -2181,8 +2282,15 @@ public class Request implements HttpServletRequest
         ServletPathMapping mapping;
         if (_dispatcherType == DispatcherType.INCLUDE)
         {
-            Dispatcher.IncludeAttributes include = Attributes.unwrap(_attributes, Dispatcher.IncludeAttributes.class);
-            mapping = (include == null) ? _servletPathMapping : include.getSourceMapping();
+            if (_crossContextDispatchSupported && DispatcherType.INCLUDE.toString().equals(_coreRequest.getContext().getCrossContextDispatchType(_coreRequest)))
+            {
+                mapping = (ServletPathMapping)_coreRequest.getAttribute(CrossContextDispatcher.ORIGINAL_SERVLET_MAPPING);
+            }
+            else
+            {
+                Dispatcher.IncludeAttributes include = Attributes.unwrap(_attributes, Dispatcher.IncludeAttributes.class);
+                mapping = (include == null) ? _servletPathMapping : include.getSourceMapping();
+            }
         }
         else
         {

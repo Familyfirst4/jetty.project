@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -15,8 +15,9 @@ package org.eclipse.jetty.ee9.security;
 
 import jakarta.servlet.ServletRequest;
 import org.eclipse.jetty.ee9.nested.Authentication;
-import org.eclipse.jetty.ee9.nested.UserIdentity;
 import org.eclipse.jetty.ee9.security.authentication.LoginAuthenticator;
+import org.eclipse.jetty.security.IdentityService;
+import org.eclipse.jetty.security.UserIdentity;
 
 /**
  * LoggedOutAuthentication
@@ -45,7 +46,7 @@ public class LoggedOutAuthentication implements Authentication.NonAuthenticated
             IdentityService identityService = _authenticator.getLoginService().getIdentityService();
             UserAuthentication authentication = new UserAuthentication("API", identity);
             if (identityService != null)
-                identityService.associate(identity);
+                identityService.associate(identity, null);
             return authentication;
         }
         return null;

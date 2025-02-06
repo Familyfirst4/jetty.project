@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<!DOCTYPE Configure PUBLIC "-//Jetty//Configure//EN" "https://www.eclipse.org/jetty/configure_9_3.dtd">
+<!DOCTYPE Configure PUBLIC "-//Jetty//Configure//EN" "https://jetty.org/configure_9_3.dtd">
 
 <Configure id="Server" class="org.eclipse.jetty.server.Server">
 
@@ -20,25 +20,19 @@
   <!-- Set handler Collection Structure                            -->
   <!-- =========================================================== -->
   <Set name="handler">
-    <New id="Handlers" class="org.eclipse.jetty.server.handler.HandlerList">
-      <Set name="handlers">
-        <Array type="org.eclipse.jetty.server.Handler">
-          <Item>
-            <New id="Contexts" class="org.eclipse.jetty.server.handler.ContextHandlerCollection" />
-          </Item>
-          <Item>
-            <New id="defcontext" class="org.eclipse.jetty.server.handler.ContextHandler">
-              <Set name="contextPath">/tests</Set>
-              <Set name="ResourceBase"><Property name="test.docroot.base"/>/default
-              </Set>
-              <Set name="Handler">
-                <New id="reshandler" class="org.eclipse.jetty.server.handler.ResourceHandler"/>
-              </Set>
-              <Set name="DisplayName">default</Set>
-            </New>
-          </Item>
-        </Array>
-      </Set>
+    <New id="Contexts" class="org.eclipse.jetty.server.handler.ContextHandlerCollection">
+      <Call name="addHandler">
+        <Arg>
+          <New id="defcontext" class="org.eclipse.jetty.server.handler.ContextHandler">
+            <Set name="contextPath">/tests</Set>
+            <Set name="baseResourceAsString"><Property name="test.docroot.base"/>/default</Set>
+            <Set name="Handler">
+              <New id="reshandler" class="org.eclipse.jetty.server.handler.ResourceHandler"/>
+            </Set>
+            <Set name="DisplayName">default</Set>
+          </New>
+        </Arg>
+      </Call>
     </New>
   </Set>
 

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -19,9 +19,11 @@ import java.io.InputStream;
 import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URL;
-import java.security.AccessController;
-import java.security.PrivilegedAction;
+import java.nio.charset.Charset;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.Enumeration;
@@ -29,12 +31,14 @@ import java.util.EventListener;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.ListIterator;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 import jakarta.servlet.DispatcherType;
 import jakarta.servlet.Filter;
@@ -42,7 +46,6 @@ import jakarta.servlet.FilterRegistration;
 import jakarta.servlet.RequestDispatcher;
 import jakarta.servlet.Servlet;
 import jakarta.servlet.ServletContainerInitializer;
-import jakarta.servlet.ServletContext;
 import jakarta.servlet.ServletContextAttributeEvent;
 import jakarta.servlet.ServletContextAttributeListener;
 import jakarta.servlet.ServletContextEvent;
@@ -58,46 +61,59 @@ import jakarta.servlet.SessionTrackingMode;
 import jakarta.servlet.descriptor.JspConfigDescriptor;
 import jakarta.servlet.descriptor.JspPropertyGroupDescriptor;
 import jakarta.servlet.descriptor.TaglibDescriptor;
-import jakarta.servlet.http.HttpFilter;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSessionActivationListener;
 import jakarta.servlet.http.HttpSessionAttributeListener;
 import jakarta.servlet.http.HttpSessionBindingListener;
 import jakarta.servlet.http.HttpSessionIdListener;
 import jakarta.servlet.http.HttpSessionListener;
+import org.eclipse.jetty.ee10.servlet.ServletContextResponse.EncodingFrom;
+import org.eclipse.jetty.ee10.servlet.ServletContextResponse.OutputType;
 import org.eclipse.jetty.ee10.servlet.security.ConstraintAware;
 import org.eclipse.jetty.ee10.servlet.security.ConstraintMapping;
 import org.eclipse.jetty.ee10.servlet.security.ConstraintSecurityHandler;
-import org.eclipse.jetty.ee10.servlet.security.SecurityHandler;
 import org.eclipse.jetty.http.HttpURI;
-import org.eclipse.jetty.http.MimeTypes;
+import org.eclipse.jetty.http.pathmap.MatchedResource;
+import org.eclipse.jetty.io.IOResources;
+import org.eclipse.jetty.security.SecurityHandler;
+import org.eclipse.jetty.server.Context;
+import org.eclipse.jetty.server.FormFields;
 import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.Response;
-import org.eclipse.jetty.server.SymlinkAllowedResourceAliasChecker;
 import org.eclipse.jetty.server.handler.ContextHandler;
 import org.eclipse.jetty.server.handler.ContextHandlerCollection;
 import org.eclipse.jetty.server.handler.ContextRequest;
-import org.eclipse.jetty.server.handler.gzip.GzipHandler;
+import org.eclipse.jetty.server.handler.ContextResponse;
+import org.eclipse.jetty.session.AbstractSessionManager;
+import org.eclipse.jetty.session.ManagedSession;
+import org.eclipse.jetty.session.SessionManager;
+import org.eclipse.jetty.util.Attributes;
+import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.DecoratedObjectFactory;
 import org.eclipse.jetty.util.DeprecationWarning;
-import org.eclipse.jetty.util.Index;
+import org.eclipse.jetty.util.ExceptionUtil;
 import org.eclipse.jetty.util.Loader;
-import org.eclipse.jetty.util.MultiException;
 import org.eclipse.jetty.util.StringUtil;
+import org.eclipse.jetty.util.TypeUtil;
 import org.eclipse.jetty.util.URIUtil;
 import org.eclipse.jetty.util.annotation.ManagedAttribute;
 import org.eclipse.jetty.util.annotation.ManagedObject;
+import org.eclipse.jetty.util.component.ClassLoaderDump;
 import org.eclipse.jetty.util.component.ContainerLifeCycle;
+import org.eclipse.jetty.util.component.Dumpable;
 import org.eclipse.jetty.util.component.DumpableCollection;
 import org.eclipse.jetty.util.component.Environment;
-import org.eclipse.jetty.util.component.Graceful;
 import org.eclipse.jetty.util.component.LifeCycle;
 import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
+import org.eclipse.jetty.util.resource.Resources;
+import org.eclipse.jetty.util.security.SecurityUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static jakarta.servlet.ServletContext.TEMPDIR;
 
 /**
  * Servlet Context.
@@ -110,13 +126,18 @@ import org.slf4j.LoggerFactory;
  * </pre>
  * <p>
  * This class should have been called ServletContext, but this would have
- * cause confusion with {@link ServletContext}.
+ * cause confusion with {@link jakarta.servlet.ServletContext}.
  */
 @ManagedObject("Servlet Context Handler")
-public class ServletContextHandler extends ContextHandler implements Graceful
+public class ServletContextHandler extends ContextHandler
 {
     private static final Logger LOG = LoggerFactory.getLogger(ServletContextHandler.class);
-    protected static final Environment __environment = Environment.ensure("ee10");
+    public static final Environment ENVIRONMENT = Environment.ensure("ee10");
+    /**
+     * @deprecated Use {@link ServletContextHandler#ENVIRONMENT} instead.
+     */
+    @Deprecated(since = "12.0.9", forRemoval = true)
+    public static final Environment __environment = ENVIRONMENT;
     public static final Class<?>[] SERVLET_LISTENER_TYPES =
         {
             ServletContextListener.class,
@@ -130,11 +151,10 @@ public class ServletContextHandler extends ContextHandler implements Graceful
 
     public static final int DEFAULT_LISTENER_TYPE_INDEX = 1;
     public static final int EXTENDED_LISTENER_TYPE_INDEX = 0;
-    public static final String MANAGED_ATTRIBUTES = "org.eclipse.jetty.server.context.ManagedAttributes";
-    public static final String MAX_FORM_KEYS_KEY = "org.eclipse.jetty.server.Request.maxFormKeys";
-    public static final String MAX_FORM_CONTENT_SIZE_KEY = "org.eclipse.jetty.server.Request.maxFormContentSize";
-    public static final int DEFAULT_MAX_FORM_KEYS = 1000;
-    public static final int DEFAULT_MAX_FORM_CONTENT_SIZE = 200000;
+    public static final String MAX_FORM_KEYS_KEY = FormFields.MAX_FIELDS_ATTRIBUTE;
+    public static final String MAX_FORM_CONTENT_SIZE_KEY = FormFields.MAX_LENGTH_ATTRIBUTE;
+    public static final int DEFAULT_MAX_FORM_KEYS = FormFields.MAX_FIELDS_DEFAULT;
+    public static final int DEFAULT_MAX_FORM_CONTENT_SIZE = FormFields.MAX_LENGTH_DEFAULT;
 
     public static final int SESSIONS = 1;
     public static final int SECURITY = 2;
@@ -148,47 +168,41 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         DESTROYED
     }
 
-    /**
-     * The type of protected target match
-     * @see #_protectedTargets
-     */
-    protected enum ProtectedTargetType
-    {
-        EXACT,
-        PREFIX
-    }
-
-    public static ServletContextHandler getServletContextHandler(ServletContext servletContext, String purpose)
+    public static ServletContextHandler getServletContextHandler(jakarta.servlet.ServletContext servletContext, String purpose)
     {
         if (servletContext instanceof ServletContextApi servletContextApi)
             return servletContextApi.getContext().getServletContextHandler();
+        ServletContextHandler sch = getCurrentServletContextHandler();
+        if (sch != null)
+            return sch;
         throw new IllegalStateException("No Jetty ServletContextHandler, " + purpose + " unavailable");
     }
 
-    public static ServletContextHandler getServletContextHandler(ServletContext servletContext)
+    public static ServletContextHandler getServletContextHandler(jakarta.servlet.ServletContext servletContext)
     {
         if (servletContext instanceof ServletContextApi)
             return ((ServletContextApi)servletContext).getContext().getServletContextHandler();
-        return null;
+
+        return getCurrentServletContextHandler();
     }
 
-    public static ServletContext getCurrentServletContext()
+    public static jakarta.servlet.ServletContext getCurrentServletContext()
     {
         return getServletContext(ContextHandler.getCurrentContext());
     }
 
-    public static ServletContext getServletContext(ContextHandler.Context context)
+    public static jakarta.servlet.ServletContext getServletContext(Context context)
     {
-        if (context instanceof Context)
-            return ((Context)context).getServletContext();
+        if (context instanceof ServletScopedContext)
+            return ((ServletScopedContext)context).getServletContext();
         return null;
     }
 
     public static ServletContextHandler getCurrentServletContextHandler()
     {
-        ContextHandler.Context context = ContextHandler.getCurrentContext();
-        if (context instanceof Context)
-            return ((Context)context).getServletContextHandler();
+        Context context = ContextHandler.getCurrentContext();
+        if (context instanceof ServletScopedContext)
+            return ((ServletScopedContext)context).getServletContextHandler();
         return null;
     }
 
@@ -201,25 +215,21 @@ public class ServletContextHandler extends ContextHandler implements Graceful
     private String _defaultRequestCharacterEncoding;
     private String _defaultResponseCharacterEncoding;
     private String _contextPathEncoded = "/";
-    protected MimeTypes _mimeTypes; // TODO move to core context?
     private Map<String, String> _localeEncodingMap;
     private String[] _welcomeFiles;
     private Logger _logger;
-    protected boolean _allowNullPathInfo;
     private int _maxFormKeys = Integer.getInteger(MAX_FORM_KEYS_KEY, DEFAULT_MAX_FORM_KEYS);
     private int _maxFormContentSize = Integer.getInteger(MAX_FORM_CONTENT_SIZE_KEY, DEFAULT_MAX_FORM_CONTENT_SIZE);
-    private boolean _usingSecurityManager = System.getSecurityManager() != null;
+    private boolean _usingSecurityManager = getSecurityManager() != null;
 
     private final List<EventListener> _programmaticListeners = new CopyOnWriteArrayList<>();
     private final List<ServletContextListener> _servletContextListeners = new CopyOnWriteArrayList<>();
     private final List<ServletContextListener> _destroyServletContextListeners = new ArrayList<>();
-    protected final List<ServletContextAttributeListener> _servletContextAttributeListeners = new CopyOnWriteArrayList<>();
+    private final List<ServletContextAttributeListener> _servletContextAttributeListeners = new CopyOnWriteArrayList<>();
     private final List<ServletRequestListener> _servletRequestListeners = new CopyOnWriteArrayList<>();
     private final List<ServletRequestAttributeListener> _servletRequestAttributeListeners = new CopyOnWriteArrayList<>();
     private final List<ServletContextScopeListener> _contextListeners = new CopyOnWriteArrayList<>();
     private final Set<EventListener> _durableListeners = new HashSet<>();
-    private Index<ProtectedTargetType> _protectedTargets = Index.empty(false);
-    private final List<AliasCheck> _aliasChecks = new CopyOnWriteArrayList<>();
 
     protected final DecoratedObjectFactory _objFactory;
 //    protected Class<? extends SecurityHandler> _defaultSecurityHandlerClass = org.eclipse.jetty.security.ConstraintSecurityHandler.class;
@@ -238,100 +248,83 @@ public class ServletContextHandler extends ContextHandler implements Graceful
 
     public ServletContextHandler(String contextPath)
     {
-        this(null, contextPath);
+        this(contextPath, null, null, null, null);
     }
 
     public ServletContextHandler(int options)
     {
-        this(null, null, options);
+        this(null, options);
     }
 
-    public ServletContextHandler(Container parent, String contextPath)
+    public ServletContextHandler(String contextPath, int options)
     {
-        this(parent, contextPath, null, null, null, null);
+        this(contextPath, null, null, null, null, options);
     }
 
-    public ServletContextHandler(Container parent, String contextPath, int options)
+    public ServletContextHandler(String contextPath, boolean sessions, boolean security)
     {
-        this(parent, contextPath, null, null, null, null, options);
+        this(contextPath, (sessions ? SESSIONS : 0) | (security ? SECURITY : 0));
     }
 
-    public ServletContextHandler(Container parent, String contextPath, boolean sessions, boolean security)
+    public ServletContextHandler(SessionHandler sessionHandler, SecurityHandler securityHandler, ServletHandler servletHandler, ErrorHandler errorHandler)
     {
-        this(parent, contextPath, (sessions ? SESSIONS : 0) | (security ? SECURITY : 0));
+        this(null, sessionHandler, securityHandler, servletHandler, errorHandler);
     }
 
-    public ServletContextHandler(Container parent, SessionHandler sessionHandler, SecurityHandler securityHandler, ServletHandler servletHandler, ErrorHandler errorHandler)
+    public ServletContextHandler(String contextPath, SessionHandler sessionHandler, SecurityHandler securityHandler, ServletHandler servletHandler, ErrorHandler errorHandler)
     {
-        this(parent, null, sessionHandler, securityHandler, servletHandler, errorHandler);
+        this(contextPath, sessionHandler, securityHandler, servletHandler, errorHandler, 0);
     }
 
-    public ServletContextHandler(Container parent, String contextPath, SessionHandler sessionHandler, SecurityHandler securityHandler, ServletHandler servletHandler, ErrorHandler errorHandler)
-    {
-        this(parent, contextPath, sessionHandler, securityHandler, servletHandler, errorHandler, 0);
-    }
-
-    public ServletContextHandler(Container parent, String contextPath, SessionHandler sessionHandler, SecurityHandler securityHandler, ServletHandler servletHandler, ErrorHandler errorHandler, int options)
+    public ServletContextHandler(String contextPath, SessionHandler sessionHandler, SecurityHandler securityHandler, ServletHandler servletHandler, ErrorHandler errorHandler, int options)
     {
         _servletContext = newServletContextApi();
-        
-        if (File.separatorChar == '/')
-            addAliasCheck(new SymlinkAllowedResourceAliasChecker(this));
 
         if (contextPath != null)
             setContextPath(contextPath);
-        if (parent instanceof Handler.Wrapper)
-            ((Handler.Wrapper)parent).setHandler(this);
-        else if (parent instanceof Collection)
-            parent.addHandler(this);
 
         _options = options;
         _sessionHandler = sessionHandler;
         _securityHandler = securityHandler;
         _servletHandler = servletHandler;
 
+        setErrorHandler(errorHandler);
+
         _objFactory = new DecoratedObjectFactory();
-        addBean(_objFactory, true);
+        installBean(_objFactory, true);
 
         // Link the handlers
         relinkHandlers();
-
-        /*
-        TODO: error handling.
-        if (errorHandler != null)
-            setErrorHandler(errorHandler);
-        */
     }
-    
+
+    @Override
+    public void setTempDirectory(File tempDirectory)
+    {
+        super.setTempDirectory(tempDirectory);
+        setAttribute(TEMPDIR, getTempDirectory());
+    }
+
     public ServletContextApi newServletContextApi()
     {
         return new ServletContextApi();
     }
 
     @Override
+    public InvocationType getInvocationType()
+    {
+        return InvocationType.BLOCKING;
+    }
+
+    @Override
     public void dump(Appendable out, String indent) throws IOException
     {
-        // TODO almost certainly this is wrong
-        super.dump(out, indent);
         dumpObjects(out, indent,
+            new ClassLoaderDump(getClassLoader()),
+            Dumpable.named("context " + this, getContext()),
+            Dumpable.named("handler attributes " + this, getContext().getPersistentAttributes()),
+            Dumpable.named("maxFormKeys ", getMaxFormKeys()),
+            Dumpable.named("maxFormContentSize ", getMaxFormContentSize()),
             new DumpableCollection("initparams " + this, getInitParams().entrySet()));
-    }
-
-    /**
-     * @return the allowNullPathInfo true if /context is not redirected to /context/
-     */
-    @ManagedAttribute("Checks if the /context is not redirected to /context/")
-    public boolean getAllowNullPathInfo()
-    {
-        return _allowNullPathInfo;
-    }
-
-    /**
-     * @param allowNullPathInfo true if /context is not redirected to /context/
-     */
-    public void setAllowNullPathInfo(boolean allowNullPathInfo)
-    {
-        _allowNullPathInfo = allowNullPathInfo;
     }
 
     public boolean isUsingSecurityManager()
@@ -341,7 +334,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
 
     public void setUsingSecurityManager(boolean usingSecurityManager)
     {
-        if (usingSecurityManager && System.getSecurityManager() == null)
+        if (usingSecurityManager && getSecurityManager() == null)
             throw new IllegalStateException("No security manager");
         _usingSecurityManager = usingSecurityManager;
     }
@@ -356,7 +349,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
 
     /**
      * Get the context path in a form suitable to be returned from {@link HttpServletRequest#getContextPath()}
-     * or {@link ServletContext#getContextPath()}.
+     * or {@link jakarta.servlet.ServletContext#getContextPath()}.
      *
      * @return Returns the encoded contextPath, or empty string for root context
      */
@@ -527,21 +520,20 @@ public class ServletContextHandler extends ContextHandler implements Graceful
                 try
                 {
                     //Call context listeners
-                    MultiException ex = new MultiException();
+                    Throwable multiException = null;
                     ServletContextEvent event = new ServletContextEvent(getServletContext());
-                    Collections.reverse(_destroyServletContextListeners);
-                    for (ServletContextListener listener : _destroyServletContextListeners)
+                    for (ListIterator<ServletContextListener> i = TypeUtil.listIteratorAtEnd(_destroyServletContextListeners); i.hasPrevious();)
                     {
                         try
                         {
-                            callContextDestroyed(listener, event);
+                            callContextDestroyed(i.previous(), event);
                         }
                         catch (Exception x)
                         {
-                            ex.add(x);
+                            multiException = ExceptionUtil.combine(multiException, x);
                         }
                     }
-                    ex.ifExceptionThrow();
+                    ExceptionUtil.ifExceptionThrow(multiException);
                 }
                 finally
                 {
@@ -585,73 +577,19 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         if (!_servletRequestListeners.isEmpty())
         {
             final ServletRequestEvent sre = new ServletRequestEvent(getServletContext(), request);
-            for (int i = _servletRequestListeners.size(); i-- > 0; )
+            for (ListIterator<ServletRequestListener> i = TypeUtil.listIteratorAtEnd(_servletRequestListeners); i.hasPrevious();)
             {
-                _servletRequestListeners.get(i).requestDestroyed(sre);
+                i.previous().requestDestroyed(sre);
             }
         }
 
         if (!_servletRequestAttributeListeners.isEmpty())
         {
-            for (int i = _servletRequestAttributeListeners.size(); i-- > 0; )
+            for (ListIterator<ServletRequestAttributeListener> i = TypeUtil.listIteratorAtEnd(_servletRequestAttributeListeners); i.hasPrevious();)
             {
-                scopedRequest.removeEventListener(_servletRequestAttributeListeners.get(i));
+                scopedRequest.removeEventListener(i.previous());
             }
         }
-    }
-
-    /**
-     * Check the target. Called by {@link #handle(Request)} when a target within a context is determined. If
-     * the target is protected, 404 is returned.
-     *
-     * @param target the target to test
-     * @return true if target is a protected target
-     */
-    public boolean isProtectedTarget(String target)
-    {
-        if (target == null || _protectedTargets.isEmpty())
-            return false;
-
-        if (target.startsWith("//"))
-            target = URIUtil.compactPath(target);
-
-        ProtectedTargetType type = _protectedTargets.getBest(target);
-
-        return type == ProtectedTargetType.PREFIX ||
-            type == ProtectedTargetType.EXACT && _protectedTargets.get(target) == ProtectedTargetType.EXACT;
-    }
-
-    /**
-     * @param targets Array of URL prefix. Each prefix is in the form /path and will match either /path exactly or /path/anything
-     */
-    public void setProtectedTargets(String[] targets)
-    {
-        Index.Builder<ProtectedTargetType> builder = new Index.Builder<>();
-        if (targets != null)
-        {
-            for (String t : targets)
-            {
-                if (!t.startsWith("/"))
-                    throw new IllegalArgumentException("Bad protected target: " + t);
-
-                builder.with(t, ProtectedTargetType.EXACT);
-                builder.with(t + "/", ProtectedTargetType.PREFIX);
-                builder.with(t + "?", ProtectedTargetType.PREFIX);
-                builder.with(t + "#", ProtectedTargetType.PREFIX);
-                builder.with(t + ";", ProtectedTargetType.PREFIX);
-            }
-        }
-        _protectedTargets = builder.caseSensitive(false).build();
-    }
-
-    public String[] getProtectedTargets()
-    {
-        if (_protectedTargets == null)
-            return null;
-
-        return _protectedTargets.keySet().stream()
-            .filter(s -> _protectedTargets.get(s) == ProtectedTargetType.EXACT)
-            .toArray(String[]::new);
     }
 
     public void setDefaultRequestCharacterEncoding(String encoding)
@@ -701,7 +639,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         }
 
         super.setContextPath(contextPath);
-        _contextPathEncoded = URIUtil.encodePath(contextPath);
+        _contextPathEncoded = URIUtil.canonicalPath(contextPath);
 
         if (getServer() != null && (getServer().isStarting() || getServer().isStarted()))
         {
@@ -715,24 +653,6 @@ public class ServletContextHandler extends ContextHandler implements Graceful
                 }
             }
         }
-    }
-
-    /**
-     * @return Returns the mimeTypes.
-     */
-    public MimeTypes getMimeTypes()
-    {
-        if (_mimeTypes == null)
-            _mimeTypes = new MimeTypes();
-        return _mimeTypes;
-    }
-
-    /**
-     * @param mimeTypes The mimeTypes to set.
-     */
-    public void setMimeTypes(MimeTypes mimeTypes)
-    {
-        _mimeTypes = mimeTypes;
     }
 
     public void setWelcomeFiles(String[] files)
@@ -805,8 +725,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
     {
         if (_localeEncodingMap == null)
             return null;
-        String encoding = _localeEncodingMap.get(locale);
-        return encoding;
+        return _localeEncodingMap.get(locale);
     }
 
     /**
@@ -847,62 +766,18 @@ public class ServletContextHandler extends ContextHandler implements Graceful
      */
     public Resource getResource(String pathInContext) throws MalformedURLException
     {
-        if (pathInContext == null || !pathInContext.startsWith(URIUtil.SLASH))
+        if (pathInContext == null || !pathInContext.startsWith("/"))
             throw new MalformedURLException(pathInContext);
 
-        Resource baseResource = getResourceBase();
+        Resource baseResource = getBaseResource();
         if (baseResource == null)
             return null;
 
-        try
-        {
-            // addPath with accept non-canonical paths that don't go above the root,
-            // but will treat them as aliases. So unless allowed by an AliasChecker
-            // they will be rejected below.
-            Resource resource = baseResource.addPath(pathInContext);
-
-            if (checkAlias(pathInContext, resource))
-                return resource;
-            return null;
-        }
-        catch (Exception e)
-        {
-            LOG.trace("IGNORED", e);
-        }
-
-        return null;
+        return baseResource.resolve(pathInContext);
     }
 
     /**
-     * @param path the path to check the alias for
-     * @param resource the resource
-     * @return True if the alias is OK
-     */
-    public boolean checkAlias(String path, Resource resource)
-    {
-        // Is the resource aliased?
-        if (resource.isAlias())
-        {
-            if (LOG.isDebugEnabled())
-                LOG.debug("Aliased resource: {}~={}", resource, resource.getAlias());
-
-            // alias checks
-            for (AliasCheck check : getAliasChecks())
-            {
-                if (check.check(path, resource))
-                {
-                    if (LOG.isDebugEnabled())
-                        LOG.debug("Aliased resource: {} approved by {}", resource, check);
-                    return true;
-                }
-            }
-            return false;
-        }
-        return true;
-    }
-
-    /**
-     * Convert URL to Resource wrapper for {@link Resource#newResource(URL)} enables extensions to provide alternate resource implementations.
+     * Convert URL to Resource wrapper for {@link ResourceFactory#newResource(URL)} enables extensions to provide alternate resource implementations.
      *
      * @param url the url to convert to a Resource
      * @return the Resource for that url
@@ -910,31 +785,29 @@ public class ServletContextHandler extends ContextHandler implements Graceful
      */
     public Resource newResource(URL url) throws IOException
     {
-        return Resource.newResource(url);
+        return ResourceFactory.of(this).newResource(url);
     }
 
     /**
-     * Convert URL to Resource wrapper for {@link Resource#newResource(URL)} enables extensions to provide alternate resource implementations.
+     * Convert URL to Resource wrapper for {@link ResourceFactory#newResource(URL)} enables extensions to provide alternate resource implementations.
      *
      * @param uri the URI to convert to a Resource
      * @return the Resource for that URI
-     * @throws IOException if unable to create a Resource from the URL
      */
-    public Resource newResource(URI uri) throws IOException
+    public Resource newResource(URI uri)
     {
-        return Resource.newResource(uri);
+        return ResourceFactory.of(this).newResource(uri);
     }
 
     /**
-     * Convert a URL or path to a Resource. The default implementation is a wrapper for {@link Resource#newResource(String)}.
+     * Convert a URL or path to a Resource. The default implementation is a wrapper for {@link ResourceFactory#newResource(String)}.
      *
      * @param urlOrPath The URL or path to convert
      * @return The Resource for the URL/path
-     * @throws IOException The Resource could not be created.
      */
-    public Resource newResource(String urlOrPath) throws IOException
+    public Resource newResource(String urlOrPath)
     {
-        return Resource.newResource(urlOrPath);
+        return ResourceFactory.of(this).newResource(urlOrPath);
     }
 
     public Set<String> getResourcePaths(String path)
@@ -943,22 +816,19 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         {
             Resource resource = getResource(path);
 
-            if (resource != null && resource.exists())
-            {
-                if (!path.endsWith(URIUtil.SLASH))
-                    path = path + URIUtil.SLASH;
+            if (!path.endsWith("/"))
+                path = path + '/';
 
-                String[] l = resource.list();
-                if (l != null)
-                {
-                    HashSet<String> set = new HashSet<>();
-                    for (int i = 0; i < l.length; i++)
-                    {
-                        set.add(path + l[i]);
-                    }
-                    return set;
-                }
+            HashSet<String> set = new HashSet<>();
+            for (Resource item: resource.list())
+            {
+                String entry = path + item.getFileName();
+                if (item.isDirectory())
+                    entry = entry + '/';
+
+                set.add(entry);
             }
+            return set;
         }
         catch (Exception e)
         {
@@ -967,107 +837,39 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         return Collections.emptySet();
     }
 
-    private String normalizeHostname(String host)
-    {
-        if (host == null)
-            return null;
-        int connectorIndex = host.indexOf('@');
-        String connector = null;
-        if (connectorIndex > 0)
-        {
-            host = host.substring(0, connectorIndex);
-            connector = host.substring(connectorIndex);
-        }
-
-        if (host.endsWith("."))
-            host = host.substring(0, host.length() - 1);
-        if (connector != null)
-            host += connector;
-
-        return host;
-    }
-
-    /**
-     * Add an AliasCheck instance to possibly permit aliased resources
-     *
-     * @param check The alias checker
-     */
-    public void addAliasCheck(AliasCheck check)
-    {
-        _aliasChecks.add(check);
-        if (check instanceof LifeCycle)
-            addManaged((LifeCycle)check);
-        else
-            addBean(check);
-    }
-
-    /**
-     * @return Immutable list of Alias checks
-     */
-    public List<AliasCheck> getAliasChecks()
-    {
-        return Collections.unmodifiableList(_aliasChecks);
-    }
-
-    /**
-     * @param checks list of AliasCheck instances
-     */
-    public void setAliasChecks(List<AliasCheck> checks)
-    {
-        clearAliasChecks();
-        checks.forEach(this::addAliasCheck);
-    }
-
-    /**
-     * clear the list of AliasChecks
-     */
-    public void clearAliasChecks()
-    {
-        _aliasChecks.forEach(this::removeBean);
-        _aliasChecks.clear();
-    }
-
     /**
      * Listener for all threads entering context scope, including async IO callbacks
      */
-    public static interface ServletContextScopeListener extends EventListener
+    public interface ServletContextScopeListener extends EventListener
     {
         /**
          * @param context The context being entered
          * @param request A request that is applicable to the scope, or null
          */
-        void enterScope(Context context, ServletContextRequest request);
+        void enterScope(ServletScopedContext context, ServletContextRequest request);
 
         /**
          * @param context The context being exited
          * @param request A request that is applicable to the scope, or null
          */
-        void exitScope(Context context, ServletContextRequest request);
+        void exitScope(ServletScopedContext context, ServletContextRequest request);
     }
 
-    public ServletContext getServletContext()
+    public jakarta.servlet.ServletContext getServletContext()
     {
         return getContext().getServletContext();
     }
 
     @Override
-    protected ContextHandler.Context newContext()
+    protected ScopedContext newContext()
     {
-        return new Context();
+        return new ServletScopedContext();
     }
 
     @Override
-    public Context getContext()
+    public ServletScopedContext getContext()
     {
-        return (Context)super.getContext();
-    }
-
-    protected void setParent(Container parent)
-    {
-        if (parent instanceof Handler.Wrapper)
-            ((Handler.Wrapper)parent).setHandler(this);
-        else if (parent instanceof Collection)
-            ((Collection)parent).addHandler(this);
+        return (ServletScopedContext)super.getContext();
     }
 
     /**
@@ -1104,7 +906,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
 
             if (listener instanceof ServletContextScopeListener)
             {
-                ContextHandler.Context currentContext = ContextHandler.getCurrentContext();
+                Context currentContext = ContextHandler.getCurrentContext();
                 _contextListeners.add((ServletContextScopeListener)listener);
                 if (currentContext != null)
                     ((ServletContextScopeListener)listener).enterScope(getContext(), null);
@@ -1153,17 +955,16 @@ public class ServletContextHandler extends ContextHandler implements Graceful
             setSecurityHandler((SecurityHandler)handler);
         else if (handler instanceof ServletHandler)
             setServletHandler((ServletHandler)handler);
-        else if (handler instanceof GzipHandler)
-            setGzipHandler((GzipHandler)handler);
         else
         {
             if (handler != null)
                 LOG.warn("ServletContextHandler.setHandler should not be called directly. Use insertHandler or setSessionHandler etc.");
             super.setHandler(handler);
+            relinkHandlers();
         }
     }
 
-    private void doSetHandler(Handler.Nested wrapper, Handler handler)
+    private void doSetHandler(Singleton wrapper, Handler handler)
     {
         if (wrapper == this)
             super.setHandler(handler);
@@ -1171,10 +972,9 @@ public class ServletContextHandler extends ContextHandler implements Graceful
             wrapper.setHandler(handler);
     }
 
-    // TODO: review this.
     private void relinkHandlers()
     {
-        Handler.Nested handler = this;
+        Singleton handler = this;
 
         // link session handler
         if (getSessionHandler() != null)
@@ -1182,9 +982,9 @@ public class ServletContextHandler extends ContextHandler implements Graceful
             while (!(handler.getHandler() instanceof SessionHandler) &&
                 !(handler.getHandler() instanceof SecurityHandler) &&
                 !(handler.getHandler() instanceof ServletHandler) &&
-                handler.getHandler() instanceof Handler.Nested)
+                handler.getHandler() instanceof Singleton wrapped)
             {
-                handler = (Handler.Nested)handler.getHandler();
+                handler = wrapped;
             }
 
             if (handler.getHandler() != _sessionHandler)
@@ -1197,9 +997,9 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         {
             while (!(handler.getHandler() instanceof SecurityHandler) &&
                 !(handler.getHandler() instanceof ServletHandler) &&
-                handler.getHandler() instanceof Handler.Nested)
+                handler.getHandler() instanceof Singleton wrapped)
             {
-                handler = (Handler.Nested)handler.getHandler();
+                handler = wrapped;
             }
 
             if (handler.getHandler() != _securityHandler)
@@ -1211,9 +1011,9 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         if (getServletHandler() != null)
         {
             while (!(handler.getHandler() instanceof ServletHandler) &&
-                handler.getHandler() instanceof Handler.Nested)
+                handler.getHandler() instanceof Singleton wrapped)
             {
-                handler = (Handler.Nested)handler.getHandler();
+                handler = wrapped;
             }
 
             if (handler.getHandler() != _servletHandler)
@@ -1224,77 +1024,49 @@ public class ServletContextHandler extends ContextHandler implements Graceful
     @Override
     protected void doStart() throws Exception
     {
-        getContext().call(() -> 
-        {    
-            _objFactory.addDecorator(new DeprecationWarning());
-            getServletContext().setAttribute(DecoratedObjectFactory.ATTR, _objFactory);
+        _objFactory.addDecorator(new DeprecationWarning());
+        getServletContext().setAttribute(DecoratedObjectFactory.ATTR, _objFactory);
 
-            if (getContextPath() == null)
-                throw new IllegalStateException("Null contextPath");
+        if (getContextPath() == null)
+            throw new IllegalStateException("Null contextPath");
 
-            Resource baseResource = getResourceBase();
-            if (baseResource != null && baseResource.isAlias())
-                LOG.warn("BaseResource {} is aliased to {} in {}. May not be supported in future releases.",
-                    baseResource, baseResource.getAlias(), this);
+        Resource baseResource = getBaseResource();
+        if (baseResource != null && baseResource.isAlias())
+            LOG.warn("BaseResource {} is aliased to {} in {}. May not be supported in future releases.",
+                baseResource, baseResource.getRealURI(), this);
 
-            if (_logger == null)
-                _logger = LoggerFactory.getLogger(ContextHandler.class.getName() + getLogNameSuffix());
+        if (_logger == null)
+            _logger = LoggerFactory.getLogger(ContextHandler.class.getName() + getLogNameSuffix());
 
-            ClassLoader oldClassloader = null;
-            Thread currentThread = null;
-            ContextHandler.Context oldContext = null;
+        if (getServer() != null)
+            _servletContext.setAttribute("org.eclipse.jetty.server.Executor", getServer().getThreadPool());
 
-            // TODO who uses this???
-            if (getServer() != null)
-                _servletContext.setAttribute("org.eclipse.jetty.server.Executor", getServer().getThreadPool());
+        _durableListeners.addAll(getEventListeners());
 
-            if (_mimeTypes == null)
-                _mimeTypes = new MimeTypes();
-
-            _durableListeners.addAll(getEventListeners());
-
-            ClassLoader loader = getClassLoader();
-            try
-            {
-                // Set the classloader, context and enter scope
-                if (loader != null)
-                {
-                    currentThread = Thread.currentThread();
-                    oldClassloader = currentThread.getContextClassLoader();
-                    currentThread.setContextClassLoader(loader);
-                }
-
-                // defers the calling of super.doStart()
-                startContext();
-
-                contextInitialized();
-
-                LOG.info("Started {}", this);
-            }
-            finally
-            {
-                exitScope(null);
-                // reset the classloader
-                if (loader != null && currentThread != null)
-                    currentThread.setContextClassLoader(oldClassloader);
-            }
+        getContext().call(() ->
+        {
+            // defers the calling of super.doStart()
+            startContext();
+            contextInitialized();
         }, null);
+
+        LOG.info("Started {}", this);
     }
 
     @Override
     protected void doStop() throws Exception
     {
         // Should we attempt a graceful shutdown?
-        MultiException mex = null;
+        Throwable multiException = null;
 
         ClassLoader oldClassloader = null;
         ClassLoader oldWebapploader = null;
         Thread currentThread = null;
 
-        // TODO: Review.
-        enterScope(null);
+        Context lastContext = ContextHandler.getCurrentContext();
+        ClassLoader lastLoader = enterScope(null);
 
-        Context context = getContext();
+        ServletScopedContext context = getContext();
         try
         {
             // Set the classloader
@@ -1315,12 +1087,6 @@ public class ServletContextHandler extends ContextHandler implements Graceful
             setEventListeners(_durableListeners);
             _durableListeners.clear();
 
-            /*
-            TODO:
-            if (_errorHandler != null)
-                _errorHandler.stop();
-            */
-
             for (EventListener l : _programmaticListeners)
             {
                 removeEventListener(l);
@@ -1340,14 +1106,12 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         }
         catch (Throwable x)
         {
-            if (mex == null)
-                mex = new MultiException();
-            mex.add(x);
+            multiException = ExceptionUtil.combine(multiException, x);
         }
         finally
         {
             _contextStatus = ContextStatus.NOTSET;
-            exitScope(null);
+            exitScope(null, lastContext, lastLoader);
             LOG.info("Stopped {}", this);
             // reset the classloader
             if ((oldClassloader == null || (oldClassloader != oldWebapploader)) && currentThread != null)
@@ -1356,51 +1120,88 @@ public class ServletContextHandler extends ContextHandler implements Graceful
             context.clearAttributes();
         }
 
-        if (mex != null)
-            mex.ifExceptionThrow();
+        ExceptionUtil.ifExceptionThrow(multiException);
 
         _objFactory.clear();
         getServletContext().removeAttribute(DecoratedObjectFactory.ATTR);
     }
 
-    @Override
-    protected ServletContextRequest wrap(Request request, String pathInContext)
+    protected ServletContextRequest newServletContextRequest(ServletChannel servletChannel,
+                                                             Request request,
+                                                             Response response,
+                                                             String decodedPathInContext,
+                                                             MatchedResource<ServletHandler.MappedServlet> matchedResource)
     {
-        ServletHandler.MappedServlet mappedServlet = _servletHandler.getMappedServlet(pathInContext);
+        return new ServletContextRequest(_servletContext, servletChannel, request, response, decodedPathInContext, matchedResource, getSessionHandler());
+    }
+
+    @Override
+    protected ContextRequest wrapRequest(Request request, Response response)
+    {
+        String decodedPathInContext;
+        MatchedResource<ServletHandler.MappedServlet> matchedResource;
+
+        // Need to ask directly to the Context for the pathInContext, rather than using
+        // Request.getPathInContext(), as the request is not yet wrapped in this Context.
+        decodedPathInContext = URIUtil.decodePath(getContext().getPathInContext(request.getHttpURI().getCanonicalPath()));
+        matchedResource = _servletHandler.getMatchedServlet(decodedPathInContext);
+
+
+        if (matchedResource == null)
+            return wrapNoServlet(request, response);
+        ServletHandler.MappedServlet mappedServlet = matchedResource.getResource();
         if (mappedServlet == null)
-            return null;
+            return wrapNoServlet(request, response);
 
         // Get a servlet request, possibly from a cached version in the channel attributes.
-        // TODO We should cache this heavy weight object!  Something like:
-        // TODO: ServletChannel is not properly cleared out so I have disabled the caching of this for now.
-        ServletChannel servletChannel = null; // (ServletChannel)request.getComponents().getCache().get("blah.blah.ServletChannel");
-        if (servletChannel == null)
+        Attributes cache = request.getComponents().getCache();
+        Object cachedChannel = cache.getAttribute(ServletChannel.class.getName());
+        ServletChannel servletChannel;
+        if (cachedChannel instanceof ServletChannel sc && sc.getContext() == getContext() && !sc.isAborted())
         {
-            // TODO this may not be the right object to recycle, but ultimately we want to reuse: HttpInput, HttpOutput, ServletChannelState etc. etc.
-            servletChannel = new ServletChannel();
-            // request.getComponents().getCache().put("blah.blah.ServletChannel", servletChannel); TODO: Re-enable.
+            servletChannel = sc;
+        }
+        else
+        {
+            servletChannel = new ServletChannel(this, request);
+            cache.setAttribute(ServletChannel.class.getName(), servletChannel);
         }
 
-        ServletContextRequest servletContextRequest = new ServletContextRequest(_servletContext, servletChannel, request, pathInContext, mappedServlet);
-        servletChannel.init(servletContextRequest);
+        ServletContextRequest servletContextRequest = newServletContextRequest(servletChannel, request, response, decodedPathInContext, matchedResource);
+        servletChannel.associate(servletContextRequest);
+        Request.addCompletionListener(servletContextRequest, servletChannel::recycle);
         return servletContextRequest;
     }
 
-    @Override
-    protected Request.Processor processByContextHandler(ContextRequest request)
+    private ContextRequest wrapNoServlet(Request request, Response response)
     {
-        ServletContextRequest scopedRequest = Request.as(request, ServletContextRequest.class);
-        DispatcherType dispatch = scopedRequest.getHttpServletRequest().getDispatcherType();
-        if (dispatch == DispatcherType.REQUEST && isProtectedTarget(request.getPathInContext()))
-            return (req, resp, cb) -> Response.writeError(req, resp, cb, HttpServletResponse.SC_NOT_FOUND, null);
-
-        return super.processByContextHandler(request);
+        Handler next = getServletHandler().getHandler();
+        if (next == null)
+            return null;
+        return super.wrapRequest(request, response);
     }
 
     @Override
-    protected void enterScope(Request request)
+    protected ContextResponse wrapResponse(ContextRequest request, Response response)
     {
-        super.enterScope(request);
+        if (request instanceof ServletContextRequest servletContextRequest)
+            return servletContextRequest.getServletContextResponse();
+        return super.wrapResponse(request, response);
+    }
+
+    @Override
+    protected boolean handleByContextHandler(String pathInContext, ContextRequest request, Response response, Callback callback)
+    {
+        boolean initialDispatch = request instanceof ServletContextRequest;
+        if (!initialDispatch)
+            return false;
+        return super.handleByContextHandler(pathInContext, request, response, callback);
+    }
+
+    @Override
+    protected void notifyEnterScope(Request request)
+    {
+        super.notifyEnterScope(request);
 
         ServletContextRequest scopedRequest = Request.as(request, ServletContextRequest.class);
         if (!_contextListeners.isEmpty())
@@ -1420,16 +1221,16 @@ public class ServletContextHandler extends ContextHandler implements Graceful
     }
 
     @Override
-    protected void exitScope(Request request)
+    protected void notifyExitScope(Request request)
     {
         ServletContextRequest scopedRequest = Request.as(request, ServletContextRequest.class);
         if (!_contextListeners.isEmpty())
         {
-            for (int i = _contextListeners.size(); i-- > 0; )
+            for (ListIterator<ServletContextScopeListener> i = TypeUtil.listIteratorAtEnd(_contextListeners); i.hasPrevious(); )
             {
                 try
                 {
-                    _contextListeners.get(i).exitScope(getContext(), scopedRequest);
+                    i.previous().exitScope(getContext(), scopedRequest);
                 }
                 catch (Throwable e)
                 {
@@ -1438,7 +1239,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
             }
         }
 
-        super.exitScope(request);
+        super.notifyExitScope(request);
     }
 
     /**
@@ -1513,7 +1314,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         _startListeners = true;
         String managedAttributes = _initParams.get(MANAGED_ATTRIBUTES);
         if (managedAttributes != null)
-            addEventListener(new ManagedAttributeListener((ServletContextHandler)this, StringUtil.csvSplit(managedAttributes)));
+            addEventListener(new ManagedAttributeListener(this, StringUtil.csvSplit(managedAttributes)));
 
         super.doStart();
 
@@ -1659,7 +1460,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
      * @param dispatches the dispatcher types for this filter
      * @return the FilterHolder that was created
      */
-    public FilterHolder addFilter(HttpFilter filter, String pathSpec, EnumSet<DispatcherType> dispatches)
+    public FilterHolder addFilter(Filter filter, String pathSpec, EnumSet<DispatcherType> dispatches)
     {
         FilterHolder filterHolder = new FilterHolder(filter);
         getServletHandler().addFilterWithMapping(filterHolder, pathSpec, dispatches);
@@ -1734,19 +1535,16 @@ public class ServletContextHandler extends ContextHandler implements Graceful
      */
     protected void addRoles(String... roleNames)
     {
-        /*
-        TODO: implement security.
         //Get a reference to the SecurityHandler, which must be ConstraintAware
         if (_securityHandler != null && _securityHandler instanceof ConstraintAware)
         {
             HashSet<String> union = new HashSet<>();
-            Set<String> existing = ((ConstraintAware)_securityHandler).getRoles();
+            Set<String> existing = ((ConstraintAware)_securityHandler).getKnownRoles();
             if (existing != null)
                 union.addAll(existing);
             union.addAll(Arrays.asList(roleNames));
             ((ConstraintSecurityHandler)_securityHandler).setRoles(union);
         }
-         */
     }
 
     /**
@@ -1807,7 +1605,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         l.contextDestroyed(e);
     }
 
-    private void replaceHandler(Handler.Nested handler, Handler.Nested replacement)
+    private void replaceHandler(Singleton handler, Singleton replacement)
     {
         if (isStarted())
             throw new IllegalStateException("STARTED");
@@ -1818,7 +1616,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
             next = handler.getHandler();
             handler.setHandler((Handler)null);
 
-            Handler.Wrapper wrapper = this;
+            Singleton wrapper = this;
             while (wrapper != null)
             {
                 if (wrapper.getHandler() == handler)
@@ -1827,7 +1625,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
                     break;
                 }
 
-                wrapper = (wrapper.getHandler() instanceof Handler.Wrapper) ? (Handler.Wrapper)wrapper.getHandler() : null;
+                wrapper = (wrapper.getHandler() instanceof Singleton wrapped) ? wrapped : null;
             }
         }
 
@@ -1866,23 +1664,11 @@ public class ServletContextHandler extends ContextHandler implements Graceful
     }
 
     /**
-     * @param gzipHandler the GzipHandler for this ServletContextHandler
-     * @deprecated use {@link #insertHandler(Handler.Nested)} instead
-     */
-    @Deprecated
-    public void setGzipHandler(GzipHandler gzipHandler)
-    {
-        // TODO remove
-        insertHandler(gzipHandler);
-        LOG.warn("ServletContextHandler.setGzipHandler(GzipHandler) is deprecated, use insertHandler(HandlerWrapper) instead.");
-    }
-
-    /**
      * Insert a HandlerWrapper before the first Session, Security or ServletHandler
      * but after any other HandlerWrappers.
      */
     @Override
-    public void insertHandler(Handler.Nested handler)
+    public void insertHandler(Singleton handler)
     {
         if (handler instanceof SessionHandler)
             setSessionHandler((SessionHandler)handler);
@@ -1892,30 +1678,17 @@ public class ServletContextHandler extends ContextHandler implements Graceful
             setServletHandler((ServletHandler)handler);
         else
         {
-            Handler.Nested tail = handler;
-            while (tail.getHandler() instanceof Handler.Wrapper)
-            {
-                tail = (Handler.Wrapper)tail.getHandler();
-            }
+            // We cannot call super.insertHandler here, because it uses this.setHandler
+            // which sets the servletHandlers next handler.
+            // This is the same insert code, but uses super.setHandler, which sets this
+            // handler's next handler.
+            Singleton tail = handler.getTail();
             if (tail.getHandler() != null)
                 throw new IllegalArgumentException("bad tail of inserted wrapper chain");
-
-            // Skip any injected handlers
-            Handler.Nested h = this;
-            while (h.getHandler() instanceof Handler.Nested wrapper)
-            {
-                if (wrapper instanceof SessionHandler ||
-                    wrapper instanceof SecurityHandler ||
-                    wrapper instanceof ServletHandler)
-                    break;
-                h = wrapper;
-            }
-
-            Handler next = h.getHandler();
-            doSetHandler(h, handler);
-            doSetHandler(tail, next);
+            tail.setHandler(getHandler());
+            super.setHandler(handler);
+            relinkHandlers();
         }
-        relinkHandlers();
     }
 
     /**
@@ -1943,6 +1716,11 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         getContext().destroy(listener);
     }
 
+    private static Object getSecurityManager()
+    {
+        return SecurityUtils.getSecurityManager();
+    }
+
     public static class JspPropertyGroup implements JspPropertyGroupDescriptor
     {
         private final List<String> _urlPatterns = new ArrayList<>();
@@ -1957,6 +1735,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         private String _defaultContentType;
         private String _buffer;
         private String _errorOnUndeclaredNamespace;
+        private String _errorOnELNotFound;
 
         @Override
         public java.util.Collection<String> getUrlPatterns()
@@ -1979,7 +1758,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         @Override
         public String getErrorOnELNotFound()
         {
-            return "true";
+            return _errorOnELNotFound;
         }
 
         public void setElIgnored(String s)
@@ -2033,6 +1812,11 @@ public class ServletContextHandler extends ContextHandler implements Graceful
             _errorOnUndeclaredNamespace = errorOnUndeclaredNamespace;
         }
 
+        public void setErrorOnELNotFound(String errorOnELNotFound)
+        {
+            _errorOnELNotFound = errorOnELNotFound;
+        }
+
         @Override
         public String getScriptingInvalid()
         {
@@ -2046,7 +1830,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         }
 
         @Override
-        public java.util.Collection getIncludePreludes()
+        public java.util.Collection<String> getIncludePreludes()
         {
             return new ArrayList<>(_includePreludes); //must be a copy
         }
@@ -2058,7 +1842,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         }
 
         @Override
-        public java.util.Collection getIncludeCodas()
+        public java.util.Collection<String> getIncludeCodas()
         {
             return new ArrayList<>(_includeCodas); //must be a copy
         }
@@ -2104,6 +1888,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         {
             StringBuilder sb = new StringBuilder();
             sb.append("JspPropertyGroupDescriptor:");
+            sb.append(" error-on-el-not-found=").append(_errorOnELNotFound);
             sb.append(" el-ignored=").append(_elIgnored);
             sb.append(" is-xml=").append(_isXml);
             sb.append(" page-encoding=").append(_pageEncoding);
@@ -2169,7 +1954,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         }
 
         @Override
-        public java.util.Collection getTaglibs()
+        public java.util.Collection<TaglibDescriptor> getTaglibs()
         {
             return new ArrayList<>(_taglibs);
         }
@@ -2180,7 +1965,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         }
 
         @Override
-        public java.util.Collection getJspPropertyGroups()
+        public java.util.Collection<JspPropertyGroupDescriptor> getJspPropertyGroups()
         {
             return new ArrayList<>(_jspPropertyGroups);
         }
@@ -2207,7 +1992,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         }
     }
 
-    public class Context extends ContextHandler.Context
+    public class ServletScopedContext extends ScopedContext
     {
         public ServletContextApi getServletContext()
         {
@@ -2262,9 +2047,56 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         {
             _servletContext.setExtendedListenerTypes(b);
         }
+
+        @Override
+        public Object getAttribute(String name)
+        {
+            return switch (name)
+            {
+                case FormFields.MAX_FIELDS_ATTRIBUTE -> getMaxFormKeys();
+                case FormFields.MAX_LENGTH_ATTRIBUTE -> getMaxFormContentSize();
+                default -> super.getAttribute(name);
+            };
+        }
+
+        @Override
+        public Object setAttribute(String name, Object attribute)
+        {
+            return switch (name)
+            {
+                case FormFields.MAX_FIELDS_ATTRIBUTE ->
+                {
+                    int oldValue = getMaxFormKeys();
+                    if (attribute == null)
+                        setMaxFormKeys(DEFAULT_MAX_FORM_KEYS);
+                    else
+                        setMaxFormKeys(Integer.parseInt(attribute.toString()));
+                    yield oldValue;
+                }
+                case FormFields.MAX_LENGTH_ATTRIBUTE ->
+                {
+                    int oldValue = getMaxFormContentSize();
+                    if (attribute == null)
+                        setMaxFormContentSize(DEFAULT_MAX_FORM_CONTENT_SIZE);
+                    else
+                        setMaxFormContentSize(Integer.parseInt(attribute.toString()));
+                    yield oldValue;
+                }
+                default -> super.setAttribute(name, attribute);
+            };
+        }
+
+        @Override
+        public Set<String> getAttributeNameSet()
+        {
+            Set<String> names = new HashSet<>(super.getAttributeNameSet());
+            names.add(FormFields.MAX_FIELDS_ATTRIBUTE);
+            names.add(FormFields.MAX_LENGTH_ATTRIBUTE);
+            return Collections.unmodifiableSet(names);
+        }
     }
 
-    public class ServletContextApi implements ServletContext
+    public class ServletContextApi implements jakarta.servlet.ServletContext
     {
         public static final int SERVLET_MAJOR_VERSION = 6;
         public static final int SERVLET_MINOR_VERSION = 0;
@@ -2318,7 +2150,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
             _effectiveMinorVersion = v;
         }
 
-        public Context getContext()
+        public ServletScopedContext getContext()
         {
             return ServletContextHandler.this.getContext();
         }
@@ -2363,7 +2195,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
             if (holder == null)
             {
                 //new filter
-                holder = handler.newFilterHolder(Source.JAVAX_API);
+                holder = handler.newFilterHolder(Source.JAKARTA_API);
                 holder.setName(filterName);
                 holder.setHeldClass(filterClass);
                 handler.addFilter(holder);
@@ -2392,7 +2224,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
             if (holder == null)
             {
                 //new filter
-                holder = handler.newFilterHolder(Source.JAVAX_API);
+                holder = handler.newFilterHolder(Source.JAKARTA_API);
                 holder.setName(filterName);
                 holder.setClassName(className);
                 handler.addFilter(holder);
@@ -2421,7 +2253,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
             if (holder == null)
             {
                 //new filter
-                holder = handler.newFilterHolder(Source.JAVAX_API);
+                holder = handler.newFilterHolder(Source.JAKARTA_API);
                 holder.setName(filterName);
                 holder.setFilter(filter);
                 handler.addFilter(holder);
@@ -2451,7 +2283,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
             if (holder == null)
             {
                 //new servlet
-                holder = handler.newServletHolder(Source.JAVAX_API);
+                holder = handler.newServletHolder(Source.JAKARTA_API);
                 holder.setName(servletName);
                 holder.setHeldClass(servletClass);
                 handler.addServlet(holder);
@@ -2481,7 +2313,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
             if (holder == null)
             {
                 //new servlet
-                holder = handler.newServletHolder(Source.JAVAX_API);
+                holder = handler.newServletHolder(Source.JAKARTA_API);
                 holder.setName(servletName);
                 holder.setClassName(className);
                 handler.addServlet(holder);
@@ -2510,7 +2342,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
             ServletHolder holder = handler.getServlet(servletName);
             if (holder == null)
             {
-                holder = handler.newServletHolder(Source.JAVAX_API);
+                holder = handler.newServletHolder(Source.JAKARTA_API);
                 holder.setName(servletName);
                 holder.setServlet(servlet);
                 handler.addServlet(holder);
@@ -2537,7 +2369,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
             if (holder == null)
             {
                 //new servlet
-                holder = handler.newServletHolder(Source.JAVAX_API);
+                holder = handler.newServletHolder(Source.JAKARTA_API);
                 holder.setName(servletName);
                 holder.setForcedPath(jspFile);
                 handler.addServlet(holder);
@@ -2582,8 +2414,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         {
             try
             {
-                T result = getContext().decorate(clazz.getDeclaredConstructor().newInstance());
-                return result;
+                return getContext().decorate(clazz.getDeclaredConstructor().newInstance());
             }
             catch (Exception e)
             {
@@ -2594,9 +2425,6 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         @Override
         public Set<SessionTrackingMode> getDefaultSessionTrackingModes()
         {
-            if (!_enabled)
-                throw new UnsupportedOperationException();
-            
             if (_sessionHandler != null)
                 return _sessionHandler.getDefaultSessionTrackingModes();
             return null;
@@ -2605,9 +2433,6 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         @Override
         public Set<SessionTrackingMode> getEffectiveSessionTrackingModes()
         {
-            if (!_enabled)
-                throw new UnsupportedOperationException();
-            
             if (_sessionHandler != null)
                 return _sessionHandler.getEffectiveSessionTrackingModes();
             return null;
@@ -2697,11 +2522,6 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         @Override
         public int getSessionTimeout()
         {
-            if (!isStarting())
-                throw new IllegalStateException();
-            if (!_enabled)
-                throw new UnsupportedOperationException();
-
             int timeout = -1;
             if (_sessionHandler != null)
             {
@@ -2834,7 +2654,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
 
             checkListener(t.getClass());
 
-            ListenerHolder holder = getServletHandler().newListenerHolder(Source.JAVAX_API);
+            ListenerHolder holder = getServletHandler().newListenerHolder(Source.JAKARTA_API);
             holder.setListener(t);
             addProgrammaticListener(t);
             getServletHandler().addListener(holder);
@@ -2935,95 +2755,20 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         }
 
         @Override
-        public ServletContext getContext(String uripath)
+        public jakarta.servlet.ServletContext getContext(String path)
         {
-            List<ServletContextHandler> contexts = new ArrayList<>();
-            List<ServletContextHandler> handlers = getServer().getDescendants(ServletContextHandler.class);
-            String matchedPath = null;
-
-            for (ServletContextHandler ch : handlers)
-            {
-                if (ch == null)
-                    continue;
-                String contextPath = ch.getContextPath();
-
-                if (uripath.equals(contextPath) ||
-                    (uripath.startsWith(contextPath) && uripath.charAt(contextPath.length()) == '/') ||
-                    "/".equals(contextPath))
-                {
-                    // look first for vhost matching context only
-                    if (getVirtualHosts() != null && getVirtualHosts().size() > 0)
-                    {
-                        if (ch.getVirtualHosts() != null && ch.getVirtualHosts().size() > 0)
-                        {
-                            for (String h1 : getVirtualHosts())
-                            {
-                                for (String h2 : ch.getVirtualHosts())
-                                {
-                                    if (h1.equals(h2))
-                                    {
-                                        if (matchedPath == null || contextPath.length() > matchedPath.length())
-                                        {
-                                            contexts.clear();
-                                            matchedPath = contextPath;
-                                        }
-
-                                        if (matchedPath.equals(contextPath))
-                                            contexts.add(ch);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    else
-                    {
-                        if (matchedPath == null || contextPath.length() > matchedPath.length())
-                        {
-                            contexts.clear();
-                            matchedPath = contextPath;
-                        }
-
-                        if (matchedPath.equals(contextPath))
-                            contexts.add(ch);
-                    }
-                }
-            }
-
-            if (contexts.size() > 0)
-                return contexts.get(0).getServletContext();
-
-            // try again ignoring virtual hosts
-            matchedPath = null;
-            for (ServletContextHandler ch : handlers)
-            {
-                if (ch == null)
-                    continue;
-                String contextPath = ch.getContextPath();
-
-                if (uripath.equals(contextPath) || (uripath.startsWith(contextPath) && uripath.charAt(contextPath.length()) == '/') || "/".equals(contextPath))
-                {
-                    if (matchedPath == null || contextPath.length() > matchedPath.length())
-                    {
-                        contexts.clear();
-                        matchedPath = contextPath;
-                    }
-
-                    if (matchedPath.equals(contextPath))
-                        contexts.add(ch);
-                }
-            }
-
-            if (contexts.size() > 0)
-                return contexts.get(0).getServletContext();
-            return null;
+            ContextHandler context = getContextHandler().getCrossContextHandler(path);
+            if (context == null)
+                return null;
+            if (context == ServletContextHandler.this)
+                return this;
+            return new CrossContextServletContext(ServletContextHandler.this, context.getContext());
         }
 
         @Override
         public String getMimeType(String file)
         {
-            if (_mimeTypes == null)
-                return null;
-            return _mimeTypes.getMimeByExtension(file);
+            return getContext().getMimeTypes().getMimeByExtension(file);
         }
 
         @Override
@@ -3041,16 +2786,16 @@ public class ServletContextHandler extends ContextHandler implements Graceful
                 String contextPath = getContextPath();
                 // uriInContext is canonicalized by HttpURI.
                 HttpURI.Mutable uri = HttpURI.build(uriInContext);
-                String pathInfo = uri.getCanonicalPath();
-                if (StringUtil.isEmpty(pathInfo))
+                String encodedPathInContext = uri.getCanonicalPath();
+                if (StringUtil.isEmpty(encodedPathInContext))
                     return null;
 
                 if (!StringUtil.isEmpty(contextPath))
                 {
                     uri.path(URIUtil.addPaths(contextPath, uri.getPath()));
-                    pathInfo = uri.getCanonicalPath().substring(contextPath.length());
+                    encodedPathInContext = uri.getCanonicalPath().substring(contextPath.length());
                 }
-                return new Dispatcher(ServletContextHandler.this, uri, pathInfo);
+                return new Dispatcher(ServletContextHandler.this, uri, URIUtil.decodePath(encodedPathInContext));
             }
             catch (Exception e)
             {
@@ -3062,26 +2807,41 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         @Override
         public String getRealPath(String path)
         {
-            // This is an API call from the application which may have arbitrary non canonical paths passed
-            // Thus we canonicalize here, to avoid the enforcement of only canonical paths in
-            // ContextHandler.this.getResource(path).
-            path = URIUtil.canonicalPath(path);
+            // This is an API call from the application which may pass non-normalized paths.
+            // Thus, we normalize here, to avoid the enforcement of normalized paths in
+            // ServletContextHandler.this.getResource(path).
+            path = URIUtil.normalizePath(path);
             if (path == null)
                 return null;
             if (path.length() == 0)
-                path = URIUtil.SLASH;
+                path = "/";
             else if (path.charAt(0) != '/')
-                path = URIUtil.SLASH + path;
+                path = "/" + path;
 
             try
             {
                 Resource resource = ServletContextHandler.this.getResource(path);
-                if (resource != null)
+                if (resource == null)
+                    return null;
+
+                for (Resource r : resource)
                 {
-                    File file = resource.getFile();
-                    if (file != null)
-                        return file.getCanonicalPath();
+                    // return first
+                    if (Resources.exists(r))
+                    {
+                        Path resourcePath = r.getPath();
+                        if (resourcePath != null)
+                        {
+                            String realPath = resourcePath.normalize().toString();
+                            if (Files.isDirectory(resourcePath))
+                                realPath = realPath + "/";
+                            return realPath;
+                        }
+                    }
                 }
+
+                // A Resource was returned, but did not exist
+                return null;
             }
             catch (Exception e)
             {
@@ -3094,15 +2854,29 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         @Override
         public URL getResource(String path) throws MalformedURLException
         {
-            // This is an API call from the application which may have arbitrary non canonical paths passed
-            // Thus we canonicalize here, to avoid the enforcement of only canonical paths in
-            // ContextHandler.this.getResource(path).
-            path = URIUtil.canonicalPath(path);
+            // This is an API call from the application which may pass non-normalized paths.
+            // Thus, we normalize here, to avoid the enforcement of normalized paths in
+            // ServletContextHandler.this.getResource(path).
+            path = URIUtil.normalizePath(path);
             if (path == null)
                 return null;
+
+            // Assumption is that the resource base has been properly setup.
+            // Spec requirement is that the WAR file is interrogated first.
+            // If a WAR file is mounted, or is extracted to a temp directory,
+            // then the first entry of the resource base must be the WAR file.
             Resource resource = ServletContextHandler.this.getResource(path);
-            if (resource != null && resource.exists())
-                return resource.getURI().toURL();
+            if (resource == null)
+                return null;
+
+            for (Resource r: resource)
+            {
+                // return first
+                if (Resources.exists(r))
+                    return r.getURI().toURL();
+            }
+
+            // A Resource was returned, but did not exist
             return null;
         }
 
@@ -3114,11 +2888,11 @@ public class ServletContextHandler extends ContextHandler implements Graceful
                 URL url = getResource(path);
                 if (url == null)
                     return null;
-                Resource r = Resource.newResource(url);
+                Resource r = ResourceFactory.of(ServletContextHandler.this).newResource(url);
                 // Cannot serve directories as an InputStream
                 if (r.isDirectory())
                     return null;
-                return r.getInputStream();
+                return IOResources.asInputStream(r);
             }
             catch (Exception e)
             {
@@ -3130,10 +2904,10 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         @Override
         public Set<String> getResourcePaths(String path)
         {
-            // This is an API call from the application which may have arbitrary non canonical paths passed
-            // Thus we canonicalize here, to avoid the enforcement of only canonical paths in
-            // ContextHandler.this.getResource(path).
-            path = URIUtil.canonicalPath(path);
+            // This is an API call from the application which may pass non-normalized paths.
+            // Thus, we normalize here, to avoid the enforcement of normalized paths in
+            // ServletContextHandler.this.getResource(path).
+            path = URIUtil.normalizePath(path);
             if (path == null)
                 return null;
             return ServletContextHandler.this.getResourcePaths(path);
@@ -3225,7 +2999,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         @Override
         public String toString()
         {
-            return "ServletContext@" + ServletContextHandler.this.toString();
+            return "ServletContext@" + ServletContextHandler.this;
         }
 
         public void checkListener(Class<? extends EventListener> listener) throws IllegalStateException
@@ -3257,24 +3031,15 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         @Override
         public ClassLoader getClassLoader()
         {
-            if (!_enabled)
-                throw new UnsupportedOperationException();
-
             // no security manager just return the classloader
             ClassLoader classLoader = ServletContextHandler.this.getClassLoader();
-            if (!isUsingSecurityManager())
-            {
-                return classLoader;
-            }
-            else
+            if (isUsingSecurityManager())
             {
                 // check to see if the classloader of the caller is the same as the context
                 // classloader, or a parent of it, as required by the javadoc specification.
-
-                // Wrap in a PrivilegedAction so that only Jetty code will require the
-                // "createSecurityManager" permission, not also application code that calls this method.
-                Caller caller = AccessController.doPrivileged((PrivilegedAction<Caller>)Caller::new);
-                ClassLoader callerLoader = caller.getCallerClassLoader(2);
+                ClassLoader callerLoader = StackWalker.getInstance(StackWalker.Option.RETAIN_CLASS_REFERENCE)
+                    .getCallerClass()
+                    .getClassLoader();
                 while (callerLoader != null)
                 {
                     if (callerLoader == classLoader)
@@ -3282,9 +3047,9 @@ public class ServletContextHandler extends ContextHandler implements Graceful
                     else
                         callerLoader = callerLoader.getParent();
                 }
-                System.getSecurityManager().checkPermission(new RuntimePermission("getClassLoader"));
-                return classLoader;
+                SecurityUtils.checkPermission(new RuntimePermission("getClassLoader"));
             }
+            return classLoader;
         }
 
         public void setEnabled(boolean enabled)
@@ -3321,7 +3086,7 @@ public class ServletContextHandler extends ContextHandler implements Graceful
                 addBean(holder, true);
         }
         
-        public java.util.Collection getServletContainerInitializerHolders()
+        public java.util.Collection<ServletContainerInitializerHolder> getServletContainerInitializerHolders()
         {
             return getContainedBeans(ServletContainerInitializerHolder.class);
         }
@@ -3348,16 +3113,80 @@ public class ServletContextHandler extends ContextHandler implements Graceful
         }
     }
 
-    private static class Caller extends SecurityManager
+    /**
+     * The interface used by {@link ServletApiRequest} to access the {@link ServletContextRequest} without
+     * access to the unwrapped {@link Request} methods.
+     */
+    public interface ServletRequestInfo
     {
-        public ClassLoader getCallerClassLoader(int depth)
+        String getDecodedPathInContext();
+
+        ManagedSession getManagedSession();
+
+        Charset getQueryEncoding();
+
+        default Request getRequest()
         {
-            if (depth < 0)
-                return null;
-            Class<?>[] classContext = getClassContext();
-            if (classContext.length <= depth)
-                return null;
-            return classContext[depth].getClassLoader();
+            return getServletChannel().getRequest();
         }
+
+        List<ServletRequestAttributeListener> getRequestAttributeListeners();
+
+        ServletScopedContext getServletContext();
+
+        HttpInput getHttpInput();
+        
+        MatchedResource<ServletHandler.MappedServlet> getMatchedResource();
+
+        AbstractSessionManager.RequestedSession getRequestedSession();
+
+        ServletChannel getServletChannel();
+
+        ServletContextHandler getServletContextHandler();
+
+        ServletChannelState getServletRequestState();
+
+        SessionManager getSessionManager();
+
+        ServletChannelState getState();
+
+        void setQueryEncoding(String s);
+    }
+
+    /**
+     * The interface used by {@link ServletApiResponse} to access the {@link ServletContextResponse} without
+     * access to the unwrapped {@link Response} methods.
+     */
+    public interface ServletResponseInfo
+    {
+        String getCharacterEncoding(boolean setContentType);
+
+        String getCharacterEncoding();
+
+        String getContentType();
+
+        EncodingFrom getEncodingFrom();
+
+        Locale getLocale();
+
+        OutputType getOutputType();
+
+        Response getResponse();
+
+        Supplier<Map<String, String>> getTrailers();
+
+        ResponseWriter getWriter();
+
+        boolean isWriting();
+
+        void setCharacterEncoding(String encoding, EncodingFrom encodingFrom);
+
+        void setLocale(Locale locale);
+
+        void setOutputType(OutputType outputType);
+
+        void setTrailers(Supplier<Map<String, String>> trailers);
+
+        void setWriter(ResponseWriter responseWriter);
     }
 }

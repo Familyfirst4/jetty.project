@@ -1,27 +1,28 @@
-<?xml version="1.0"?><!DOCTYPE Configure PUBLIC "-//Jetty//Configure//EN" "https://www.eclipse.org/jetty/configure_10_0.dtd">
+<?xml version="1.0"?><!DOCTYPE Configure PUBLIC "-//Jetty//Configure//EN" "https://jetty.org/configure_10_0.dtd">
 
 <!-- =============================================================== -->
 <!-- Configure the test-jndi webapp                                  -->
 <!-- =============================================================== -->
-<Configure id='wac' class="org.eclipse.jetty.ee9.webapp.WebAppContext">
+<Configure id="wac" class="org.eclipse.jetty.ee9.webapp.WebAppContext">
 
-  <New id="tx" class="org.eclipse.jetty.ee9.plus.jndi.Transaction">
+  <New id="tx" class="org.eclipse.jetty.plus.jndi.Transaction">
+    <Arg><Property name="environment" default="ee9"/></Arg>
     <Arg>
       <New class="org.example.MockUserTransaction" />
     </Arg>
   </New>
 
-  <Set name="contextPath">/test-jndi</Set>
-  <Set name="war"><Property name="jetty.webapps" default="." />/demo-jndi.war
+  <Set name="contextPath">/ee9-test-jndi</Set>
+  <Set name="war"><Property name="jetty.webapps" default="." />/ee9-demo-jndi.war
   </Set>
   <Set name="extractWAR">true</Set>
   <Set name="copyWebDir">false</Set>
   <Set name="configurationDiscovered">true</Set>
 
-  <!-- Define an env entry with Server scope for java:comp/env                   -->
-  <New id="woggle" class="org.eclipse.jetty.ee9.plus.jndi.EnvEntry">
+  <!-- Define an env entry with ee9  scope for java:comp/env                   -->
+  <New id="woggle" class="org.eclipse.jetty.plus.jndi.EnvEntry">
     <Arg>
-      <Property name='server' />
+      <Property name="environment" default="ee9"/>
     </Arg>
     <Arg>woggle</Arg>
     <Arg type="java.lang.Integer">4000</Arg>
@@ -29,9 +30,9 @@
   </New>
 
   <!-- Define an env entry with webapp scope for java:comp/env                   -->
-  <New id="wiggle" class="org.eclipse.jetty.ee9.plus.jndi.EnvEntry">
+  <New id="wiggle" class="org.eclipse.jetty.plus.jndi.EnvEntry">
     <Arg>
-      <Ref refid='wac' />
+      <Ref refid="wac" />
     </Arg>
     <Arg>wiggle</Arg>
     <Arg type="java.lang.Double">100</Arg>
@@ -39,9 +40,9 @@
   </New>
 
   <!-- Mail Session setup                                          -->
-  <New id="xxxmail" class="org.eclipse.jetty.ee9.plus.jndi.Resource">
+  <New id="xxxmail" class="org.eclipse.jetty.plus.jndi.Resource">
     <Arg>
-      <Ref refid='wac' />
+      <Ref refid="wac" />
     </Arg>
     <Arg>mail/Session</Arg>
     <Arg>
@@ -61,9 +62,9 @@
   </New>
 
   <!-- A mock DataSource                                           -->
-  <New id="mydatasource" class="org.eclipse.jetty.ee9.plus.jndi.Resource">
+  <New id="mydatasource" class="org.eclipse.jetty.plus.jndi.Resource">
     <Arg>
-      <Ref refid='wac' />
+      <Ref refid="wac" />
     </Arg>
     <Arg>jdbc/mydatasource</Arg>
     <Arg>

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -38,19 +38,19 @@ public class PriorityTest extends AbstractTest
     @Test
     public void testPriorityBeforeHeaders() throws Exception
     {
-        start(new ServerSessionListener.Adapter()
+        start(new ServerSessionListener()
         {
             @Override
             public Stream.Listener onNewStream(Stream stream, HeadersFrame frame)
             {
-                MetaData.Response metaData = new MetaData.Response(HttpVersion.HTTP_2, 200, HttpFields.EMPTY);
+                MetaData.Response metaData = new MetaData.Response(200, null, HttpVersion.HTTP_2, HttpFields.EMPTY);
                 HeadersFrame responseFrame = new HeadersFrame(stream.getId(), metaData, null, true);
                 stream.headers(responseFrame, Callback.NOOP);
                 return null;
             }
         });
 
-        Session session = newClientSession(new Session.Listener.Adapter());
+        Session session = newClientSession(new Session.Listener() {});
         int streamId = session.priority(new PriorityFrame(0, 13, false), Callback.NOOP);
         assertTrue(streamId > 0);
 
@@ -65,7 +65,7 @@ public class PriorityTest extends AbstractTest
                 assertEquals(streamId, result.getId());
                 latch.countDown();
             }
-        }, new Stream.Listener.Adapter()
+        }, new Stream.Listener()
         {
             @Override
             public void onHeaders(Stream stream, HeadersFrame frame)
@@ -83,7 +83,7 @@ public class PriorityTest extends AbstractTest
     {
         CountDownLatch beforeRequests = new CountDownLatch(1);
         CountDownLatch afterRequests = new CountDownLatch(2);
-        start(new ServerSessionListener.Adapter()
+        start(new ServerSessionListener()
         {
             @Override
             public Stream.Listener onNewStream(Stream stream, HeadersFrame frame)
@@ -91,7 +91,7 @@ public class PriorityTest extends AbstractTest
                 try
                 {
                     beforeRequests.await(5, TimeUnit.SECONDS);
-                    MetaData.Response metaData = new MetaData.Response(HttpVersion.HTTP_2, 200, HttpFields.EMPTY);
+                    MetaData.Response metaData = new MetaData.Response(200, null, HttpVersion.HTTP_2, HttpFields.EMPTY);
                     HeadersFrame responseFrame = new HeadersFrame(stream.getId(), metaData, null, true);
                     stream.headers(responseFrame, Callback.NOOP);
                     afterRequests.countDown();
@@ -106,7 +106,7 @@ public class PriorityTest extends AbstractTest
         });
 
         CountDownLatch responses = new CountDownLatch(2);
-        Stream.Listener.Adapter listener = new Stream.Listener.Adapter()
+        Stream.Listener listener = new Stream.Listener()
         {
             @Override
             public void onHeaders(Stream stream, HeadersFrame frame)
@@ -116,7 +116,7 @@ public class PriorityTest extends AbstractTest
             }
         };
 
-        Session session = newClientSession(new Session.Listener.Adapter());
+        Session session = newClientSession(new Session.Listener() {});
         MetaData metaData1 = newRequest("GET", "/one", HttpFields.EMPTY);
         HeadersFrame headersFrame1 = new HeadersFrame(metaData1, null, true);
         FuturePromise<Stream> promise1 = new FuturePromise<>();
@@ -145,7 +145,7 @@ public class PriorityTest extends AbstractTest
     {
         PriorityFrame priorityFrame = new PriorityFrame(13, 200, true);
         CountDownLatch latch = new CountDownLatch(2);
-        start(new ServerSessionListener.Adapter()
+        start(new ServerSessionListener()
         {
             @Override
             public Stream.Listener onNewStream(Stream stream, HeadersFrame frame)
@@ -157,17 +157,17 @@ public class PriorityTest extends AbstractTest
                 assertEquals(priorityFrame.isExclusive(), priority.isExclusive());
                 latch.countDown();
 
-                MetaData.Response metaData = new MetaData.Response(HttpVersion.HTTP_2, 200, HttpFields.EMPTY);
+                MetaData.Response metaData = new MetaData.Response(200, null, HttpVersion.HTTP_2, HttpFields.EMPTY);
                 HeadersFrame responseFrame = new HeadersFrame(stream.getId(), metaData, null, true);
                 stream.headers(responseFrame, Callback.NOOP);
                 return null;
             }
         });
 
-        Session session = newClientSession(new Session.Listener.Adapter());
+        Session session = newClientSession(new Session.Listener() {});
         MetaData metaData = newRequest("GET", "/one", HttpFields.EMPTY);
         HeadersFrame headersFrame = new HeadersFrame(metaData, priorityFrame, true);
-        session.newStream(headersFrame, new Promise.Adapter<>(), new Stream.Listener.Adapter()
+        session.newStream(headersFrame, new Promise.Adapter<>(), new Stream.Listener()
         {
             @Override
             public void onHeaders(Stream stream, HeadersFrame frame)

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -118,16 +118,19 @@ public class DateCacheNoTick
         else
             _tzFormatString = _formatString;
 
+        _zoneId = tz.toZoneId();
         if (_locale != null)
         {
-            _tzFormat = DateTimeFormatter.ofPattern(_tzFormatString, _locale);
+            _tzFormat = DateTimeFormatter
+                    .ofPattern(_tzFormatString, _locale)
+                    .withZone(_zoneId);
         }
         else
         {
-            _tzFormat = DateTimeFormatter.ofPattern(_tzFormatString);
+            _tzFormat = DateTimeFormatter
+                    .ofPattern(_tzFormatString)
+                    .withZone(_zoneId);
         }
-        _zoneId = tz.toZoneId();
-        _tzFormat.withZone(_zoneId);
     }
 
     public TimeZone getTimeZone()

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,14 +14,14 @@
 package org.eclipse.jetty.ee10.demos;
 
 import org.eclipse.jetty.ee10.servlet.ServletContextHandler;
-import org.eclipse.jetty.ee10.websocket.api.Session;
-import org.eclipse.jetty.ee10.websocket.api.WriteCallback;
-import org.eclipse.jetty.ee10.websocket.api.annotations.OnWebSocketMessage;
-import org.eclipse.jetty.ee10.websocket.api.annotations.WebSocket;
 import org.eclipse.jetty.ee10.websocket.server.JettyWebSocketServlet;
 import org.eclipse.jetty.ee10.websocket.server.JettyWebSocketServletFactory;
 import org.eclipse.jetty.ee10.websocket.server.config.JettyWebSocketServletContainerInitializer;
 import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.websocket.api.Callback;
+import org.eclipse.jetty.websocket.api.Session;
+import org.eclipse.jetty.websocket.api.annotations.OnWebSocketMessage;
+import org.eclipse.jetty.websocket.api.annotations.WebSocket;
 
 /**
  * Example of setting up a Jetty WebSocket server
@@ -39,7 +39,7 @@ public class WebSocketServer
         @OnWebSocketMessage
         public void onMessage(Session session, String message)
         {
-            session.getRemote().sendString(message, WriteCallback.NOOP);
+            session.sendText(message, Callback.NOOP);
         }
     }
 

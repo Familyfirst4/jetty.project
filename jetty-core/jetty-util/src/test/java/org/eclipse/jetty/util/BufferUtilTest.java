@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -17,18 +17,26 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.BufferOverflowException;
 import java.nio.ByteBuffer;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.concurrent.ThreadLocalRandom;
 
-import org.junit.jupiter.api.Disabled;
+import org.eclipse.jetty.toolchain.test.MavenTestingUtils;
+import org.eclipse.jetty.util.resource.FileSystemPool;
+import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.nullValue;
 import static org.hamcrest.Matchers.sameInstance;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -37,6 +45,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class BufferUtilTest
 {
+    @BeforeEach
+    public void beforeEach()
+    {
+        assertThat(FileSystemPool.INSTANCE.mounts(), empty());
+    }
+
+    @AfterEach
+    public void afterEach()
+    {
+        assertThat(FileSystemPool.INSTANCE.mounts(), empty());
+    }
+
     @Test
     public void testToInt() throws Exception
     {
@@ -231,37 +251,6 @@ public class BufferUtilTest
     private static final Logger LOG = LoggerFactory.getLogger(BufferUtilTest.class);
 
     @Test
-    @Disabled("Very simple microbenchmark to compare different writeTo implementations. Only for development thus " +
-        "ignored.")
-    public void testWriteToMicrobenchmark() throws IOException
-    {
-        int capacity = 1024 * 128;
-        int iterations = 100;
-        int testRuns = 10;
-        byte[] bytes = new byte[capacity];
-        ThreadLocalRandom.current().nextBytes(bytes);
-        ByteBuffer buffer = BufferUtil.allocate(capacity);
-        BufferUtil.append(buffer, bytes, 0, capacity);
-        long startTest = System.nanoTime();
-        for (int i = 0; i < testRuns; i++)
-        {
-            long start = System.nanoTime();
-            for (int j = 0; j < iterations; j++)
-            {
-                ByteArrayOutputStream out = new ByteArrayOutputStream();
-                long startRun = System.nanoTime();
-                BufferUtil.writeTo(buffer.asReadOnlyBuffer(), out);
-                long elapsedRun = System.nanoTime() - startRun;
-//                LOG.warn("run elapsed={}ms", elapsedRun / 1000);
-                assertThat("Bytes in out equal bytes in buffer", Arrays.equals(bytes, out.toByteArray()), is(true));
-            }
-            long elapsed = System.nanoTime() - start;
-            LOG.warn("elapsed={}ms average={}ms", elapsed / 1000, elapsed / iterations / 1000);
-        }
-        LOG.warn("overall average: {}ms", (System.nanoTime() - startTest) / testRuns / iterations / 1000);
-    }
-
-    @Test
     public void testWriteToWithBufferThatDoesNotExposeArrayAndSmallContent() throws IOException
     {
         int capacity = BufferUtil.TEMP_BUFFER_SIZE / 4;
@@ -359,5 +348,27 @@ public class BufferUtilTest
         BufferUtil.append(buffer, bytes, 0, capacity);
         BufferUtil.writeTo(buffer.asReadOnlyBuffer(), out);
         assertThat("Bytes in out equal bytes in buffer", Arrays.equals(bytes, out.toByteArray()), is(true));
+    }
+
+    @Test
+    public void testToMappedBufferResource() throws Exception
+    {
+        Path testZip = MavenTestingUtils.getTestResourcePathFile("TestData/test.zip");
+        Path testTxt = MavenTestingUtils.getTestResourcePathFile("TestData/alphabet.txt");
+
+        Resource fileResource = ResourceFactory.root().newResource(testTxt.toUri());
+        ByteBuffer fileBuffer = BufferUtil.toMappedBuffer(fileResource);
+        assertThat(fileBuffer, not(nullValue()));
+        assertThat((long)fileBuffer.remaining(), is(fileResource.length()));
+
+        Resource jrtResource = ResourceFactory.root().newResource("jrt:/java.base/java/lang/Object.class");
+        assertThat(jrtResource.exists(), is(true));
+        assertThat(BufferUtil.toMappedBuffer(jrtResource), nullValue());
+
+        try (ResourceFactory.Closeable resourceFactory = ResourceFactory.closeable())
+        {
+            Resource jarResource = resourceFactory.newJarFileResource(testZip.toUri());
+            assertThat(BufferUtil.toMappedBuffer(jarResource), nullValue());
+        }
     }
 }

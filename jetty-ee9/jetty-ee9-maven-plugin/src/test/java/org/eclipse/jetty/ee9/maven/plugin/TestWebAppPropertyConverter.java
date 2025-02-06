@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -15,21 +15,25 @@ package org.eclipse.jetty.ee9.maven.plugin;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.net.URI;
 import java.util.Arrays;
+import java.util.List;
+import java.util.Objects;
 import java.util.Properties;
 
 import org.eclipse.jetty.ee9.webapp.WebAppContext;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.toolchain.test.MavenTestingUtils;
 import org.eclipse.jetty.util.IO;
+import org.eclipse.jetty.util.resource.CombinedResource;
 import org.eclipse.jetty.util.resource.Resource;
-import org.eclipse.jetty.util.resource.ResourceCollection;
 import org.hamcrest.Matchers;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -53,7 +57,7 @@ public class TestWebAppPropertyConverter
     {
         testDir = MavenTestingUtils.getTargetTestingDir("TestWebApPropertyConverter");
         testDir.mkdirs();
-        contextXml = MavenTestingUtils.getTestResourceFile("embedder-context.xml").getAbsolutePath();
+        contextXml = MavenTestingUtils.getTargetFile("test-classes/embedder-context.xml").getAbsolutePath();
         tmpDir = new File(testDir, "testToProperties");
         tmpDir.mkdirs();
         classesDir = new File(testDir, "imaginaryClasses");
@@ -90,7 +94,7 @@ public class TestWebAppPropertyConverter
 
         MavenWebAppContext webApp = new MavenWebAppContext();
         webApp.setContextPath("/foo");
-        webApp.setBaseResource(Resource.newResource(MavenTestingUtils.getTestResourceDir("root")));
+        webApp.setBaseResource(webApp.getResourceFactory().newResource(MavenTestingUtils.getTargetPath("test-classes/root")));
         webApp.setTempDirectory(tmpDir);
         webApp.setPersistTempDirectory(false);
         webApp.setClasses(classesDir);
@@ -148,8 +152,11 @@ public class TestWebAppPropertyConverter
         assertEquals(true, webApp.isPersistTempDirectory());
         assertEquals(war.getAbsolutePath(), webApp.getWar());
         assertEquals(webXml.getAbsolutePath(), webApp.getDescriptor());
-        assertThat(webApp.getBaseResource(), instanceOf(ResourceCollection.class));
-        assertThat(webApp.getBaseResource().toString(), Matchers.containsString(Resource.newResource(base1).toString()));
-        assertThat(webApp.getBaseResource().toString(), Matchers.containsString(Resource.newResource(base2).toString()));
+        assertThat(webApp.getBaseResource(), instanceOf(CombinedResource.class));
+
+        CombinedResource combinedResource = (CombinedResource)webApp.getBaseResource();
+        List<URI> actual = combinedResource.getResources().stream().filter(Objects::nonNull).map(Resource::getURI).toList();
+        URI[] expected = new URI[]{base1.toURI(), base2.toURI()};
+        assertThat(actual, containsInAnyOrder(expected));
     }
 }

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -17,7 +17,6 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.io.Writer;
 import java.nio.ByteBuffer;
-import java.util.concurrent.TimeUnit;
 
 import jakarta.websocket.EncodeException;
 import jakarta.websocket.RemoteEndpoint;
@@ -26,7 +25,7 @@ import org.eclipse.jetty.util.FutureCallback;
 import org.eclipse.jetty.websocket.core.CoreSession;
 import org.eclipse.jetty.websocket.core.Frame;
 import org.eclipse.jetty.websocket.core.OpCode;
-import org.eclipse.jetty.websocket.core.internal.util.TextUtils;
+import org.eclipse.jetty.websocket.core.util.TextUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -64,7 +63,7 @@ public class JakartaWebSocketBasicRemote extends JakartaWebSocketRemoteEndpoint 
 
         FutureCallback b = new FutureCallback();
         sendFrame(new Frame(OpCode.BINARY).setPayload(data), b, false);
-        b.block(getBlockingTimeout(), TimeUnit.MILLISECONDS);
+        b.block();
     }
 
     @Override
@@ -96,7 +95,7 @@ public class JakartaWebSocketBasicRemote extends JakartaWebSocketRemoteEndpoint 
         frame.setFin(isLast);
         FutureCallback b = new FutureCallback();
         sendFrame(frame, b, false);
-        b.block(getBlockingTimeout(), TimeUnit.MILLISECONDS);
+        b.block();
     }
 
     @Override
@@ -104,7 +103,7 @@ public class JakartaWebSocketBasicRemote extends JakartaWebSocketRemoteEndpoint 
     {
         FutureCallback b = new FutureCallback();
         super.sendObject(data, b);
-        b.block(getBlockingTimeout(), TimeUnit.MILLISECONDS);
+        b.block();
     }
 
     @Override
@@ -118,7 +117,7 @@ public class JakartaWebSocketBasicRemote extends JakartaWebSocketRemoteEndpoint 
 
         FutureCallback b = new FutureCallback();
         sendFrame(new Frame(OpCode.TEXT).setPayload(text), b, false);
-        b.block(getBlockingTimeout(), TimeUnit.MILLISECONDS);
+        b.block();
     }
 
     @Override
@@ -150,12 +149,6 @@ public class JakartaWebSocketBasicRemote extends JakartaWebSocketRemoteEndpoint 
         frame.setFin(isLast);
         FutureCallback b = new FutureCallback();
         sendFrame(frame, b, false);
-        b.block(getBlockingTimeout(), TimeUnit.MILLISECONDS);
-    }
-
-    private long getBlockingTimeout()
-    {
-        long idleTimeout = getIdleTimeout();
-        return (idleTimeout > 0) ? idleTimeout + 1000 : idleTimeout;
+        b.block();
     }
 }

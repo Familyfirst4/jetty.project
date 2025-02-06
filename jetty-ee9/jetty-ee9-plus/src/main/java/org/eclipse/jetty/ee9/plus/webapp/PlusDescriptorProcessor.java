@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -19,24 +19,24 @@ import javax.naming.Context;
 import javax.naming.InitialContext;
 import javax.naming.NameNotFoundException;
 
-import org.eclipse.jetty.ee9.plus.annotation.Injection;
-import org.eclipse.jetty.ee9.plus.annotation.InjectionCollection;
-import org.eclipse.jetty.ee9.plus.annotation.LifeCycleCallback;
-import org.eclipse.jetty.ee9.plus.annotation.LifeCycleCallbackCollection;
-import org.eclipse.jetty.ee9.plus.annotation.PostConstructCallback;
-import org.eclipse.jetty.ee9.plus.annotation.PreDestroyCallback;
-import org.eclipse.jetty.ee9.plus.jndi.EnvEntry;
-import org.eclipse.jetty.ee9.plus.jndi.Link;
-import org.eclipse.jetty.ee9.plus.jndi.NamingEntry;
-import org.eclipse.jetty.ee9.plus.jndi.NamingEntryUtil;
 import org.eclipse.jetty.ee9.webapp.Descriptor;
 import org.eclipse.jetty.ee9.webapp.FragmentDescriptor;
 import org.eclipse.jetty.ee9.webapp.IterativeDescriptorProcessor;
 import org.eclipse.jetty.ee9.webapp.Origin;
 import org.eclipse.jetty.ee9.webapp.WebAppContext;
-import org.eclipse.jetty.jndi.NamingUtil;
+import org.eclipse.jetty.plus.annotation.Injection;
+import org.eclipse.jetty.plus.annotation.InjectionCollection;
+import org.eclipse.jetty.plus.annotation.LifeCycleCallback;
+import org.eclipse.jetty.plus.annotation.LifeCycleCallbackCollection;
+import org.eclipse.jetty.plus.annotation.PostConstructCallback;
+import org.eclipse.jetty.plus.annotation.PreDestroyCallback;
+import org.eclipse.jetty.plus.jndi.EnvEntry;
+import org.eclipse.jetty.plus.jndi.Link;
+import org.eclipse.jetty.plus.jndi.NamingEntry;
+import org.eclipse.jetty.plus.jndi.NamingEntryUtil;
 import org.eclipse.jetty.util.StringUtil;
 import org.eclipse.jetty.util.TypeUtil;
+import org.eclipse.jetty.util.jndi.NamingUtil;
 import org.eclipse.jetty.xml.XmlParser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -142,7 +142,7 @@ public class PlusDescriptorProcessor extends IterativeDescriptorProcessor
             case WebFragment:
             {
                 //ServletSpec p.75. No declaration in web.xml, but in multiple web-fragments. Error.
-                throw new IllegalStateException("Conflicting env-entry " + name + " in " + descriptor.getResource());
+                throw new IllegalStateException("Conflicting env-entry " + name + " in " + descriptor.getURI());
             }
             default:
                 break;
@@ -293,7 +293,7 @@ public class PlusDescriptorProcessor extends IterativeDescriptorProcessor
 
                     //ServletSpec p.75. No declaration of resource-ref in web xml, but different in multiple web-fragments. Error.
                     if (!type.equals(otherType) || !auth.equals(otherAuth) || !shared.equals(otherShared))
-                        throw new IllegalStateException("Conflicting resource-ref " + jndiName + " in " + descriptor.getResource());
+                        throw new IllegalStateException("Conflicting resource-ref " + jndiName + " in " + descriptor.getURI());
                     //same in multiple web-fragments, merge the injections
                     addInjections(context, descriptor, node, jndiName, TypeUtil.fromName(type));
                 }
@@ -401,7 +401,7 @@ public class PlusDescriptorProcessor extends IterativeDescriptorProcessor
 
                     //ServletSpec p.75. No declaration of resource-ref in web xml, but different in multiple web-fragments. Error.
                     if (!type.equals(otherType))
-                        throw new IllegalStateException("Conflicting resource-env-ref " + jndiName + " in " + descriptor.getResource());
+                        throw new IllegalStateException("Conflicting resource-env-ref " + jndiName + " in " + descriptor.getURI());
 
                     //same in multiple web-fragments, merge the injections
                     addInjections(context, descriptor, node, jndiName, TypeUtil.fromName(type));
@@ -503,7 +503,7 @@ public class PlusDescriptorProcessor extends IterativeDescriptorProcessor
                     type = (type == null ? "" : type);
                     usage = (usage == null ? "" : usage);
                     if (!type.equals(otherType) || !usage.equalsIgnoreCase(otherUsage))
-                        throw new IllegalStateException("Conflicting message-destination-ref " + jndiName + " in " + descriptor.getResource());
+                        throw new IllegalStateException("Conflicting message-destination-ref " + jndiName + " in " + descriptor.getURI());
 
                     //same in multiple web-fragments, merge the injections
                     addInjections(context, descriptor, node, jndiName, TypeUtil.fromName(type));
@@ -532,12 +532,12 @@ public class PlusDescriptorProcessor extends IterativeDescriptorProcessor
         String className = node.getString("lifecycle-callback-class", false, true);
         String methodName = node.getString("lifecycle-callback-method", false, true);
 
-        if (className == null || className.equals(""))
+        if (className == null || className.isEmpty())
         {
             LOG.warn("No lifecycle-callback-class specified");
             return;
         }
-        if (methodName == null || methodName.equals(""))
+        if (methodName == null || methodName.isEmpty())
         {
             LOG.warn("No lifecycle-callback-method specified for class {}", className);
             return;
@@ -610,12 +610,12 @@ public class PlusDescriptorProcessor extends IterativeDescriptorProcessor
     {
         String className = node.getString("lifecycle-callback-class", false, true);
         String methodName = node.getString("lifecycle-callback-method", false, true);
-        if (className == null || className.equals(""))
+        if (className == null || className.isEmpty())
         {
             LOG.warn("No lifecycle-callback-class specified for pre-destroy");
             return;
         }
-        if (methodName == null || methodName.equals(""))
+        if (methodName == null || methodName.isEmpty())
         {
             LOG.warn("No lifecycle-callback-method specified for pre-destroy class {}", className);
             return;
@@ -697,12 +697,12 @@ public class PlusDescriptorProcessor extends IterativeDescriptorProcessor
             XmlParser.Node injectionNode = itor.next();
             String targetClassName = injectionNode.getString("injection-target-class", false, true);
             String targetName = injectionNode.getString("injection-target-name", false, true);
-            if ((targetClassName == null) || targetClassName.equals(""))
+            if ((targetClassName == null) || targetClassName.isEmpty())
             {
                 LOG.warn("No classname found in injection-target");
                 continue;
             }
-            if ((targetName == null) || targetName.equals(""))
+            if ((targetName == null) || targetName.isEmpty())
             {
                 LOG.warn("No field or method name in injection-target");
                 continue;
@@ -758,7 +758,7 @@ public class PlusDescriptorProcessor extends IterativeDescriptorProcessor
      * @param name the name field of the env-entry
      * @param type the type field of the env-entry
      * @param value the value field of the env-entry
-     * @throws Exception
+     * @throws Exception if there is an unspecified problem
      */
     public void makeEnvEntryInjectionsAndBindings(WebAppContext context, Descriptor descriptor, XmlParser.Node node, String name, String type, String value) throws Exception
     {
@@ -853,14 +853,13 @@ public class PlusDescriptorProcessor extends IterativeDescriptorProcessor
         Object scope = context;
         NamingEntry ne = NamingEntryUtil.lookupNamingEntry(scope, name);
 
-        if (ne != null && (ne instanceof Link))
+        if (ne instanceof Link)
         {
             //if we found a mapping, get out name it is mapped to in the environment
             nameInEnvironment = ((Link)ne).getLink();
         }
 
         //try finding that mapped name in the webapp's environment first
-        scope = context;
         bound = NamingEntryUtil.bindToENC(scope, name, nameInEnvironment);
 
         if (bound)

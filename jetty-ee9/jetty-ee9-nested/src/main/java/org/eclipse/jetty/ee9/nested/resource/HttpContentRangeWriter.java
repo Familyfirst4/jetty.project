@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,37 +13,40 @@
 
 package org.eclipse.jetty.ee9.nested.resource;
 
-import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Objects;
 
-import org.eclipse.jetty.http.HttpContent;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.eclipse.jetty.http.content.HttpContent;
+import org.eclipse.jetty.io.IOResources;
 
 /**
  * Range Writer selection for HttpContent
  */
 public class HttpContentRangeWriter
 {
-    private static final Logger LOG = LoggerFactory.getLogger(HttpContentRangeWriter.class);
-
     /**
      * Obtain a new RangeWriter for the supplied HttpContent.
      *
      * @param content the HttpContent to base RangeWriter on
      * @return the RangeWriter best suited for the supplied HttpContent
      */
-    public static RangeWriter newRangeWriter(HttpContent content) throws IOException
+    public static RangeWriter newRangeWriter(HttpContent content)
     {
         Objects.requireNonNull(content, "HttpContent");
 
         // Try direct buffer
-        ByteBuffer buffer = content.getBuffer();
+        ByteBuffer buffer = content.getByteBuffer();
         if (buffer != null)
             return new ByteBufferRangeWriter(buffer);
 
-        return new SeekableByteChannelRangeWriter(() -> Files.newByteChannel(content.getPath()));
+        // Try path's SeekableByteChannel
+        Path path = content.getResource().getPath();
+        if (path != null)
+            return new SeekableByteChannelRangeWriter(() -> Files.newByteChannel(path));
+
+        // Fallback to InputStream
+        return new InputStreamRangeWriter(() -> IOResources.asInputStream(content.getResource()));
     }
 }

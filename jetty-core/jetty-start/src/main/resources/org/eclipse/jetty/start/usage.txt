@@ -60,12 +60,13 @@ Report Commands:
 
   --dry-run
                    Prints the command line that start.jar generates,
-                   then exits.
+                   in a format usable by a POSIX compliant shell, then exits.
                    This may be used to generate command lines into scripts:
                      $ java -jar start.jar --dry-run > jetty.sh
 
   --dry-run=<part>(,<part>)*
-                   Prints specific parts of the command line. The parts are:
+                   Prints specific parts of the command line in a format usable by
+                   a POSIX compliant shell. The parts are:
                      o  "java" - the JVM to run
                      o  "opts" - the JVM options (e.g. -D, -X and -XX flags)
                      o  "path" - the JVM class-path and/or the JPMS module-path
@@ -134,7 +135,11 @@ Configure Commands:
 Options:
 --------
 
-  --module=<moduleName>(,<moduleName>)*
+  --env=<environmentName>
+                   Sets the environment which will apply to all subsequent libraries,
+                   properties and XML files.
+
+  --modules=<moduleName>(,<moduleName>)*
                    Enables a module for this execution.
                    To enable a module for all future executions, use the
                    --add-modules command.
@@ -142,16 +147,31 @@ Options:
                    file or in ${jetty.base}/start.d/*.ini files created by
                    the --add-modules command.
 
-  --lib=<classpath>
+  --libs=<classpath>
                    Adds the specified class-path entries to the the server
-                   class-path (or module-path).
+                   class-path; or module-path; or environment classpath if
+                   there has been a prior --env argument.
 
-  --download=<http-uri>|<location>
-                   Downloads a file from the given HTTP URI, if it does
+  --files=<uri>|<location>
+  --download=<uri>|<location>
+                   Downloads a file from the given URI, if it does
                    not already exist at the given location.
                    Note: the location is always relative to ${jetty.base}.
                    You might need to escape the pipe "\|" to use it in
                    some shell environments.
+                   Supported schemes:
+                     http:     download from http (unsecure) website
+                     https:    download from https (secure) website
+                     maven:    download from maven repository system
+                               first checking local repository
+                               see `maven.local.repo` field below
+                               then global repository
+                               see `maven.repo.uri` field below
+
+                     basehome: download relative path from active
+                               configured jetty dirs (eg: `${jetty.base}`
+                               and any `--include-jetty-dir` and finally
+                               checking the `${jetty.home}`)
 
   --exec
                    Executes the generated command line in a forked JVM
@@ -192,12 +212,16 @@ Options:
                    issues when the Jetty logging module has not yet started
                    due to configuration errors.
 
+  --allow-insecure-http-downloads
+                   Allow the use of insecure `http://` scheme for content download.
+
   --approve-all-licenses
                    Approves all license questions from modules that have
                    particular license requirements.
                    Useful for enabling modules from a script, so that it
                    does not require user interaction.
 
+  --skip-create-files=<moduleName>(,<moduleName>)*
   --skip-file-validation=<moduleName>(,<moduleName>)*
                    Disables the creation of files as specified by the
                    [files] section of the specified modules.
@@ -205,6 +229,7 @@ Options:
                    config file, but you want to use that module with an
                    *.xml config file instead.
 
+  --add-config-dir=<path>
   --include-jetty-dir=<path>
                    Includes the specified directory as a configuration source.
                    This directory behaves similarly to ${jetty.base} but sits
@@ -212,6 +237,42 @@ Options:
                    Useful when you want to apply a common "corporate"
                    configuration to all specific ${jetty.base} directories
                    without having to modify ${jetty.home}.
+
+  -D<name>=<value>
+                   Specifies a system property, as well as a start property.
+                   Note: this is a program argument that is interpreted and
+                   added to the existing JVM system properties.
+
+  <file>.xml
+                   Specifies a Jetty XML file relative to ${jetty.base}.
+                   This file is in addition to the Jetty XML files resolved
+                   from the [xml] sections of the enabled modules.
+                   If there has been a prior --env argument, the XML will be
+                   executed within that environment
+
+  <name>=<value>
+                   Specifies a property value that overrides the same
+                   property defined in a ${jetty.base}/start.d/*.ini file,
+                   or in the [ini] section of a *.mod file.
+
+                   <name>=<value>
+                     Sets the property value unconditionally.
+                   <name>+=<value>
+                     Appends the given value to the existing value.
+                   <name>?=<value>
+                     Sets the property value only if it is not already set.
+
+                   If there has been a prior --env argument, then the property is
+                   set only for the current environment, otherwise it is set for
+                   the whole server.
+
+  <file>.properties
+                   Specifies a file of property assignments that overrides the same
+                   property defined in a ${jetty.base}/start.d/*.ini file,
+                   or in the [ini] section of a *.mod file.
+                   If there has been a prior --env argument, then the property is
+                   set only for the current environment, otherwise it is set for
+                   the whole server.
 
   jetty.home=<directory>
                    Sets the ${jetty.home} directory.
@@ -241,28 +302,14 @@ Options:
                    running Jetty server has stopped.
                    If not specified, the stopper will not wait.
 
+  maven.local.repo=<dir>
+                   The maven local repository directory to find
+                   and store maven artifacts.
+                   Defaults to:
+                     1. Environment variable `JETTY_MAVEN_LOCAL_REPO`
+                     2. Environment variable `MAVEN_LOCAL_REPO`
+                     3. Directory ${home}/.m2/repository
+
   maven.repo.uri=<url>
-                  The base URL to use to download Maven dependencies.
-                  Defaults to: https://repo1.maven.org/maven2/.
-
-  <name>=<value>
-                  Specifies a property value that overrides the same
-                  property defined in a ${jetty.base}/start.d/*.ini file,
-                  or in the [ini] section of a *.mod file.
-
-                  <name>=<value>
-                    Sets the property value unconditionally.
-                  <name>+=<value>
-                    Appends the given value to the existing value.
-                  <name>?=<value>
-                    Sets the property value only if it is not already set.
-
-  -D<name>=<value>
-                  Specifies a system property, as well as a start property.
-                  Note: this is a program argument that is interpreted and
-                  added to the existing JVM system properties.
-
-  <xml-file>
-                  Specifies a Jetty XML file relative to ${jetty.base}.
-                  This file is in addition to the Jetty XML files resolved
-                  from the [xml] sections of the enabled modules.
+                   The base URL to use to download Maven dependencies.
+                   Defaults to: https://repo1.maven.org/maven2/.

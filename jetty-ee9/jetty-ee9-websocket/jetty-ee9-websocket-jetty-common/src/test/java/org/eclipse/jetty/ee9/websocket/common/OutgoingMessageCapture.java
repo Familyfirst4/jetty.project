@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -21,16 +21,15 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingDeque;
 
 import org.eclipse.jetty.io.ByteBufferPool;
-import org.eclipse.jetty.io.NullByteBufferPool;
 import org.eclipse.jetty.toolchain.test.Hex;
 import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.websocket.core.CloseStatus;
 import org.eclipse.jetty.websocket.core.CoreSession;
 import org.eclipse.jetty.websocket.core.Frame;
 import org.eclipse.jetty.websocket.core.OpCode;
-import org.eclipse.jetty.websocket.core.internal.messages.ByteBufferMessageSink;
-import org.eclipse.jetty.websocket.core.internal.messages.MessageSink;
-import org.eclipse.jetty.websocket.core.internal.messages.StringMessageSink;
+import org.eclipse.jetty.websocket.core.messages.ByteBufferMessageSink;
+import org.eclipse.jetty.websocket.core.messages.MessageSink;
+import org.eclipse.jetty.websocket.core.messages.StringMessageSink;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -42,7 +41,7 @@ public class OutgoingMessageCapture extends CoreSession.Empty implements CoreSes
     public BlockingQueue<ByteBuffer> binaryMessages = new LinkedBlockingDeque<>();
     public BlockingQueue<String> events = new LinkedBlockingDeque<>();
 
-    private final ByteBufferPool bufferPool = new NullByteBufferPool();
+    private final ByteBufferPool bufferPool = ByteBufferPool.NON_POOLING;
     private final MethodHandle wholeTextHandle;
     private final MethodHandle wholeBinaryHandle;
     private MessageSink messageSink;
@@ -97,7 +96,7 @@ public class OutgoingMessageCapture extends CoreSession.Empty implements CoreSes
                 String event = String.format("TEXT:fin=%b:len=%d", frame.isFin(), frame.getPayloadLength());
                 LOG.debug(event);
                 events.offer(event);
-                messageSink = new StringMessageSink(this, wholeTextHandle);
+                messageSink = new StringMessageSink(this, wholeTextHandle, true);
                 break;
             }
             case OpCode.BINARY:
@@ -105,7 +104,7 @@ public class OutgoingMessageCapture extends CoreSession.Empty implements CoreSes
                 String event = String.format("BINARY:fin=%b:len=%d", frame.isFin(), frame.getPayloadLength());
                 LOG.debug(event);
                 events.offer(event);
-                messageSink = new ByteBufferMessageSink(this, wholeBinaryHandle);
+                messageSink = new ByteBufferMessageSink(this, wholeBinaryHandle, true);
                 break;
             }
             case OpCode.CONTINUATION:

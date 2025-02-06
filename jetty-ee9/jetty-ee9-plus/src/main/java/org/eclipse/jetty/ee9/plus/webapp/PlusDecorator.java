@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,9 +13,9 @@
 
 package org.eclipse.jetty.ee9.plus.webapp;
 
-import org.eclipse.jetty.ee9.plus.annotation.InjectionCollection;
-import org.eclipse.jetty.ee9.plus.annotation.LifeCycleCallbackCollection;
 import org.eclipse.jetty.ee9.webapp.WebAppContext;
+import org.eclipse.jetty.plus.annotation.InjectionCollection;
+import org.eclipse.jetty.plus.annotation.LifeCycleCallbackCollection;
 import org.eclipse.jetty.util.Decorator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,7 +13,6 @@
 
 package org.eclipse.jetty.start;
 
-import java.io.File;
 import java.io.IOException;
 import java.nio.file.FileSystemLoopException;
 import java.nio.file.FileVisitResult;
@@ -43,7 +42,7 @@ public class PathFinder extends SimpleFileVisitor<Path>
     private void addHit(Path path)
     {
         String relPath = basePath.relativize(path).toString();
-        StartLog.debug("Found [" + relPath + "]  " + path);
+        StartLog.debug("Found [%s] %s", relPath, path);
         hits.put(relPath, path);
     }
 
@@ -57,14 +56,9 @@ public class PathFinder extends SimpleFileVisitor<Path>
         return fileMatcher;
     }
 
-    public List<File> getHitList()
+    public List<Path> getHitList()
     {
-        List<File> ret = new ArrayList<>();
-        for (Path path : hits.values())
-        {
-            ret.add(path.toFile());
-        }
-        return ret;
+        return new ArrayList<>(hits.values());
     }
 
     public Collection<Path> getHits()
@@ -82,7 +76,7 @@ public class PathFinder extends SimpleFileVisitor<Path>
     {
         if (dirMatcher.matches(dir))
         {
-            StartLog.trace("Following dir: " + dir);
+            StartLog.trace("Following dir: %s", dir);
             if (includeDirsInResults && fileMatcher.matches(dir))
             {
                 addHit(dir);
@@ -91,7 +85,7 @@ public class PathFinder extends SimpleFileVisitor<Path>
         }
         else
         {
-            StartLog.trace("Skipping dir: " + dir);
+            StartLog.trace("Skipping dir: %s", dir);
             return FileVisitResult.SKIP_SUBTREE;
         }
     }
@@ -137,7 +131,7 @@ public class PathFinder extends SimpleFileVisitor<Path>
         }
         else
         {
-            StartLog.trace("Ignoring file: " + file);
+            StartLog.trace("Ignoring file: %s", file);
         }
         return FileVisitResult.CONTINUE;
     }
@@ -149,7 +143,7 @@ public class PathFinder extends SimpleFileVisitor<Path>
         {
             if (!NOTIFIED_PATHS.contains(file))
             {
-                StartLog.warn("skipping detected filesystem loop: " + file);
+                StartLog.warn("skipping detected filesystem loop: %s", file);
                 NOTIFIED_PATHS.add(file);
             }
             return FileVisitResult.SKIP_SUBTREE;

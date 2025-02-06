@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -20,15 +20,11 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
-import org.eclipse.jetty.client.api.Request;
-import org.eclipse.jetty.client.api.Response;
-import org.eclipse.jetty.client.api.Result;
-import org.eclipse.jetty.client.util.FutureResponseListener;
-import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.thread.QueuedThreadPool;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -113,17 +109,17 @@ public class HttpClientChunkedContentTest
         {
             server.bind(new InetSocketAddress("localhost", 0));
 
-            final AtomicReference<Callback> callbackRef = new AtomicReference<>();
+            final AtomicReference<Runnable> demanderRef = new AtomicReference<>();
             final CountDownLatch firstContentLatch = new CountDownLatch(1);
             final AtomicReference<Result> resultRef = new AtomicReference<>();
             final CountDownLatch completeLatch = new CountDownLatch(1);
             client.newRequest("localhost", server.getLocalPort())
-                .onResponseContentAsync((response, content, callback) ->
+                .onResponseContentAsync((response, chunk, demander) ->
                 {
-                    if (callbackRef.compareAndSet(null, callback))
+                    if (demanderRef.compareAndSet(null, demander))
                         firstContentLatch.countDown();
                     else
-                        callback.succeeded();
+                        demander.run();
                 })
                 .timeout(5, TimeUnit.SECONDS)
                 .send(result ->
@@ -151,7 +147,7 @@ public class HttpClientChunkedContentTest
                 // Simulate a delay in consuming the content.
                 assertTrue(firstContentLatch.await(5, TimeUnit.SECONDS));
                 Thread.sleep(1000);
-                callbackRef.get().succeeded();
+                demanderRef.get().run();
 
                 // Wait for the client to read 0 and become idle.
                 Thread.sleep(1000);
@@ -164,14 +160,13 @@ public class HttpClientChunkedContentTest
                 // Issue another request to be sure the connection is sane.
                 Request request = client.newRequest("localhost", server.getLocalPort())
                     .timeout(5, TimeUnit.SECONDS);
-                FutureResponseListener listener = new FutureResponseListener(request);
-                request.send(listener);
+                CompletableFuture<ContentResponse> completable = new CompletableResponseListener(request).send();
 
                 consumeRequestHeaders(socket);
                 output.write(response.getBytes(StandardCharsets.UTF_8));
                 output.flush();
 
-                assertEquals(200, listener.get(5, TimeUnit.SECONDS).getStatus());
+                assertEquals(200, completable.get(5, TimeUnit.SECONDS).getStatus());
             }
         }
     }

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,6 +14,7 @@
 package org.eclipse.jetty.http;
 
 import java.nio.ByteBuffer;
+import java.util.List;
 
 import org.eclipse.jetty.util.BufferUtil;
 import org.hamcrest.Matchers;
@@ -22,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class HttpGeneratorClientTest
@@ -32,12 +34,12 @@ public class HttpGeneratorClientTest
     {
         RequestInfo(String method, String uri, HttpFields fields)
         {
-            super(method, HttpURI.from(method, uri), HttpVersion.HTTP_1_1, fields, -1);
+            super(method, HttpURI.from(method, uri), HttpVersion.HTTP_1_1, fields);
         }
 
         RequestInfo(String method, String uri, HttpVersion version, HttpFields fields)
         {
-            super(method, HttpURI.from(method, uri), version, fields, -1);
+            super(method, HttpURI.from(method, uri), version, fields);
         }
 
         RequestInfo(String method, String uri, int contentLength, HttpFields fields)
@@ -97,7 +99,8 @@ public class HttpGeneratorClientTest
 
         HttpFields.Mutable fields = HttpFields.build();
         fields.add("Host", "something");
-        fields.add("Null", null);
+        assertThrows(NullPointerException.class, () -> fields.add("Null", (String)null));
+        assertThrows(NullPointerException.class, () -> fields.add("Null", (List<String>)null));
         fields.add("Empty", "");
         RequestInfo info = new RequestInfo("GET", "/index.html", fields);
         assertFalse(gen.isChunking());

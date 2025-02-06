@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -25,7 +25,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 
 import org.eclipse.jetty.util.Callback;
-import org.eclipse.jetty.util.TypeUtil;
+import org.eclipse.jetty.util.StringUtil;
 import org.hamcrest.Matchers;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -42,7 +42,7 @@ public class ProxyCustomizerTest
         try (Socket socket = new Socket(server.getURI().getHost(), server.getURI().getPort()))
         {
             OutputStream output = socket.getOutputStream();
-            output.write(TypeUtil.fromHexString(proxyAsHexString));
+            output.write(StringUtil.fromHexString(proxyAsHexString));
             output.write(rawHttp.getBytes(StandardCharsets.UTF_8));
             output.flush();
             socket.shutdownOutput();
@@ -80,10 +80,10 @@ public class ProxyCustomizerTest
     @BeforeEach
     public void setUp() throws Exception
     {
-        Handler handler = new Handler.Processor()
+        Handler handler = new Handler.Abstract.NonBlocking()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 response.getHeaders().add("preexisting.attribute", request.getAttribute("some.attribute").toString());
                 ArrayList<String> attributeNames = new ArrayList<>(request.getAttributeNameSet());
@@ -100,6 +100,7 @@ public class ProxyCustomizerTest
                     response.getHeaders().add("proxyRemoteAddress", remoteAddress + ":" + request.getAttribute(ProxyCustomizer.REMOTE_PORT_ATTRIBUTE_NAME));
 
                 callback.succeeded();
+                return true;
             }
         };
 

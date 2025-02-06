@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -17,11 +17,10 @@ import java.lang.reflect.Field;
 import java.util.Iterator;
 import java.util.Map;
 
+import jakarta.servlet.ServletContext;
 import jakarta.servlet.ServletContextEvent;
 import jakarta.servlet.ServletContextListener;
 import org.eclipse.jetty.util.Loader;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * ELContextCleaner
@@ -32,9 +31,12 @@ import org.slf4j.LoggerFactory;
  * See http://java.net/jira/browse/GLASSFISH-1649
  * See https://bugs.eclipse.org/bugs/show_bug.cgi?id=353095
  */
+@Deprecated
 public class ELContextCleaner implements ServletContextListener
 {
-    private static final Logger LOG = LoggerFactory.getLogger(ELContextCleaner.class);
+    // IMPORTANT: This class cannot have a slf4j Logger
+    // As it will force this requirement on webapps.
+    // private static final Logger LOG = LoggerFactory.getLogger(ELContextCleaner.class);
 
     @Override
     public void contextInitialized(ServletContextEvent sce)
@@ -50,41 +52,25 @@ public class ELContextCleaner implements ServletContextListener
             Class<?> beanELResolver = Loader.loadClass("jakarta.el.BeanELResolver");
 
             //Get a reference via reflection to the properties field which is holding class references
-            Field field = getField(beanELResolver);
+            Field field = beanELResolver.getDeclaredField("properties");
 
             field.setAccessible(true);
 
             //Get rid of references
-            purgeEntries(field);
-
-            if (LOG.isDebugEnabled())
-                LOG.debug("javax.el.BeanELResolver purged");
+            purgeEntries(sce.getServletContext(), field);
         }
-
-        catch (ClassNotFoundException e)
+        catch (ClassNotFoundException | NoSuchFieldException e)
         {
-            //BeanELResolver not on classpath, ignore
+            //BeanELResolver not on classpath,or has no .properties field, ignore
         }
         catch (SecurityException | IllegalArgumentException | IllegalAccessException e)
         {
-            LOG.warn("Cannot purge classes from javax.el.BeanELResolver", e);
-        }
-        catch (NoSuchFieldException e)
-        {
-            LOG.debug("Not cleaning cached beans: no such field javax.el.BeanELResolver.properties");
+            sce.getServletContext().log("Cannot purge classes from jakarta.el.BeanELResolver", e);
         }
     }
 
-    protected Field getField(Class<?> beanELResolver)
-        throws SecurityException, NoSuchFieldException
-    {
-        if (beanELResolver == null)
-            return null;
-
-        return beanELResolver.getDeclaredField("properties");
-    }
-
-    protected void purgeEntries(Field properties)
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    protected void purgeEntries(ServletContext context, Field properties)
         throws IllegalArgumentException, IllegalAccessException
     {
         if (properties == null)
@@ -98,18 +84,16 @@ public class ELContextCleaner implements ServletContextListener
         while (itor.hasNext())
         {
             Class<?> clazz = itor.next();
-            if (LOG.isDebugEnabled())
-                LOG.debug("Clazz: {} loaded by {}", clazz, clazz.getClassLoader());
+            context.log(String.format("Clazz: %s loaded by %s", clazz, clazz.getClassLoader()));
             if (Thread.currentThread().getContextClassLoader().equals(clazz.getClassLoader()))
             {
                 itor.remove();
-                if (LOG.isDebugEnabled())
-                    LOG.debug("removed");
+                context.log("removed");
             }
             else
             {
-                if (LOG.isDebugEnabled())
-                    LOG.debug("not removed: contextclassloader={} clazz's classloader={}", Thread.currentThread().getContextClassLoader(), clazz.getClassLoader());
+                context.log(String.format("not removed: contextClassLoader=%s class's classLoader=%s",
+                    Thread.currentThread().getContextClassLoader(), clazz.getClassLoader()));
             }
         }
     }

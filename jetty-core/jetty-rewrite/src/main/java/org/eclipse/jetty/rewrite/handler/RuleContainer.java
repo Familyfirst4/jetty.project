@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -19,7 +19,6 @@ import java.util.Iterator;
 import java.util.List;
 
 import org.eclipse.jetty.http.HttpURI;
-import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.util.component.Dumpable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,11 +46,12 @@ public class RuleContainer extends Rule implements Iterable<Rule>, Dumpable
     }
 
     /**
+     * Set the list of {@link Rule}..
      * @param rules the list of {@link Rule}.
      */
     public void setRules(List<Rule> rules)
     {
-        _rules.clear();
+        clear();
         _rules.addAll(rules);
     }
 
@@ -69,6 +69,14 @@ public class RuleContainer extends Rule implements Iterable<Rule>, Dumpable
     public void addRule(Rule rule)
     {
         _rules.add(rule);
+    }
+
+    /**
+     * <p>Removes all the rules.</p>
+     */
+    public void clear()
+    {
+        _rules.clear();
     }
 
     /**
@@ -99,12 +107,12 @@ public class RuleContainer extends Rule implements Iterable<Rule>, Dumpable
     /**
      * <p>Processes the rules.</p>
      *
-     * @param input the input {@code Request} and {@code Processor}
-     * @return a {@code Request} and {@code Processor}, possibly wrapped by rules to implement the rule's logic,
+     * @param input the input {@code Request} and {@code Handler}
+     * @return a {@code Request} and {@code Handler}, possibly wrapped by rules to implement the rule's logic,
      * or {@code null} if no rule matched
      */
     @Override
-    public Request.WrapperProcessor matchAndApply(Request.WrapperProcessor input) throws IOException
+    public Handler matchAndApply(Handler input) throws IOException
     {
         String originalPathAttribute = getOriginalPathAttribute();
         if (originalPathAttribute != null)
@@ -121,7 +129,7 @@ public class RuleContainer extends Rule implements Iterable<Rule>, Dumpable
         {
             if (LOG.isDebugEnabled())
                 LOG.debug("applying {}", rule);
-            Request.WrapperProcessor output = rule.matchAndApply(input);
+            Handler output = rule.matchAndApply(input);
             if (output == null)
             {
                 if (LOG.isDebugEnabled())

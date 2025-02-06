@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -931,10 +931,10 @@ public class HttpManyWaysToAsyncCommitTest extends AbstractHttpTest
     {
         server.getThreadPool().execute(() ->
         {
-            long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            long start = NanoTime.now();
             try
             {
-                while (System.nanoTime() < end)
+                while (NanoTime.secondsSince(start) < 10)
                 {
                     switch (request.getHttpChannelState().getState())
                     {

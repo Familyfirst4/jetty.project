@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -28,7 +28,6 @@ import jakarta.websocket.Session;
 import jakarta.websocket.WebSocketContainer;
 import jakarta.websocket.server.PathParam;
 import jakarta.websocket.server.ServerEndpoint;
-import org.eclipse.jetty.ee10.annotations.ServletContainerInitializersStarter;
 import org.eclipse.jetty.ee10.webapp.WebAppContext;
 import org.eclipse.jetty.ee10.websocket.jakarta.tests.EventSocket;
 import org.eclipse.jetty.ee10.websocket.jakarta.tests.WSServer;
@@ -37,7 +36,6 @@ import org.eclipse.jetty.toolchain.test.MavenTestingUtils;
 import org.hamcrest.Matchers;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.DisabledOnJre;
 import org.junit.jupiter.api.condition.JRE;
@@ -64,7 +62,6 @@ public class DeploymentTest
         server.stop();
     }
 
-    @Disabled
     @Test
     public void testBadPathParamSignature() throws Exception
     {
@@ -76,7 +73,7 @@ public class DeploymentTest
         app1.deploy();
         app1.getWebAppContext().setThrowUnavailableOnStartupException(false);
 
-        try (StacklessLogging ignore = new StacklessLogging(ServletContainerInitializersStarter.class, WebAppContext.class))
+        try (StacklessLogging ignore = new StacklessLogging(WebAppContext.class))
         {
             server.start();
         }
@@ -96,7 +93,6 @@ public class DeploymentTest
      * @throws Exception if there is an error during the test.
      */
     @Test
-    @Disabled
     @DisabledOnJre({JRE.JAVA_14, JRE.JAVA_15})
     public void testDifferentWebAppsWithSameClassInSignature() throws Exception
     {

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -16,9 +16,9 @@ package org.eclipse.jetty.ee10.websocket.server;
 import java.io.IOException;
 import java.util.List;
 
-import org.eclipse.jetty.ee10.websocket.api.ExtensionConfig;
-import org.eclipse.jetty.ee10.websocket.api.UpgradeRequest;
-import org.eclipse.jetty.ee10.websocket.api.UpgradeResponse;
+import org.eclipse.jetty.websocket.api.ExtensionConfig;
+import org.eclipse.jetty.websocket.api.UpgradeRequest;
+import org.eclipse.jetty.websocket.api.UpgradeResponse;
 
 public interface JettyServerUpgradeResponse extends UpgradeResponse
 {

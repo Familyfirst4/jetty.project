@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -20,17 +20,19 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
-import org.eclipse.jetty.client.http.HttpChannelOverHTTP;
-import org.eclipse.jetty.client.http.HttpClientTransportOverHTTP;
-import org.eclipse.jetty.client.http.HttpConnectionOverHTTP;
-import org.eclipse.jetty.client.util.BytesRequestContent;
+import org.eclipse.jetty.client.transport.HttpClientTransportOverHTTP;
+import org.eclipse.jetty.client.transport.HttpDestination;
+import org.eclipse.jetty.client.transport.internal.HttpChannelOverHTTP;
+import org.eclipse.jetty.client.transport.internal.HttpConnectionOverHTTP;
 import org.eclipse.jetty.io.Content;
 import org.eclipse.jetty.io.EndPoint;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
-import org.eclipse.jetty.util.Blocking;
+import org.eclipse.jetty.util.Blocker;
+import org.eclipse.jetty.util.NanoTime;
+import org.eclipse.jetty.util.Promise;
 import org.eclipse.jetty.util.thread.QueuedThreadPool;
 import org.junit.jupiter.api.Test;
 
@@ -62,23 +64,17 @@ public class HttpClientUploadDuringServerShutdownTest
                         Content.Chunk chunk = request.read();
                         if (chunk == null)
                         {
-                            try (Blocking.Runnable blocker = _blocking.runnable())
+                            try (Blocker.Runnable blocker = _blocking.runnable())
                             {
                                 request.demand(blocker);
                             }
                         }
                         else
                         {
-                            if (chunk.hasRemaining())
-                                chunk.release();
+                            chunk.release();
                             if (chunk.isLast())
                                 break;
-                            long now = System.nanoTime();
-                            long sleep = TimeUnit.MICROSECONDS.toNanos(1);
-                            while (System.nanoTime() < now + sleep)
-                            {
-                                Thread.onSpinWait();
-                            }
+                            NanoTime.spinWait(TimeUnit.MICROSECONDS.toNanos(1));
                         }
                     }
                 }
@@ -193,17 +189,17 @@ public class HttpClientUploadDuringServerShutdownTest
                     }
 
                     @Override
-                    protected boolean abort(Throwable failure)
+                    protected void abort(Throwable failure, Promise<Boolean> promise)
                     {
                         try
                         {
                             associateLatch.await(5, TimeUnit.SECONDS);
-                            return super.abort(failure);
+                            super.abort(failure, promise);
                         }
                         catch (InterruptedException x)
                         {
                             x.printStackTrace();
-                            return false;
+                            promise.failed(x);
                         }
                     }
                 };

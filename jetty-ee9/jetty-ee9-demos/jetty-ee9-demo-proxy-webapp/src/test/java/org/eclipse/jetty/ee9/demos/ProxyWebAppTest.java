@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,11 +13,13 @@
 
 package org.eclipse.jetty.ee9.demos;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 
+import org.eclipse.jetty.client.ContentResponse;
 import org.eclipse.jetty.client.HttpClient;
-import org.eclipse.jetty.client.api.ContentResponse;
 import org.eclipse.jetty.ee9.webapp.WebAppContext;
 import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.server.Server;
@@ -30,11 +32,12 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.containsStringIgnoringCase;
 import static org.hamcrest.Matchers.is;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Test the configuration found in WEB-INF/web.xml for purposes of the demo-base
+ * Test the configuration found in WEB-INF/web.xml of ee9-demo-proxy.war
  */
 public class ProxyWebAppTest
 {
@@ -54,9 +57,19 @@ public class ProxyWebAppTest
         // This is a pieced together WebApp.
         // We don't have a valid WEB-INF/lib to rely on at this point.
         // So, open up server classes here, for purposes of this testcase.
-        webapp.getServerClassMatcher().add("-org.eclipse.jetty.proxy.");
-        webapp.setWar(MavenTestingUtils.getProjectDirPath("src/main/webapp").toString());
-        webapp.setExtraClasspath(MavenTestingUtils.getTargetPath().resolve("classes").toString());
+        webapp.getServerClassMatcher().add("-org.eclipse.jetty.ee9.proxy.");
+        // Default location (EE9)
+        Path webappDir = MavenTestingUtils.getBasePath().resolve("src/main/webapp");
+        if (!Files.exists(webappDir))
+        {
+            // Try EE8 location
+            webappDir = MavenTestingUtils.getTargetPath().resolve("webapp");
+        }
+        assertTrue(Files.exists(webappDir));
+        webapp.setWar(webappDir.toString());
+        Path testClassesDir = MavenTestingUtils.getTargetPath().resolve("test-classes");
+        assertTrue(Files.exists(testClassesDir));
+        webapp.setExtraClasspath(testClassesDir.toString());
         server.setHandler(webapp);
 
         server.start();
@@ -86,6 +99,6 @@ public class ProxyWebAppTest
         // this proxy configuration, not redirected to the actual website.
         assertThat("response status", response.getStatus(), is(HttpStatus.OK_200));
         // Expecting a Javadoc / APIDoc response - look for something unique for APIdoc.
-        assertThat("response", response.getContentAsString(), containsString("All&nbsp;Classes"));
+        assertThat("response", response.getContentAsString(), containsStringIgnoringCase("javadoc"));
     }
 }

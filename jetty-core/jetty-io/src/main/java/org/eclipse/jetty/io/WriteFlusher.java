@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -277,7 +277,7 @@ public abstract class WriteFlusher
             if (buffers != null)
             {
                 if (DEBUG)
-                    LOG.debug("flushed incomplete");
+                    LOG.debug("flush incomplete {}", this);
                 PendingState pending = new PendingState(callback, address, buffers);
                 if (updateState(__WRITING, pending))
                     onIncompleteFlush();
@@ -429,8 +429,8 @@ public abstract class WriteFlusher
             if (written > 0)
             {
                 Connection connection = _endPoint.getConnection();
-                if (connection instanceof Listener)
-                    ((Listener)connection).onFlushed(written);
+                if (connection instanceof Listener listener)
+                    listener.onFlushed(written);
             }
 
             if (flushed)
@@ -581,7 +581,10 @@ public abstract class WriteFlusher
     /**
      * <p>A listener of {@link WriteFlusher} events.
      * If implemented by a Connection class, the {@link #onFlushed(long)} event will be delivered to it.</p>
+     *
+     * @deprecated functionality removed, no replacement
      */
+    @Deprecated(since = "12.0.10", forRemoval = true)
     public interface Listener
     {
         /**

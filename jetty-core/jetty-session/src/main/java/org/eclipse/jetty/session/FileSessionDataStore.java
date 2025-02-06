@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -20,6 +20,7 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.io.OutputStream;
 import java.nio.file.FileVisitOption;
@@ -32,8 +33,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
-import org.eclipse.jetty.util.ClassLoadingObjectInputStream;
-import org.eclipse.jetty.util.MultiException;
+import org.eclipse.jetty.util.ExceptionUtil;
 import org.eclipse.jetty.util.StringUtil;
 import org.eclipse.jetty.util.annotation.ManagedAttribute;
 import org.eclipse.jetty.util.annotation.ManagedObject;
@@ -46,7 +46,7 @@ import org.slf4j.LoggerFactory;
  * A file-based store of session data.
  */
 @ManagedObject
-public class FileSessionDataStore extends AbstractSessionDataStore
+public class FileSessionDataStore extends ObjectStreamSessionDataStore
 {
     private static final Logger LOG = LoggerFactory.getLogger(FileSessionDataStore.class);
     protected File _storeDir;
@@ -365,7 +365,7 @@ public class FileSessionDataStore extends AbstractSessionDataStore
             //iterate over files in _storeDir and build map of session id to filename.
             //if we come across files for sessions in other contexts, check if they're
             //ancient and remove if necessary.
-            MultiException me = new MultiException();
+            final ExceptionUtil.MultiException multiException = new ExceptionUtil.MultiException();
             long now = System.currentTimeMillis();
 
             // Build session file map by walking directory
@@ -422,13 +422,13 @@ public class FileSessionDataStore extends AbstractSessionDataStore
                                     }
                                     catch (IOException e)
                                     {
-                                        me.add(e);
+                                        multiException.add(e);
                                     }
                                 }
                             }
                         }
                     });
-                me.ifExceptionThrow();
+                multiException.ifExceptionThrow();
             }
         }
     }
@@ -464,7 +464,7 @@ public class FileSessionDataStore extends AbstractSessionDataStore
      * @param id identity of the session
      * @param data the info of the session
      */
-    protected void save(OutputStream os, String id, SessionData data) throws IOException
+    protected void save(OutputStream os, String id, SessionData data) throws Exception
     {
         DataOutputStream out = new DataOutputStream(os);
         out.writeUTF(id);
@@ -478,8 +478,7 @@ public class FileSessionDataStore extends AbstractSessionDataStore
         out.writeLong(data.getExpiry());
         out.writeLong(data.getMaxInactiveMs());
 
-        ObjectOutputStream oos = new ObjectOutputStream(out);
-        SessionData.serializeAttributes(data, oos);
+        serializeAttributes(data, out);
     }
 
     /**
@@ -623,8 +622,7 @@ public class FileSessionDataStore extends AbstractSessionDataStore
             data.setMaxInactiveMs(maxIdle);
 
             // Attributes
-            ClassLoadingObjectInputStream ois = new ClassLoadingObjectInputStream(is);
-            SessionData.deserializeAttributes(data, ois);
+            deserializeAttributes(data, is);
             return data;
         }
         catch (Exception e)

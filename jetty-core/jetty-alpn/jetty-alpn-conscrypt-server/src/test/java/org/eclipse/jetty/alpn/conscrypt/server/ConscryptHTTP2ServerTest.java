@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -20,10 +20,10 @@ import java.security.Security;
 
 import org.conscrypt.OpenSSLProvider;
 import org.eclipse.jetty.alpn.server.ALPNServerConnectionFactory;
+import org.eclipse.jetty.client.ContentResponse;
 import org.eclipse.jetty.client.HttpClient;
-import org.eclipse.jetty.client.api.ContentResponse;
 import org.eclipse.jetty.http2.client.HTTP2Client;
-import org.eclipse.jetty.http2.client.http.HttpClientTransportOverHTTP2;
+import org.eclipse.jetty.http2.client.transport.HttpClientTransportOverHTTP2;
 import org.eclipse.jetty.http2.server.HTTP2ServerConnectionFactory;
 import org.eclipse.jetty.io.ClientConnector;
 import org.eclipse.jetty.server.Handler;
@@ -41,12 +41,14 @@ import org.eclipse.jetty.util.ssl.SslContextFactory;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.DisabledOnOs;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Test server that verifies that the Conscrypt ALPN mechanism works for both server and client side
  */
+@DisabledOnOs(architectures = "aarch64", disabledReason = "Conscrypt does not provide aarch64 native libs as of version 2.5.2")
 public class ConscryptHTTP2ServerTest
 {
     static
@@ -54,6 +56,7 @@ public class ConscryptHTTP2ServerTest
         Security.addProvider(new OpenSSLProvider());
     }
 
+    private final HttpConfiguration httpsConfig = new HttpConfiguration();
     private final Server server = new Server();
 
     private SslContextFactory.Server newServerSslContextFactory()
@@ -88,9 +91,7 @@ public class ConscryptHTTP2ServerTest
     @BeforeEach
     public void startServer() throws Exception
     {
-        HttpConfiguration httpsConfig = new HttpConfiguration();
         httpsConfig.setSecureScheme("https");
-
         httpsConfig.setSendXPoweredBy(true);
         httpsConfig.setSendServerVersion(true);
         httpsConfig.addCustomizer(new SecureRequestCustomizer());
@@ -105,12 +106,13 @@ public class ConscryptHTTP2ServerTest
         http2Connector.setPort(0);
         server.addConnector(http2Connector);
 
-        server.setHandler(new Handler.Processor()
+        server.setHandler(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 callback.succeeded();
+                return true;
             }
         });
 
@@ -129,17 +131,20 @@ public class ConscryptHTTP2ServerTest
         ClientConnector clientConnector = new ClientConnector();
         clientConnector.setSslContextFactory(newClientSslContextFactory());
         HTTP2Client h2Client = new HTTP2Client(clientConnector);
-        HttpClient client = new HttpClient(new HttpClientTransportOverHTTP2(h2Client));
-        client.start();
-        try
+        try (HttpClient client = new HttpClient(new HttpClientTransportOverHTTP2(h2Client)))
         {
+            client.start();
             int port = ((ServerConnector)server.getConnectors()[0]).getLocalPort();
             ContentResponse contentResponse = client.GET("https://localhost:" + port);
             assertEquals(200, contentResponse.getStatus());
         }
-        finally
-        {
-            client.stop();
-        }
+    }
+
+    @Test
+    public void testSNIRequired() throws Exception
+    {
+        // The KeyStore contains 1 certificate with two DNS names.
+        httpsConfig.getCustomizer(SecureRequestCustomizer.class).setSniRequired(true);
+        testSimpleRequest();
     }
 }

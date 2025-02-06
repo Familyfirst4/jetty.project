@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,7 +14,6 @@
 package org.eclipse.jetty.ee10.servlet;
 
 import org.eclipse.jetty.io.Content;
-import org.eclipse.jetty.util.thread.AutoLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -29,16 +28,13 @@ class BlockingContentProducer implements ContentProducer
     private final AsyncContentProducer _asyncContentProducer;
     private final AsyncContentProducer.LockedSemaphore _semaphore;
 
-    BlockingContentProducer(AsyncContentProducer delegate)
+    /**
+     * @param asyncContentProducer The {@link AsyncContentProducer} to block against.
+     */
+    BlockingContentProducer(AsyncContentProducer asyncContentProducer)
     {
-        _asyncContentProducer = delegate;
+        _asyncContentProducer = asyncContentProducer;
         _semaphore = _asyncContentProducer.newLockedSemaphore();
-    }
-
-    @Override
-    public AutoLock lock()
-    {
-        return _asyncContentProducer.lock();
     }
 
     @Override
@@ -83,9 +79,9 @@ class BlockingContentProducer implements ContentProducer
     }
 
     @Override
-    public long getRawBytesArrived()
+    public long getBytesArrived()
     {
-        return _asyncContentProducer.getRawBytesArrived();
+        return _asyncContentProducer.getBytesArrived();
     }
 
     @Override
@@ -107,7 +103,7 @@ class BlockingContentProducer implements ContentProducer
             if (chunk != null)
                 return chunk;
 
-            // IFF isReady() returns false then HttpChannel.needContent() has been called,
+            // IFF isReady() returns false then Request.demand() has been called,
             // thus we know that eventually a call to onContentProducible will come.
             if (_asyncContentProducer.isReady())
             {
@@ -145,18 +141,6 @@ class BlockingContentProducer implements ContentProducer
     }
 
     @Override
-    public HttpInput.Interceptor getInterceptor()
-    {
-        return _asyncContentProducer.getInterceptor();
-    }
-
-    @Override
-    public void setInterceptor(HttpInput.Interceptor interceptor)
-    {
-        _asyncContentProducer.setInterceptor(interceptor);
-    }
-
-    @Override
     public boolean onContentProducible()
     {
         _semaphore.assertLocked();
@@ -165,17 +149,20 @@ class BlockingContentProducer implements ContentProducer
         // This is why this method always returns false.
         // But async errors can occur while the dispatched thread is NOT blocked reading (i.e.: in state WAITING),
         // so the WAITING to WOKEN transition must be done by the error-notifying thread which then has to reschedule
-        // the dispatched thread after HttpChannelState.asyncError() is called.
+        // the dispatched thread.
         // Calling _asyncContentProducer.onContentProducible() changes the channel state from WAITING to WOKEN which
-        // would prevent the subsequent call to HttpChannelState.asyncError() from rescheduling the thread.
-        // AsyncServletTest.testStartAsyncThenClientStreamIdleTimeout() tests this.
+        // would prevent the async error thread from noticing that a redispatching is needed.
         boolean unready = _asyncContentProducer.isUnready();
         if (LOG.isDebugEnabled())
             LOG.debug("onContentProducible releasing semaphore {} unready={}", _semaphore, unready);
         // Do not release the semaphore if we are not unready, as certain protocols may call this method
         // just after having received the request, not only when they have read all the available content.
         if (unready)
+        {
+            // Switch the input state back to IDLE, otherwise we would stay UNREADY.
+            _asyncContentProducer.getServletChannel().getServletRequestState().onReadIdle();
             _semaphore.release();
+        }
         return false;
     }
 }

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -63,7 +63,7 @@ abstract class AbstractTrie<V> implements Index.Mutable<V>
 
     public V get(String s)
     {
-        return get(s, 0, s.length());
+        return get(s, 0, s == null ? 0 : s.length());
     }
 
     public V get(ByteBuffer b)
@@ -73,7 +73,7 @@ abstract class AbstractTrie<V> implements Index.Mutable<V>
 
     public V getBest(String s)
     {
-        return getBest(s, 0, s.length());
+        return getBest(s, 0, s == null ? 0 : s.length());
     }
 
     public V getBest(byte[] b, int offset, int len)

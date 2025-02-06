@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -18,15 +18,26 @@ import java.io.PrintWriter;
 import java.net.URLDecoder;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.util.EnumSet;
 
+import jakarta.servlet.DispatcherType;
+import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
+import jakarta.servlet.ServletRequest;
+import jakarta.servlet.ServletResponse;
+import jakarta.servlet.http.HttpFilter;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.http.HttpServletResponseWrapper;
 import org.eclipse.jetty.http.HttpTester;
 import org.eclipse.jetty.http.HttpVersion;
+import org.eclipse.jetty.http.UriCompliance;
+import org.eclipse.jetty.server.HttpConnectionFactory;
 import org.eclipse.jetty.server.LocalConnector;
 import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.toolchain.test.MavenPaths;
 import org.eclipse.jetty.util.StringUtil;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -34,9 +45,19 @@ import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class ResponseHeadersTest
 {
+    public static class WrappingFilter extends HttpFilter
+    {
+        public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain)
+            throws IOException, ServletException
+        {
+            this.doFilter((HttpServletRequest)req, new HttpServletResponseWrapper((HttpServletResponse)res), chain);
+        }
+    }
+
     public static class SimulateUpgradeServlet extends HttpServlet
     {
         @Override
@@ -135,14 +156,19 @@ public class ResponseHeadersTest
     @BeforeAll
     public static void startServer() throws Exception
     {
+        Path staticContentPath = MavenPaths.findTestResourceDir("contextResources");
         server = new Server();
         connector = new LocalConnector(server);
         server.addConnector(connector);
 
         ServletContextHandler context = new ServletContextHandler();
         context.setContextPath("/");
+        context.setBaseResourceAsPath(staticContentPath);
+        context.setInitParameter("org.eclipse.jetty.servlet.Default.pathInfoOnly", "TRUE");
         server.setHandler(context);
 
+        context.addServlet(new ServletHolder(new DefaultServlet()), "/default/*");
+        context.addFilter(new FilterHolder(new WrappingFilter()), "/default/*", EnumSet.allOf(DispatcherType.class));
         context.addServlet(new ServletHolder(new SimulateUpgradeServlet()), "/ws/*");
         context.addServlet(new ServletHolder(new MultilineResponseValueServlet()), "/multiline/*");
         context.addServlet(CharsetResetToJsonMimeTypeServlet.class, "/charset/json-reset/*");
@@ -166,6 +192,20 @@ public class ResponseHeadersTest
     }
 
     @Test
+    public void testWrappedResponseWithStaticContent() throws Exception
+    {
+        HttpTester.Request request = new HttpTester.Request();
+        request.setMethod("GET");
+        request.setURI("/default/test.txt");
+        request.setVersion(HttpVersion.HTTP_1_1);
+        request.setHeader("Host", "test");
+
+        ByteBuffer responseBuffer = connector.getResponse(request.generate());
+        HttpTester.Response response = HttpTester.parseResponse(responseBuffer);
+        assertTrue(response.getContent().startsWith("Test 2"));
+    }
+
+    @Test
     public void testResponseWebSocketHeaderFormat() throws Exception
     {
         HttpTester.Request request = new HttpTester.Request();
@@ -186,6 +226,7 @@ public class ResponseHeadersTest
     @Test
     public void testMultilineResponseHeaderValue() throws Exception
     {
+        connector.getConnectionFactory(HttpConnectionFactory.class).getHttpConfiguration().setUriCompliance(UriCompliance.UNSAFE);
         String actualPathInfo = "%0a%20Content-Type%3a%20image/png%0a%20Content-Length%3a%208%0A%20%0A%20yuck<!--";
 
         HttpTester.Request request = new HttpTester.Request();

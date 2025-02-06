@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -43,11 +43,12 @@ import org.eclipse.jetty.http.HttpTester;
 import org.eclipse.jetty.io.ManagedSelector;
 import org.eclipse.jetty.io.SocketChannelEndPoint;
 import org.eclipse.jetty.server.HttpConnectionFactory;
-import org.eclipse.jetty.server.HttpStream;
+import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.util.BlockingArrayQueue;
 import org.eclipse.jetty.util.BufferUtil;
 import org.eclipse.jetty.util.Callback;
+import org.eclipse.jetty.util.NanoTime;
 import org.eclipse.jetty.util.thread.Scheduler;
 import org.hamcrest.Matchers;
 import org.junit.jupiter.api.Assertions;
@@ -112,31 +113,13 @@ public class AsyncCompletionTest extends HttpServerTestFixture
     @Override
     protected void startServer(Handler handler) throws Exception
     {
-        org.eclipse.jetty.server.Handler.Nested terminateHandler = new org.eclipse.jetty.server.Handler.Wrapper()
+        org.eclipse.jetty.server.Handler.Singleton terminateHandler = new org.eclipse.jetty.server.Handler.Wrapper()
         {
             @Override
-            public org.eclipse.jetty.server.Request.Processor handle(org.eclipse.jetty.server.Request request) throws Exception
+            public boolean handle(org.eclipse.jetty.server.Request request, Response response, Callback callback) throws Exception
             {
-                org.eclipse.jetty.server.Request.Processor processor = super.handle(request);
-                if (processor == null)
-                    return null;
-                request.addHttpStreamWrapper(s -> new HttpStream.Wrapper(s)
-                {
-                    @Override
-                    public void succeeded()
-                    {
-                        __transportComplete.set(true);
-                        super.succeeded();
-                    }
-
-                    @Override
-                    public void failed(Throwable x)
-                    {
-                        __transportComplete.set(true);
-                        super.failed(x);
-                    }
-                });
-                return processor;
+                org.eclipse.jetty.server.Request.addCompletionListener(request, x -> __transportComplete.set(true));
+                return super.handle(request, response, callback);
             }
         };
         _server.insertHandler(terminateHandler);
@@ -243,10 +226,10 @@ public class AsyncCompletionTest extends HttpServerTestFixture
                 }
 
                 // OWP has exited, but we have a delay, so let's wait for thread to return to the pool to ensure we are async.
-                long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT);
+                long start = NanoTime.now();
                 while (delay != null && _threadPool.getBusyThreads() > base)
                 {
-                    if (System.nanoTime() > end)
+                    if (NanoTime.secondsSince(start) > WAIT)
                         throw new TimeoutException();
                     Thread.sleep(POLL);
                 }
@@ -263,10 +246,10 @@ public class AsyncCompletionTest extends HttpServerTestFixture
             }
 
             // Wait for full completion
-            long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT);
+            long start = NanoTime.now();
             while (!__transportComplete.get())
             {
-                if (System.nanoTime() > end)
+                if (NanoTime.secondsSince(start) > WAIT)
                     throw new TimeoutException();
 
                 // proceed with any delayCBs needed for completion
@@ -505,10 +488,10 @@ public class AsyncCompletionTest extends HttpServerTestFixture
             handler.wait4handle();
 
             // Wait for full completion
-            long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT);
+            long start = NanoTime.now();
             while (!__transportComplete.get())
             {
-                if (System.nanoTime() > end)
+                if (NanoTime.secondsSince(start) > WAIT)
                     throw new TimeoutException();
 
                 // proceed with any delayCBs needed for completion
@@ -666,19 +649,19 @@ public class AsyncCompletionTest extends HttpServerTestFixture
 
             handler.wait4handle();
 
-            long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT);
+            long start = NanoTime.now();
             while (_threadPool.getBusyThreads() != base)
             {
-                if (System.nanoTime() > end)
+                if (NanoTime.secondsSince(start) > WAIT)
                     throw new TimeoutException();
                 Thread.sleep(POLL);
             }
 
             // Wait for full completion
-            end = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT);
+            start = NanoTime.now();
             while (!__transportComplete.get())
             {
-                if (System.nanoTime() > end)
+                if (NanoTime.secondsSince(start) > WAIT)
                     throw new TimeoutException();
 
                 // proceed with any delayCBs needed for completion

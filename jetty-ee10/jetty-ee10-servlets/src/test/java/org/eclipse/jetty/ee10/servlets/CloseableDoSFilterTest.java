@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -16,6 +16,8 @@ package org.eclipse.jetty.ee10.servlets;
 import org.eclipse.jetty.toolchain.test.jupiter.WorkDir;
 import org.eclipse.jetty.toolchain.test.jupiter.WorkDirExtension;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
 @ExtendWith(WorkDirExtension.class)
@@ -26,6 +28,14 @@ public class CloseableDoSFilterTest extends AbstractDoSFilterTest
     @BeforeEach
     public void setUp() throws Exception
     {
-        startServer(workDir, CloseableDoSFilter.class);
+        startServer(workDir.getEmptyPathDir(), CloseableDoSFilter.class);
+    }
+
+    @Override
+    @Test
+    @Tag("flaky")
+    public void testEvenLowRateIP() throws Exception
+    {
+        super.testEvenLowRateIP();
     }
 }

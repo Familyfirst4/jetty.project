@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -25,7 +25,6 @@ import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpHeaderValue;
 import org.eclipse.jetty.http.MetaData;
 import org.eclipse.jetty.io.ByteBufferAccumulator;
-import org.eclipse.jetty.io.Connection;
 import org.eclipse.jetty.io.Content;
 import org.eclipse.jetty.util.BufferUtil;
 import org.eclipse.jetty.util.Callback;
@@ -33,8 +32,20 @@ import org.eclipse.jetty.util.Callback;
 public class MockHttpStream implements HttpStream
 {
     private static final Throwable SUCCEEDED = new Throwable();
-    private static final Content.Chunk DEMAND = Content.Chunk.from(BufferUtil.EMPTY_BUFFER, false);
-    private final long nano = System.nanoTime();
+    private static final Content.Chunk DEMAND = new Content.Chunk()
+    {
+        @Override
+        public ByteBuffer getByteBuffer()
+        {
+            return BufferUtil.EMPTY_BUFFER;
+        }
+
+        @Override
+        public boolean isLast()
+        {
+            return false;
+        }
+    };
     private final AtomicReference<Content.Chunk> _content = new AtomicReference<>();
     private final AtomicReference<Throwable> _complete = new AtomicReference<>();
     private final CountDownLatch _completed = new CountDownLatch(1);
@@ -65,7 +76,7 @@ public class MockHttpStream implements HttpStream
 
     public Runnable addContent(ByteBuffer buffer, boolean last)
     {
-        return addContent((last && BufferUtil.isEmpty(buffer)) ? Content.Chunk.EOF : Content.Chunk.from(buffer, last));
+        return addContent(Content.Chunk.from(buffer, last));
     }
 
     public Runnable addContent(String content, boolean last)
@@ -73,8 +84,9 @@ public class MockHttpStream implements HttpStream
         return addContent(BufferUtil.toBuffer(content), last);
     }
 
-    public Runnable addContent(Content.Chunk chunk)
+    private Runnable addContent(Content.Chunk chunk)
     {
+        chunk.retain();
         chunk = _content.getAndSet(chunk);
         if (chunk == DEMAND)
             return _channel.onContentAvailable();
@@ -126,12 +138,6 @@ public class MockHttpStream implements HttpStream
     }
 
     @Override
-    public long getNanoTimeStamp()
-    {
-        return nano;
-    }
-
-    @Override
     public Content.Chunk read()
     {
         Content.Chunk chunk = _content.get();
@@ -166,7 +172,7 @@ public class MockHttpStream implements HttpStream
         {
             MetaData.Response r = _response.getAndSet(response);
 
-            _responseHeaders.add(response.getFields());
+            _responseHeaders.add(response.getHttpFields());
 
             if (r != null && r.getStatus() >= 200)
             {
@@ -174,7 +180,7 @@ public class MockHttpStream implements HttpStream
                 return;
             }
 
-            if (response.getFields().contains(HttpHeader.CONNECTION, HttpHeaderValue.CLOSE.asString()) &&
+            if (response.getHttpFields().contains(HttpHeader.CONNECTION, HttpHeaderValue.CLOSE.asString()) &&
                 _channel.getConnectionMetaData() instanceof MockConnectionMetaData mock)
                 mock.notPersistent();
         }
@@ -184,7 +190,7 @@ public class MockHttpStream implements HttpStream
 
         if (last)
         {
-            Supplier<HttpFields> trailersSupplier = _response.get().getTrailerSupplier();
+            Supplier<HttpFields> trailersSupplier = _response.get().getTrailersSupplier();
             if (trailersSupplier != null)
             {
                 HttpFields trailers = trailersSupplier.get();
@@ -192,7 +198,7 @@ public class MockHttpStream implements HttpStream
                     _responseTrailers = HttpFields.build(trailers);
             }
 
-            if (!_out.compareAndSet(null, _accumulator.takeByteBuffer()))
+            if (!_out.compareAndSet(null, _accumulator.takeRetainableByteBuffer().getByteBuffer()))
             {
                 if (response != null || content != null)
                 {
@@ -205,15 +211,14 @@ public class MockHttpStream implements HttpStream
     }
 
     @Override
-    public boolean isPushSupported()
+    public long getIdleTimeout()
     {
-        return false;
+        return 0;
     }
 
     @Override
-    public void push(MetaData.Request request)
+    public void setIdleTimeout(long idleTimeoutMs)
     {
-        throw new UnsupportedOperationException();
     }
 
     @Override
@@ -224,6 +229,11 @@ public class MockHttpStream implements HttpStream
     }
 
     @Override
+    public Throwable consumeAvailable()
+    {
+        return HttpStream.consumeAvailable(this, new HttpConfiguration());
+    }
+
     public boolean isComplete()
     {
         return _completed.getCount() == 0;
@@ -256,17 +266,5 @@ public class MockHttpStream implements HttpStream
             mock.notPersistent();
         if (_complete.compareAndSet(null, x == null ? new Throwable() : x))
             _completed.countDown();
-    }
-
-    @Override
-    public void setUpgradeConnection(Connection connection)
-    {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public Connection upgrade()
-    {
-        throw new UnsupportedOperationException();
     }
 }

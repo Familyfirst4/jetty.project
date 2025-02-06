@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -18,7 +18,6 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -27,6 +26,7 @@ import jakarta.servlet.ServletContext;
 import jakarta.servlet.ServletException;
 import org.eclipse.jetty.ee9.nested.ContextHandler;
 import org.eclipse.jetty.util.Loader;
+import org.eclipse.jetty.util.NanoTime;
 import org.eclipse.jetty.util.StringUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -78,6 +78,7 @@ public class ServletContainerInitializerHolder extends BaseHolder<ServletContain
     }
 
     /**
+     * Add the names of classes which should be passed to the SCI onStartup method.
      * @param names the names of classes which should be passed to the SCI onStartup method
      */
     public void addStartupClasses(String... names)
@@ -86,6 +87,7 @@ public class ServletContainerInitializerHolder extends BaseHolder<ServletContain
     }
 
     /**
+     * Add classes that should be passed to the SCI onStartup method.
      * @param clazzes classes that should be passed to the SCI onStartup method
      */
     public void addStartupClasses(Class<?>... clazzes)
@@ -140,9 +142,9 @@ public class ServletContainerInitializerHolder extends BaseHolder<ServletContain
             ctx.setExtendedListenerTypes(true);
             if (LOG.isDebugEnabled())
             {
-                long start = System.nanoTime();
+                long start = NanoTime.now();
                 initializer.onStartup(classes, ctx);
-                LOG.debug("ServletContainerInitializer {} called in {}ms", getClassName(), TimeUnit.MILLISECONDS.convert(System.nanoTime() - start, TimeUnit.NANOSECONDS));
+                LOG.debug("ServletContainerInitializer {} called in {}ms", getClassName(), NanoTime.millisSince(start));
             }
             else
                 initializer.onStartup(classes, ctx);

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -20,15 +20,27 @@ import org.eclipse.jetty.ee10.webapp.AbstractConfiguration;
 /**
  * <p>CDI Configuration</p>
  * <p>This configuration configures the WebAppContext server/system classes to
- * be able to see the {@link CdiServletContainerInitializer}.
+ * be able to see the {@link CdiServletContainerInitializer}. Also hides the
+ * jakarta cdi classes that are on the environment/server classpath and allows
+ * the webapp to provide their own.
  * </p>
  */
 public class CdiConfiguration extends AbstractConfiguration
 {
     public CdiConfiguration()
     {
-        protectAndExpose("org.eclipse.jetty.ee10.cdi.CdiServletContainerInitializer");
-        addDependents(AnnotationConfiguration.class, PlusConfiguration.class);
+        super(new Builder()
+            .protectAndExpose("org.eclipse.jetty.ee10.cdi.CdiServletContainerInitializer")
+            .hide(getCdiHiddenClasses())
+            .addDependents(AnnotationConfiguration.class, PlusConfiguration.class));
+    }
+
+    private static String[] getCdiHiddenClasses()
+    {
+        //Only hide the cdi api classes if there is not also an impl on the
+        //environment classpath - vital for embedded uses.
+        if (CdiConfiguration.class.getClassLoader().getResource("META-INF/services/jakarta.enterprise.inject.spi.CDIProvider") == null)
+            return new String[]{"jakarta.enterprise.", "jakarta.decorator."};
+        return new String[0];
     }
 }
-

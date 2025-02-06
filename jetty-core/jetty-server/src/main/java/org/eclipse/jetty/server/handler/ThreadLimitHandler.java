@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,79 +13,84 @@
 
 package org.eclipse.jetty.server.handler;
 
-import java.io.Closeable;
-import java.io.IOException;
-import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
+import java.nio.channels.WritePendingException;
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 import org.eclipse.jetty.http.HostPortHttpField;
 import org.eclipse.jetty.http.HttpField;
 import org.eclipse.jetty.http.HttpHeader;
+import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.http.QuotedCSV;
+import org.eclipse.jetty.io.Retainable;
 import org.eclipse.jetty.server.ForwardedRequestCustomizer;
 import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.Request;
+import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.util.Callback;
-import org.eclipse.jetty.util.IncludeExcludeSet;
-import org.eclipse.jetty.util.InetAddressSet;
 import org.eclipse.jetty.util.StringUtil;
 import org.eclipse.jetty.util.annotation.ManagedAttribute;
 import org.eclipse.jetty.util.annotation.ManagedOperation;
 import org.eclipse.jetty.util.annotation.Name;
 import org.eclipse.jetty.util.thread.AutoLock;
+import org.eclipse.jetty.util.thread.Invocable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * <p>Handler to limit the threads per IP address for DOS protection</p>
- * <p>The ThreadLimitHandler applies a limit to the number of Threads
- * that can be used simultaneously per remote IP address.
- * </p>
+ * <p>Handler to limit the number of concurrent threads per remote IP address, for DOS protection.</p>
+ * <p>ThreadLimitHandler applies a limit to the number of threads
+ * that can be used simultaneously per remote IP address.</p>
  * <p>The handler makes a determination of the remote IP separately to
- * any that may be made by the {@link ForwardedRequestCustomizer} or similar:
+ * any that may be made by the {@link ForwardedRequestCustomizer} or similar:</p>
  * <ul>
- * <li>This handler will use either only a single style
- * of forwarded header.   This is on the assumption that a trusted local proxy
+ * <li>This handler will use only a single style of forwarded header.
+ * This is on the assumption that a trusted local proxy
  * will produce only a single forwarded header and that any additional
  * headers are likely from untrusted client side proxies.</li>
  * <li>If multiple instances of a forwarded header are provided, this
  * handler will use the right-most instance, which will have been set from
  * the trusted local proxy</li>
  * </ul>
- * Requests in excess of the limit will be asynchronously suspended until
- * a thread is available.
- * <p>This is a simpler alternative to DosFilter</p>
+ * <p>Requests in excess of the limit will be asynchronously suspended until
+ * a thread is available.</p>
  */
-public class ThreadLimitHandler extends Handler.Wrapper
+public class ThreadLimitHandler extends ConditionalHandler.Abstract
 {
     private static final Logger LOG = LoggerFactory.getLogger(ThreadLimitHandler.class);
 
     private final boolean _rfc7239;
     private final String _forwardedHeader;
-    private final IncludeExcludeSet<String, InetAddress> _includeExcludeSet = new IncludeExcludeSet<>(InetAddressSet.class);
-    private final ConcurrentMap<String, Remote> _remotes = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Remote> _remotes = new ConcurrentHashMap<>();
     private volatile boolean _enabled;
     private int _threadLimit = 10;
 
     public ThreadLimitHandler()
     {
-        this(null, false);
+        this(null, null, true);
     }
 
     public ThreadLimitHandler(@Name("forwardedHeader") String forwardedHeader)
     {
-        this(forwardedHeader, HttpHeader.FORWARDED.is(forwardedHeader));
+        this(null, forwardedHeader, HttpHeader.FORWARDED.is(forwardedHeader));
     }
 
     public ThreadLimitHandler(@Name("forwardedHeader") String forwardedHeader, @Name("rfc7239") boolean rfc7239)
     {
-        super();
+        this(null, forwardedHeader, rfc7239);
+    }
+
+    public ThreadLimitHandler(@Name("handler") Handler handler, @Name("forwardedHeader") String forwardedHeader, @Name("rfc7239") boolean rfc7239)
+    {
+        super(handler);
         _rfc7239 = rfc7239;
         _forwardedHeader = forwardedHeader;
         _enabled = true;
@@ -95,10 +100,10 @@ public class ThreadLimitHandler extends Handler.Wrapper
     protected void doStart() throws Exception
     {
         super.doStart();
-        LOG.info(String.format("ThreadLimitHandler enable=%b limit=%d include=%s", _enabled, _threadLimit, _includeExcludeSet));
+        LOG.info(String.format("ThreadLimitHandler enable=%b limit=%d", _enabled, _threadLimit));
     }
 
-    @ManagedAttribute("true if this handler is enabled")
+    @ManagedAttribute("Whether this handler is enabled")
     public boolean isEnabled()
     {
         return _enabled;
@@ -107,7 +112,7 @@ public class ThreadLimitHandler extends Handler.Wrapper
     public void setEnabled(boolean enabled)
     {
         _enabled = enabled;
-        LOG.info(String.format("ThreadLimitHandler enable=%b limit=%d include=%s", _enabled, _threadLimit, _includeExcludeSet));
+        LOG.info(String.format("ThreadLimitHandler enable=%b limit=%d", _enabled, _threadLimit));
     }
 
     @ManagedAttribute("The maximum threads that can be dispatched per remote IP")
@@ -118,21 +123,6 @@ public class ThreadLimitHandler extends Handler.Wrapper
 
     protected int getThreadLimit(String ip)
     {
-        if (!_includeExcludeSet.isEmpty())
-        {
-            try
-            {
-                if (!_includeExcludeSet.test(InetAddress.getByName(ip)))
-                {
-                    LOG.debug("excluded {}", ip);
-                    return 0;
-                }
-            }
-            catch (Exception e)
-            {
-                LOG.trace("IGNORED", e);
-            }
-        }
         return _threadLimit;
     }
 
@@ -146,85 +136,53 @@ public class ThreadLimitHandler extends Handler.Wrapper
     @ManagedOperation("Include IP in thread limits")
     public void include(String inetAddressPattern)
     {
-        _includeExcludeSet.include(inetAddressPattern);
+        includeInetAddressPattern(inetAddressPattern);
     }
 
     @ManagedOperation("Exclude IP from thread limits")
     public void exclude(String inetAddressPattern)
     {
-        _includeExcludeSet.exclude(inetAddressPattern);
+        excludeInetAddressPattern(inetAddressPattern);
     }
 
     @Override
-    public Request.Processor handle(Request request) throws Exception
+    public boolean onConditionsMet(Request request, Response response, Callback callback) throws Exception
     {
-        Request.Processor baseProcessor = super.handle(request);
-        if (baseProcessor == null)
-        {
-            // if no wrapped handler, do not handle
-            return null;
-        }
+        Handler next = getHandler();
+        if (next == null)
+            return false;
 
-        // Allow ThreadLimit to be enabled dynamically without restarting server
         if (!_enabled)
-        {
-            // if disabled, handle normally
-            return baseProcessor;
-        }
+            return next.handle(request, response, callback);
 
         // Get the remote address of the request
         Remote remote = getRemote(request);
         if (remote == null)
         {
             // if remote is not known, handle normally
-            return baseProcessor;
+            return next.handle(request, response, callback);
         }
 
-        CompletableFuture<Closeable> futurePermit = remote.acquire();
-        // Did we get a permit?
-        if (futurePermit.isDone())
-        {
-            if (LOG.isDebugEnabled())
-                LOG.debug("Threadpermitted {}", remote);
-            return (rq, rs, cb) -> baseProcessor.process(rq, rs, Callback.from(cb, () -> getAndClose(futurePermit)));
-        }
-        else
-        {
-            if (LOG.isDebugEnabled())
-                LOG.debug("Threadlimited {}", remote);
-            return (rq, rs, cb) -> futurePermit.thenAccept(c ->
-            {
-                try
-                {
-                    baseProcessor.process(rq, rs, Callback.from(cb, () -> getAndClose(futurePermit)));
-                }
-                catch (Throwable x)
-                {
-                    cb.failed(x);
-                }
-            });
-        }
+        // We accept the request and will always handle it.
+        // Use a compute method to remove the Remote instance as it is necessary for
+        // the ref counter release and the removal to be atomic.
+        LimitedRequest limitedRequest = new LimitedRequest(remote, next, request, response, Callback.from(callback, () ->
+            _remotes.computeIfPresent(remote._ip, (k, v) -> v._referenceCounter.release() ? null : v)));
+        limitedRequest.handle();
+        return true;
     }
 
-    private static void getAndClose(CompletableFuture<Closeable> cf)
+    @Override
+    protected boolean onConditionsNotMet(Request request, Response response, Callback callback) throws Exception
     {
-        try
-        {
-            LOG.debug("getting {}", cf);
-            Closeable closeable = cf.get();
-            LOG.debug("closing {}", closeable);
-            closeable.close();
-        }
-        catch (IOException | InterruptedException | ExecutionException e)
-        {
-            LOG.warn("Error closing permit enclosed in {}", cf, e);
-        }
+        return nextHandler(request, response, callback);
     }
 
     private Remote getRemote(Request baseRequest)
     {
         String ip = getRemoteIP(baseRequest);
-        LOG.debug("ip={}", ip);
+        if (LOG.isDebugEnabled())
+            LOG.debug("ip={}", ip);
         if (ip == null)
             return null;
 
@@ -232,15 +190,18 @@ public class ThreadLimitHandler extends Handler.Wrapper
         if (limit <= 0)
             return null;
 
-        Remote remote = _remotes.get(ip);
-        if (remote == null)
+        // Use a compute method to create or retain the Remote instance as it is necessary for
+        // the ref counter increment or the instance creation to be mutually exclusive.
+        // The map MUST be a CHM as it guarantees the remapping function is only called once.
+        return _remotes.compute(ip, (k, v) ->
         {
-            Remote r = new Remote(ip, limit);
-            remote = _remotes.putIfAbsent(ip, r);
-            if (remote == null)
-                remote = r;
-        }
-        return remote;
+            if (v != null)
+            {
+                v._referenceCounter.retain();
+                return v;
+            }
+            return new Remote(baseRequest.getContext(), k, limit);
+        });
     }
 
     protected String getRemoteIP(Request baseRequest)
@@ -255,7 +216,7 @@ public class ThreadLimitHandler extends Handler.Wrapper
         }
 
         // If no remote IP from a header, determine it directly from the channel
-        // Do not use the request methods, as they may have been lied to by the 
+        // Do not use the request methods, as they may have been lied to by the
         // RequestCustomizer!
         if (baseRequest.getConnectionMetaData().getRemoteSocketAddress() instanceof InetSocketAddress inetAddr)
         {
@@ -303,67 +264,352 @@ public class ThreadLimitHandler extends Handler.Wrapper
         return (comma >= 0) ? forwardedFor.substring(comma + 1).trim() : forwardedFor;
     }
 
-    private static final class Remote implements Closeable
+    int getRemoteCount()
     {
+        return _remotes.size();
+    }
+
+    private static class LimitedRequest extends Request.Wrapper
+    {
+        private final Remote _remote;
+        private final Handler _handler;
+        private final LimitedResponse _response;
+        private final Callback _callback;
+        private final AtomicReference<Runnable> _onContent = new AtomicReference<>();
+
+        public LimitedRequest(Remote remote, Handler handler, Request request, Response response, Callback callback)
+        {
+            super(request);
+            _remote = remote;
+            _handler = Objects.requireNonNull(handler);
+            _response = new LimitedResponse(this, response);
+            _callback = Objects.requireNonNull(callback);
+        }
+
+        protected Handler getHandler()
+        {
+            return _handler;
+        }
+
+        protected Response getResponse()
+        {
+            return _response;
+        }
+
+        protected Callback getCallback()
+        {
+            return _callback;
+        }
+
+        protected void handle() throws Exception
+        {
+            Permit permit = _remote.acquire();
+
+            // Did we get a permit?
+            if (permit.isAllocated())
+            {
+                if (LOG.isDebugEnabled())
+                    LOG.debug("Thread permitted {} {} {}", _remote, getWrapped(), _handler);
+                handle(permit);
+            }
+            else
+            {
+                if (LOG.isDebugEnabled())
+                    LOG.debug("Thread limited {} {} {}", _remote, getWrapped(), _handler);
+                permit.whenAllocated(this::handle);
+            }
+        }
+
+        protected void handle(Permit permit)
+        {
+            try
+            {
+                if (!_handler.handle(this, _response, _callback))
+                    Response.writeError(this, _response, _callback, HttpStatus.NOT_FOUND_404);
+            }
+            catch (Throwable x)
+            {
+                _callback.failed(x);
+            }
+            finally
+            {
+                permit.release();
+            }
+        }
+
+        @Override
+        public void demand(Runnable onContent)
+        {
+            if (!_onContent.compareAndSet(null, Objects.requireNonNull(onContent)))
+                throw new IllegalStateException("Pending demand");
+            // Inner class used instead of lambda for clarity in stack traces.
+            super.demand(new DemandTask(Invocable.getInvocationType(onContent)));
+        }
+
+        private void onContent()
+        {
+            Permit permit = _remote.acquire();
+            if (permit.isAllocated())
+                onPermittedContent(permit);
+            else
+                permit.whenAllocated(this::onPermittedContent);
+        }
+
+        private void onPermittedContent(Permit permit)
+        {
+            try
+            {
+                Runnable onContent = _onContent.getAndSet(null);
+                onContent.run();
+            }
+            finally
+            {
+                permit.release();
+            }
+        }
+
+        private class DemandTask extends Task.Abstract
+        {
+            private DemandTask(InvocationType invocationType)
+            {
+                super(invocationType);
+            }
+
+            @Override
+            public void run()
+            {
+                onContent();
+            }
+        }
+    }
+
+    private static class LimitedResponse extends Response.Wrapper implements Callback
+    {
+        private final Remote _remote;
+        private final AtomicReference<Callback> _writeCallback = new AtomicReference<>();
+
+        public LimitedResponse(LimitedRequest limitedRequest, Response response)
+        {
+            super(limitedRequest, response);
+            _remote = limitedRequest._remote;
+        }
+
+        @Override
+        public void write(boolean last, ByteBuffer byteBuffer, Callback callback)
+        {
+            if (!_writeCallback.compareAndSet(null, Objects.requireNonNull(callback)))
+                throw new WritePendingException();
+            super.write(last, byteBuffer, this);
+        }
+
+        @Override
+        public void succeeded()
+        {
+            Permit permit = _remote.acquire();
+            if (permit.isAllocated())
+                permittedSuccess(permit);
+            else
+                permit.whenAllocated(this::permittedSuccess);
+        }
+
+        private void permittedSuccess(Permit permit)
+        {
+            try
+            {
+                _writeCallback.getAndSet(null).succeeded();
+            }
+            finally
+            {
+                permit.release();
+            }
+        }
+
+        @Override
+        public void failed(Throwable x)
+        {
+            Permit permit = _remote.acquire();
+            if (permit.isAllocated())
+                permittedFailure(permit, x);
+            else
+                permit.whenAllocated(p -> permittedFailure(p, x));
+        }
+
+        private void permittedFailure(Permit permit, Throwable x)
+        {
+            try
+            {
+                _writeCallback.getAndSet(null).failed(x);
+            }
+            finally
+            {
+                permit.release();
+            }
+        }
+    }
+
+    private interface Permit
+    {
+        boolean isAllocated();
+
+        void whenAllocated(Consumer<Permit> permitConsumer);
+
+        void release();
+    }
+
+    private static class NoopPermit implements Permit
+    {
+        @Override
+        public boolean isAllocated()
+        {
+            return true;
+        }
+
+        @Override
+        public void whenAllocated(Consumer<Permit> permitConsumer)
+        {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void release()
+        {
+        }
+    }
+
+    private static class AllocatedPermit implements Permit
+    {
+        private final Remote _remote;
+
+        private AllocatedPermit(Remote remote)
+        {
+            _remote = remote;
+        }
+
+        @Override
+        public boolean isAllocated()
+        {
+            return true;
+        }
+
+        @Override
+        public void whenAllocated(Consumer<Permit> permitConsumer)
+        {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void release()
+        {
+            _remote.release();
+        }
+
+        @Override
+        public String toString()
+        {
+            return "AllocatedPermit:" + _remote;
+        }
+    }
+
+    private static class FuturePermit implements Permit
+    {
+        private final CompletableFuture<Permit> _future = new CompletableFuture<>();
+        private final Remote _remote;
+
+        private FuturePermit(Remote remote)
+        {
+            _remote = remote;
+        }
+
+        public boolean isAllocated()
+        {
+            return _future.isDone();
+        }
+
+        public void whenAllocated(Consumer<Permit> permitConsumer)
+        {
+            _future.thenAccept(permitConsumer);
+        }
+
+        void complete()
+        {
+            if (!_future.complete(this))
+                throw new IllegalStateException();
+        }
+
+        public void release()
+        {
+            _remote.release();
+        }
+    }
+
+    private static final class Remote
+    {
+        private final Executor _executor;
+        private final Retainable.ReferenceCounter _referenceCounter = new Retainable.ReferenceCounter();
         private final String _ip;
         private final int _limit;
         private final AutoLock _lock = new AutoLock();
         private int _permits;
-        private final Deque<CompletableFuture<Closeable>> _queue = new ArrayDeque<>();
-        private final CompletableFuture<Closeable> _permitted = CompletableFuture.completedFuture(this);
+        private final Deque<FuturePermit> _queue = new ArrayDeque<>();
+        private final Permit _permitted = new AllocatedPermit(this);
+        private final ThreadLocal<Boolean> _threadPermit = new ThreadLocal<>();
+        private static final Permit NOOP = new NoopPermit();
 
-        public Remote(String ip, int limit)
+        public Remote(Executor executor, String ip, int limit)
         {
+            _executor = executor;
             _ip = ip;
             _limit = limit;
         }
 
-        public CompletableFuture<Closeable> acquire()
+        Permit acquire()
         {
             try (AutoLock lock = _lock.lock())
             {
+                // Does this thread already have an available pass
+                if (_threadPermit.get() == Boolean.TRUE)
+                    return NOOP;
+
                 // Do we have available passes?
                 if (_permits < _limit)
                 {
                     // Yes - increment the allocated passes
                     _permits++;
+                    _threadPermit.set(Boolean.TRUE);
                     // return the already completed future
-                    return _permitted; // TODO is it OK to share/reuse this?
+                    return _permitted;
                 }
 
-                // No pass available, so queue a new future 
-                CompletableFuture<Closeable> pass = new CompletableFuture<>();
-                _queue.addLast(pass);
-                return pass;
+                // No pass available, so queue a new future
+
+                FuturePermit futurePermit = new FuturePermit(this);
+                _queue.addLast(futurePermit);
+                return futurePermit;
             }
         }
 
-        @Override
-        public void close()
+        public void release()
         {
+            FuturePermit pending;
+
             try (AutoLock lock = _lock.lock())
             {
                 // reduce the allocated passes
                 _permits--;
-                while (true)
-                {
-                    // Are there any future passes waiting?
-                    CompletableFuture<Closeable> permit = _queue.pollFirst();
+                _threadPermit.set(Boolean.FALSE);
+                // Are there any future passes pending?
+                pending = _queue.pollFirst();
 
-                    // No - we are done
-                    if (permit == null)
-                        break;
+                // yes, allocate them a permit
+                if (pending != null)
+                    _permits++;
+            }
 
-                    // Yes - if we can complete them, we are done
-                    if (permit.complete(this))
-                    {
-                        _permits++;
-                        break;
-                    }
-
-                    // Somebody else must have completed/failed that future pass,
-                    // so let's try for another.
-                }
+            if (pending != null)
+            {
+                // We cannot complete the pending in this thread, as we may be in handle(), demand() or write
+                // callback that is serialized and other actions are waiting for the return. Thus, we must execute.
+                _executor.execute(pending::complete);
             }
         }
 
@@ -392,7 +638,7 @@ public class ThreadLimitHandler extends Handler.Wrapper
         }
 
         @Override
-        protected void parsedParam(StringBuffer buffer, int valueLength, int paramName, int paramValue)
+        protected void parsedParam(StringBuilder buffer, int valueLength, int paramName, int paramValue)
         {
             if (valueLength == 0 && paramValue > paramName)
             {

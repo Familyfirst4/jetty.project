@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -25,8 +25,8 @@ import jakarta.websocket.WebSocketContainer;
 import jakarta.websocket.server.PathParam;
 import jakarta.websocket.server.ServerEndpoint;
 import org.eclipse.jetty.ee9.servlet.ServletContextHandler;
+import org.eclipse.jetty.ee9.websocket.jakarta.server.JakartaWebSocketServerContainer;
 import org.eclipse.jetty.ee9.websocket.jakarta.server.config.JakartaWebSocketServletContainerInitializer;
-import org.eclipse.jetty.ee9.websocket.jakarta.server.internal.JakartaWebSocketServerContainer;
 import org.eclipse.jetty.ee9.websocket.jakarta.tests.pathparam.BooleanClassSocket;
 import org.eclipse.jetty.ee9.websocket.jakarta.tests.pathparam.BooleanTypeSocket;
 import org.eclipse.jetty.ee9.websocket.jakarta.tests.pathparam.ByteClassSocket;
@@ -74,10 +74,12 @@ public class PathParamTest
         _context = new ServletContextHandler(ServletContextHandler.SESSIONS);
         _context.setContextPath("/context");
         _server.setHandler(_context);
+    }
 
+    private void start(Class<?> endpointClass) throws Exception
+    {
         JakartaWebSocketServletContainerInitializer.configure(_context, (context, container) ->
-            container.addEndpoint(EchoParamSocket.class));
-
+            container.addEndpoint(endpointClass));
         _server.start();
     }
 
@@ -100,6 +102,24 @@ public class PathParamTest
 
         @OnMessage
         public void onMessage(String message, @PathParam("name") String name)
+        {
+            session.getAsyncRemote().sendText(message + "-" + name);
+        }
+    }
+
+    @ServerEndpoint("/pathParam/{middleParam}/echo")
+    public static class MiddleParamSocket
+    {
+        private Session session;
+
+        @OnOpen
+        public void onOpen(Session session)
+        {
+            this.session = session;
+        }
+
+        @OnMessage
+        public void onMessage(String message, @PathParam("middleParam") String name)
         {
             session.getAsyncRemote().sendText(message + "-" + name);
         }
@@ -132,6 +152,7 @@ public class PathParamTest
     @MethodSource("pathParamEndpoints")
     public void testPathParamSignatures(Class<?> endpointClass, String id) throws Exception
     {
+        start(EchoParamSocket.class);
         JakartaWebSocketServerContainer serverContainer = JakartaWebSocketServerContainer.getContainer(_context.getServletContext());
         assertNotNull(serverContainer);
         serverContainer.addEndpoint(endpointClass);
@@ -150,10 +171,28 @@ public class PathParamTest
     @Test
     public void testBasicPathParamSocket() throws Exception
     {
+        start(EchoParamSocket.class);
         WebSocketContainer container = ContainerProvider.getWebSocketContainer();
         EventSocket clientEndpoint = new EventSocket();
 
         URI serverUri = URI.create("ws://localhost:" + _connector.getLocalPort() + "/context/pathParam/echo/myParam");
+        Session session = container.connectToServer(clientEndpoint, serverUri);
+        session.getBasicRemote().sendText("echo");
+
+        String resp = clientEndpoint.textMessages.poll(1, TimeUnit.SECONDS);
+        assertThat("Response echo", resp, is("echo-myParam"));
+        session.close();
+        clientEndpoint.closeLatch.await(5, TimeUnit.SECONDS);
+    }
+
+    @Test
+    public void testMiddlePathParamSocket() throws Exception
+    {
+        start(MiddleParamSocket.class);
+        WebSocketContainer container = ContainerProvider.getWebSocketContainer();
+        EventSocket clientEndpoint = new EventSocket();
+
+        URI serverUri = URI.create("ws://localhost:" + _connector.getLocalPort() + "/context/pathParam/myParam/echo");
         Session session = container.connectToServer(clientEndpoint, serverUri);
         session.getBasicRemote().sendText("echo");
 

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,13 +13,21 @@
 
 package org.eclipse.jetty.ee9.servlet;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.OutputStreamWriter;
+import java.io.PrintWriter;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Objects;
+import java.util.Properties;
+import java.util.stream.Collectors;
 
 import jakarta.servlet.AsyncContext;
 import jakarta.servlet.DispatcherType;
@@ -33,9 +41,7 @@ import jakarta.servlet.ServletContext;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.ServletOutputStream;
 import jakarta.servlet.ServletRequest;
-import jakarta.servlet.ServletRequestWrapper;
 import jakarta.servlet.ServletResponse;
-import jakarta.servlet.ServletResponseWrapper;
 import jakarta.servlet.WriteListener;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletMapping;
@@ -47,15 +53,21 @@ import org.eclipse.jetty.ee9.nested.ContextHandler;
 import org.eclipse.jetty.ee9.nested.Dispatcher;
 import org.eclipse.jetty.ee9.nested.HttpChannel;
 import org.eclipse.jetty.ee9.nested.ResourceHandler;
+import org.eclipse.jetty.http.HttpHeader;
+import org.eclipse.jetty.http.HttpTester;
 import org.eclipse.jetty.logging.StacklessLogging;
+import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.HttpConfiguration;
 import org.eclipse.jetty.server.LocalConnector;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.handler.ContextHandlerCollection;
-import org.eclipse.jetty.toolchain.test.MavenTestingUtils;
+import org.eclipse.jetty.toolchain.test.MavenPaths;
 import org.eclipse.jetty.util.MultiMap;
-import org.eclipse.jetty.util.TypeUtil;
+import org.eclipse.jetty.util.StringUtil;
 import org.eclipse.jetty.util.UrlEncoded;
+import org.eclipse.jetty.util.component.LifeCycle;
+import org.eclipse.jetty.util.resource.FileSystemPool;
+import org.hamcrest.Matcher;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
@@ -65,6 +77,7 @@ import org.slf4j.LoggerFactory;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.startsWith;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -81,60 +94,220 @@ public class DispatcherTest
     private ServletContextHandler _contextHandler;
     private ResourceHandler _resourceHandler;
 
-    @BeforeEach
-    public void init() throws Exception
+    public void createServer(Handler handler)
     {
         _server = new Server();
         _connector = new LocalConnector(_server);
         _connector.getConnectionFactory(HttpConfiguration.ConnectionFactory.class).getHttpConfiguration().setSendServerVersion(false);
         _connector.getConnectionFactory(HttpConfiguration.ConnectionFactory.class).getHttpConfiguration().setSendDateHeader(false);
+        _server.addConnector(_connector);
+        _server.setHandler(handler);
+    }
 
+    public void createServerDefault() throws Exception
+    {
+        createServer(createDefaultContextHandlerCollection());
+    }
+
+    protected ContextHandlerCollection createDefaultContextHandlerCollection()
+    {
         _contextCollection = new ContextHandlerCollection();
+        _contextCollection.setDynamic(true);
         _contextHandler = new ServletContextHandler();
         _contextHandler.setContextPath("/context");
         _contextCollection.addHandler(_contextHandler);
+        _contextHandler.setBaseResourceAsPath(MavenPaths.findTestResourceDir("contextResources"));
         _resourceHandler = new ResourceHandler();
-        _resourceHandler.setResourceBase(MavenTestingUtils.getTargetFile("test-classes/dispatchResourceTest").getAbsolutePath());
+        _resourceHandler.setBaseResource(MavenPaths.findTestResourceDir("dispatchResourceTest"));
         _resourceHandler.setPathInfoOnly(true);
         ContextHandler resourceContextHandler = new ContextHandler("/resource");
         resourceContextHandler.setHandler(_resourceHandler);
         _contextCollection.addHandler(resourceContextHandler);
-        _server.setHandler(_contextCollection);
-        _server.addConnector(_connector);
 
-        _server.start();
+        return _contextCollection;
+    }
+
+    @BeforeEach
+    public void ensureFileSystemPoolIsSane()
+    {
+        assertThat(FileSystemPool.INSTANCE.mounts(), empty());
     }
 
     @AfterEach
     public void destroy() throws Exception
     {
-        _server.stop();
-        _server.join();
+        LifeCycle.stop(_server);
     }
 
     @Test
-    public void testForward() throws Exception
+    public void testForwardToWelcome() throws Exception
     {
+        createDefaultContextHandlerCollection();
+
         _contextHandler.addServlet(ForwardServlet.class, "/ForwardServlet/*");
-        _contextHandler.addServlet(AssertForwardServlet.class, "/AssertForwardServlet/*");
+        _contextHandler.addServlet(new ServletHolder("default", DefaultServlet.class), "/");
+        createServer(_contextCollection);
+        _server.start();
 
-        String expected =
-            "HTTP/1.1 200 OK\r\n" +
-                "Content-Type: text/html\r\n" +
-                "Content-Length: 7\r\n" +
-                "\r\n" +
-                "FORWARD";
+        String responses = _connector.getResponse("""
+            GET /context/ForwardServlet?do=req.echo&uri=/subdir HTTP/1.1\r
+            Host: local\r
+            Connection: close\r
+            \r
+            """);
 
-        String responses = _connector.getResponse("GET /context/ForwardServlet?do=assertforward&do=more&test=1 HTTP/1.0\n\n");
+        assertThat(responses, containsString("HTTP/1.1 302 Found"));
+    }
 
-        assertEquals(expected, responses);
+    @Test
+    public void testForwardInContext() throws Exception
+    {
+        createDefaultContextHandlerCollection();
+
+        _contextHandler.addServlet(DumpForwardServlet.class, "/DumpForward/*");
+
+        ServletHolder forwardServlet = new ServletHolder(
+            new HttpServlet()
+            {
+                @Override
+                protected void doGet(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException
+                {
+                    RequestDispatcher dispatcher = request.getRequestDispatcher("/DumpForward/foo?a=query");
+                    dispatcher.forward(request, response);
+                }
+            }
+        );
+        _contextHandler.addServlet(forwardServlet, "/DoForward/*");
+
+        createServer(_contextCollection);
+        _server.start();
+
+        String rawRequest = "GET /context/DoForward?do=more&test=example HTTP/1.1\r\n" +
+            "Host: local\r\n" +
+            "Connection: close\r\n" +
+            "\r\n";
+
+        String rawResponse = _connector.getResponse(rawRequest);
+        HttpTester.Response response = HttpTester.parseResponse(rawResponse);
+
+        assertThat(response.getStatus(), is(200));
+        assertThat(response.getField(HttpHeader.CONTENT_TYPE).getValue(), startsWith("text/plain"));
+
+        Properties responseProps = new Properties();
+        try (InputStream inputStream = new ByteArrayInputStream(response.getContentBytes()))
+        {
+            responseProps.load(inputStream);
+        }
+
+        dumpProperties(responseProps);
+
+        assertPropertyValue(responseProps, String.format("request.attr[%s]", RequestDispatcher.FORWARD_REQUEST_URI), is("'/context/DoForward'"));
+        assertPropertyValue(responseProps, String.format("request.attr[%s]", RequestDispatcher.FORWARD_CONTEXT_PATH), is("'/context'"));
+        assertPropertyValue(responseProps, String.format("request.attr[%s]", RequestDispatcher.FORWARD_SERVLET_PATH), is("'/DoForward'"));
+        assertPropertyValue(responseProps, String.format("request.attr[%s]", RequestDispatcher.FORWARD_PATH_INFO), is("<null>"));
+        assertPropertyValue(responseProps, String.format("request.attr[%s]", RequestDispatcher.FORWARD_QUERY_STRING), is("'do=more&test=example'"));
+        assertPropertyValue(responseProps, String.format("request.attr[%s].mappingMatch", RequestDispatcher.FORWARD_MAPPING), is("PATH"));
+        assertPropertyValue(responseProps, String.format("request.attr[%s].matchValue", RequestDispatcher.FORWARD_MAPPING), is("'DoForward'"));
+        assertPropertyValue(responseProps, String.format("request.attr[%s].pattern", RequestDispatcher.FORWARD_MAPPING), is("'/DoForward/*'"));
+
+        assertPropertyValue(responseProps, "request.contextPath", is("'/context'"));
+        assertPropertyValue(responseProps, "request.dispatcherType", is("FORWARD"));
+        assertPropertyValue(responseProps, "request.pathInfo", is("'/foo'"));
+        assertPropertyValue(responseProps, "request.pathTranslated", is("<null>"));
+        assertPropertyValue(responseProps, "request.queryString", is("'a=query'"));
+        assertPropertyValue(responseProps, "request.requestURI", is("'/context/DumpForward/foo'"));
+        assertPropertyValue(responseProps, "request.servletPath", is("'/DumpForward'"));
+    }
+
+    @Test
+    public void testForwardInRoot() throws Exception
+    {
+        createDefaultContextHandlerCollection();
+
+        ServletContextHandler rootContextHandler = new ServletContextHandler();
+        rootContextHandler.setServer(_server);
+        rootContextHandler.setContextPath("/");
+
+        _contextCollection.addHandler(rootContextHandler);
+
+        rootContextHandler.addServlet(DumpForwardServlet.class, "/DumpForward/*");
+
+        ServletHolder forwardServlet = new ServletHolder(
+            new HttpServlet()
+            {
+                @Override
+                protected void doGet(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException
+                {
+                    RequestDispatcher dispatcher = request.getRequestDispatcher("/DumpForward/foo?a=query");
+                    dispatcher.forward(request, response);
+                }
+            }
+        );
+        rootContextHandler.addServlet(forwardServlet, "/DoForward/*");
+
+        createServer(_contextCollection);
+        _server.start();
+
+        String rawRequest = "GET /DoForward?do=more&test=example HTTP/1.1\r\n" +
+            "Host: local\r\n" +
+            "Connection: close\r\n" +
+            "\r\n";
+
+        String rawResponse = _connector.getResponse(rawRequest);
+        HttpTester.Response response = HttpTester.parseResponse(rawResponse);
+
+        assertThat(response.getStatus(), is(200));
+        assertThat(response.getField(HttpHeader.CONTENT_TYPE).getValue(), startsWith("text/plain"));
+
+        Properties responseProps = new Properties();
+        try (InputStream inputStream = new ByteArrayInputStream(response.getContentBytes()))
+        {
+            responseProps.load(inputStream);
+        }
+
+        dumpProperties(responseProps);
+
+        assertPropertyValue(responseProps, String.format("request.attr[%s]", RequestDispatcher.FORWARD_REQUEST_URI), is("'/DoForward'"));
+        assertPropertyValue(responseProps, String.format("request.attr[%s]", RequestDispatcher.FORWARD_CONTEXT_PATH), is("''"));
+        assertPropertyValue(responseProps, String.format("request.attr[%s]", RequestDispatcher.FORWARD_SERVLET_PATH), is("'/DoForward'"));
+        assertPropertyValue(responseProps, String.format("request.attr[%s]", RequestDispatcher.FORWARD_PATH_INFO), is("<null>"));
+        assertPropertyValue(responseProps, String.format("request.attr[%s]", RequestDispatcher.FORWARD_QUERY_STRING), is("'do=more&test=example'"));
+        assertPropertyValue(responseProps, String.format("request.attr[%s].mappingMatch", RequestDispatcher.FORWARD_MAPPING), is("PATH"));
+        assertPropertyValue(responseProps, String.format("request.attr[%s].matchValue", RequestDispatcher.FORWARD_MAPPING), is("'DoForward'"));
+        assertPropertyValue(responseProps, String.format("request.attr[%s].pattern", RequestDispatcher.FORWARD_MAPPING), is("'/DoForward/*'"));
+
+        assertPropertyValue(responseProps, "request.contextPath", is("''"));
+        assertPropertyValue(responseProps, "request.dispatcherType", is("FORWARD"));
+        assertPropertyValue(responseProps, "request.pathInfo", is("'/foo'"));
+        assertPropertyValue(responseProps, "request.pathTranslated", is("<null>"));
+        assertPropertyValue(responseProps, "request.queryString", is("'a=query'"));
+        assertPropertyValue(responseProps, "request.requestURI", is("'/DumpForward/foo'"));
+        assertPropertyValue(responseProps, "request.servletPath", is("'/DumpForward'"));
+    }
+
+    private void assertPropertyValue(Properties props, String keyName, Matcher<String> matcher)
+    {
+        assertThat(keyName, props.getProperty(keyName), matcher);
+    }
+
+    public static void dumpProperties(Properties props)
+    {
+        if (LOG.isDebugEnabled())
+        {
+            List<String> keys = Collections.list(props.keys()).stream().map(Objects::toString).sorted().collect(Collectors.toList());
+            LOG.debug("Dump Properties: has {} key(s)", keys.size());
+            keys.forEach(keyName -> System.err.printf("  %s=%s%n", keyName, props.getProperty(keyName)));
+        }
     }
 
     @Test
     public void testForwardNonUTF8() throws Exception
     {
+        createDefaultContextHandlerCollection();
         _contextHandler.addServlet(ForwardNonUTF8Servlet.class, "/ForwardServlet/*");
         _contextHandler.addServlet(AssertNonUTF8ForwardServlet.class, "/AssertForwardServlet/*");
+        createServer(_contextCollection);
+        _server.start();
 
         String expected =
             "HTTP/1.1 200 OK\r\n" +
@@ -148,11 +321,13 @@ public class DispatcherTest
     }
 
     @Test
-    @Disabled // TODO
     public void testForwardWithParam() throws Exception
     {
+        createDefaultContextHandlerCollection();
         _contextHandler.addServlet(ForwardServlet.class, "/ForwardServlet/*");
         _contextHandler.addServlet(EchoURIServlet.class, "/EchoURI/*");
+        createServer(_contextCollection);
+        _server.start();
 
         String expected =
             "HTTP/1.1 200 OK\r\n" +
@@ -172,8 +347,11 @@ public class DispatcherTest
     @Test
     public void testNamedForward() throws Exception
     {
+        createDefaultContextHandlerCollection();
         _contextHandler.addServlet(NamedForwardServlet.class, "/forward/*");
         String echo = _contextHandler.addServlet(EchoURIServlet.class, "/echo/*").getName();
+        createServer(_contextCollection);
+        _server.start();
 
         String expected =
             "HTTP/1.1 200 OK\r\n" +
@@ -191,8 +369,11 @@ public class DispatcherTest
     @Test
     public void testNamedInclude() throws Exception
     {
+        createDefaultContextHandlerCollection();
         _contextHandler.addServlet(NamedIncludeServlet.class, "/include/*");
         String echo = _contextHandler.addServlet(EchoURIServlet.class, "/echo/*").getName();
+        createServer(_contextCollection);
+        _server.start();
 
         String expected =
             "HTTP/1.1 200 OK\r\n" +
@@ -209,12 +390,15 @@ public class DispatcherTest
     @Test
     public void testForwardWithBadParams() throws Exception
     {
+        createDefaultContextHandlerCollection();
+        _contextHandler.addServlet(AlwaysForwardServlet.class, "/forward/*");
+        _contextHandler.addServlet(EchoServlet.class, "/echo/*");
+        createServer(_contextCollection);
+        _server.start();
+
         try (StacklessLogging ignored = new StacklessLogging(HttpChannel.class))
         {
             LOG.info("Expect Not valid UTF8 warnings...");
-            _contextHandler.addServlet(AlwaysForwardServlet.class, "/forward/*");
-            _contextHandler.addServlet(EchoServlet.class, "/echo/*");
-
             String response;
 
             response = _connector.getResponse("GET /context/forward/?echo=allgood HTTP/1.0\n\n");
@@ -241,10 +425,74 @@ public class DispatcherTest
     }
 
     @Test
+    public void testServletIncludeWelcome() throws Exception
+    {
+        createDefaultContextHandlerCollection();
+        _contextHandler.setWelcomeFiles(new String[] {"index.x"});
+        _contextHandler.addServlet(DispatchServletServlet.class, "/dispatch/*");
+        ServletHolder defaultHolder = _contextHandler.addServlet(DefaultServlet.class, "/");
+        defaultHolder.setInitParameter("welcomeServlets", "true");
+        _contextHandler.addServlet(RogerThatServlet.class, "*.x");
+        createServer(_contextCollection);
+        _server.start();
+
+        String rawResponse = _connector.getResponse("""
+            GET /context/r/ HTTP/1.0\r
+            Host: localhost\r
+            Connection: close\r
+            \r
+            """);
+
+        String expected = """
+            HTTP/1.1 200 OK\r
+            Content-Length: 11\r
+            \r
+            Roger That!""";
+
+        assertEquals(expected, rawResponse);
+
+
+        // direct include
+        rawResponse = _connector.getResponse("""
+            GET /context/dispatch/test?include=/index.x HTTP/1.0\r
+            Host: localhost\r
+            Connection: close\r
+            \r
+            """);
+
+        expected = """
+            HTTP/1.1 200 OK\r
+            Content-Length: 11\r
+            \r
+            Roger That!""";
+
+        assertEquals(expected, rawResponse);
+
+        // include through welcome file based on servlet mapping
+        rawResponse = _connector.getResponse("""
+            GET /context/dispatch/test?include=/r/ HTTP/1.0\r
+            Host: localhost\r
+            Connection: close\r
+            \r
+            """);
+
+        expected = """
+            HTTP/1.1 200 OK\r
+            Content-Length: 11\r
+            \r
+            Roger That!""";
+
+        assertEquals(expected, rawResponse);
+    }
+
+    @Test
     public void testInclude() throws Exception
     {
+        createDefaultContextHandlerCollection();
         _contextHandler.addServlet(IncludeServlet.class, "/IncludeServlet/*");
         _contextHandler.addServlet(AssertIncludeServlet.class, "/AssertIncludeServlet/*");
+        createServer(_contextCollection);
+        _server.start();
 
         String expected =
             "HTTP/1.1 200 OK\r\n" +
@@ -258,10 +506,90 @@ public class DispatcherTest
     }
 
     @Test
+    public void testIncludeStatic() throws Exception
+    {
+        createDefaultContextHandlerCollection();
+        _contextHandler.addServlet(IncludeServlet.class, "/IncludeServlet/*");
+        _contextHandler.addServlet(DefaultServlet.class, "/");
+        createServer(_contextCollection);
+        _server.start();
+
+        String responses = _connector.getResponse("""
+            GET /context/IncludeServlet?do=static HTTP/1.1\r
+            Host: local\r
+            Connection: close\r
+            \r
+            """);
+
+        String expected = """
+            HTTP/1.1 200 OK\r
+            Content-Length: 26\r
+            Connection: close\r
+            \r
+            Include:
+            Test 2 to too two""";
+
+        assertEquals(expected, responses);
+    }
+
+    @Test
+    public void testForwardStatic() throws Exception
+    {
+        createDefaultContextHandlerCollection();
+        _contextHandler.addServlet(ForwardServlet.class, "/ForwardServlet/*");
+        _contextHandler.addServlet(DefaultServlet.class, "/");
+        createServer(_contextCollection);
+        _server.start();
+
+        String responses = _connector.getResponse("""
+            GET /context/ForwardServlet?do=req.echo&uri=/test.txt HTTP/1.1\r
+            Host: local\r
+            Connection: close\r
+            \r
+            """);
+
+        responses = responses.replaceFirst("Last-Modified: .*\r\n", "Last-Modified: xxx\r\n");
+
+        String expected = """
+            HTTP/1.1 200 OK\r
+            Last-Modified: xxx\r
+            Content-Type: text/plain\r
+            Accept-Ranges: bytes\r
+            Content-Length: 17\r
+            Connection: close\r
+            \r
+            Test 2 to too two""";
+
+
+        assertEquals(expected, responses);
+    }
+
+    @Test
+    public void testForwardSendError() throws Exception
+    {
+        createDefaultContextHandlerCollection();
+        _contextHandler.addServlet(ForwardServlet.class, "/forward/*");
+        _contextHandler.addServlet(SendErrorServlet.class, "/senderr/*");
+        createServer(_contextCollection);
+        _server.start();
+
+        String direct = _connector.getResponse("GET /context/senderr HTTP/1.0\n\n");
+        String forwarded = _connector.getResponse("GET /context/forward?do=ctx.echo&uri=/senderr HTTP/1.0\n\n");
+
+        assertThat(forwarded, containsString(" 590 "));
+        assertThat(forwarded, containsString("Five Nine Zero"));
+        assertThat(forwarded, is(direct.replace("/senderr", "/forward")));
+    }
+
+    @Test
     public void testForwardExForwardEx() throws Exception
     {
+        createDefaultContextHandlerCollection();
         _contextHandler.addServlet(RelativeDispatch2Servlet.class, "/RelDispatchServlet/*");
         _contextHandler.addServlet(ThrowServlet.class, "/include/throw/*");
+        createServer(_contextCollection);
+        _server.start();
+
         String expected =
             "HTTP/1.1 200 OK\r\n" +
                 "Content-Length: 56\r\n" +
@@ -277,8 +605,12 @@ public class DispatcherTest
     @Test
     public void testIncludeExIncludeEx() throws Exception
     {
+        createDefaultContextHandlerCollection();
         _contextHandler.addServlet(RelativeDispatch2Servlet.class, "/RelDispatchServlet/*");
         _contextHandler.addServlet(ThrowServlet.class, "/include/throw/*");
+        createServer(_contextCollection);
+        _server.start();
+
         String expected =
             "HTTP/1.1 200 OK\r\n" +
                 "Content-Length: 122\r\n" +
@@ -298,9 +630,12 @@ public class DispatcherTest
     @Test
     public void testForwardThenInclude() throws Exception
     {
+        createDefaultContextHandlerCollection();
         _contextHandler.addServlet(ForwardServlet.class, "/ForwardServlet/*");
         _contextHandler.addServlet(IncludeServlet.class, "/IncludeServlet/*");
         _contextHandler.addServlet(AssertForwardIncludeServlet.class, "/AssertForwardIncludeServlet/*");
+        createServer(_contextCollection);
+        _server.start();
 
         String expected =
             "HTTP/1.1 200 OK\r\n" +
@@ -316,9 +651,12 @@ public class DispatcherTest
     @Test
     public void testIncludeThenForward() throws Exception
     {
+        createDefaultContextHandlerCollection();
         _contextHandler.addServlet(IncludeServlet.class, "/IncludeServlet/*");
         _contextHandler.addServlet(ForwardServlet.class, "/ForwardServlet/*");
         _contextHandler.addServlet(AssertIncludeForwardServlet.class, "/AssertIncludeForwardServlet/*");
+        createServer(_contextCollection);
+        _server.start();
 
         String expected =
             "HTTP/1.1 200 OK\r\n" +
@@ -334,8 +672,11 @@ public class DispatcherTest
     @Test
     public void testServletForward() throws Exception
     {
+        createDefaultContextHandlerCollection();
         _contextHandler.addServlet(DispatchServletServlet.class, "/dispatch/*");
         _contextHandler.addServlet(RogerThatServlet.class, "/roger/*");
+        createServer(_contextCollection);
+        _server.start();
 
         String expected =
             "HTTP/1.1 200 OK\r\n" +
@@ -351,8 +692,11 @@ public class DispatcherTest
     @Test
     public void testServletForwardDotDot() throws Exception
     {
+        createDefaultContextHandlerCollection();
         _contextHandler.addServlet(DispatchServletServlet.class, "/dispatch/*");
         _contextHandler.addServlet(RogerThatServlet.class, "/roger/that");
+        createServer(_contextCollection);
+        _server.start();
 
         String requests = "GET /context/dispatch/test?forward=/%2e%2e/roger/that HTTP/1.0\n" + "Host: localhost\n\n";
 
@@ -364,8 +708,11 @@ public class DispatcherTest
     @Test
     public void testServletForwardEncodedDotDot() throws Exception
     {
+        createDefaultContextHandlerCollection();
         _contextHandler.addServlet(DispatchServletServlet.class, "/dispatch/*");
         _contextHandler.addServlet(RogerThatServlet.class, "/roger/that");
+        createServer(_contextCollection);
+        _server.start();
 
         String requests = "GET /context/dispatch/test?forward=/%252e%252e/roger/that HTTP/1.0\n" + "Host: localhost\n\n";
 
@@ -377,8 +724,11 @@ public class DispatcherTest
     @Test
     public void testServletInclude() throws Exception
     {
+        createDefaultContextHandlerCollection();
         _contextHandler.addServlet(DispatchServletServlet.class, "/dispatch/*");
         _contextHandler.addServlet(RogerThatServlet.class, "/roger/*");
+        createServer(_contextCollection);
+        _server.start();
 
         String expected =
             "HTTP/1.1 200 OK\r\n" +
@@ -394,6 +744,9 @@ public class DispatcherTest
     @Test
     public void testWorkingResourceHandler() throws Exception
     {
+        createServer(createDefaultContextHandlerCollection());
+        _server.start();
+
         String responses = _connector.getResponse("GET /resource/content.txt HTTP/1.0\n" + "Host: localhost\n\n");
 
         assertThat(responses, containsString("content goes here")); // from inside the context.txt file
@@ -403,7 +756,10 @@ public class DispatcherTest
     @Disabled // TODO
     public void testIncludeToResourceHandler() throws Exception
     {
+        createDefaultContextHandlerCollection();
         _contextHandler.addServlet(DispatchToResourceServlet.class, "/resourceServlet/*");
+        createServer(_contextCollection);
+        _server.start();
 
         String responses = _connector.getResponse("GET /context/resourceServlet/content.txt?do=include HTTP/1.0\n" + "Host: localhost\n\n");
 
@@ -417,7 +773,10 @@ public class DispatcherTest
     @Disabled // TODO
     public void testForwardToResourceHandler() throws Exception
     {
+        createDefaultContextHandlerCollection();
         _contextHandler.addServlet(DispatchToResourceServlet.class, "/resourceServlet/*");
+        createServer(_contextCollection);
+        _server.start();
 
         String responses = _connector.getResponse("GET /context/resourceServlet/content.txt?do=forward HTTP/1.0\n" + "Host: localhost\n\n");
 
@@ -429,7 +788,10 @@ public class DispatcherTest
     @Disabled // TODO
     public void testWrappedIncludeToResourceHandler() throws Exception
     {
+        createDefaultContextHandlerCollection();
         _contextHandler.addServlet(DispatchToResourceServlet.class, "/resourceServlet/*");
+        createServer(_contextCollection);
+        _server.start();
 
         String responses = _connector.getResponse("GET /context/resourceServlet/content.txt?do=include&wrapped=true HTTP/1.0\n" + "Host: localhost\n\n");
 
@@ -441,7 +803,10 @@ public class DispatcherTest
     @Disabled // TODO
     public void testWrappedForwardToResourceHandler() throws Exception
     {
+        createDefaultContextHandlerCollection();
         _contextHandler.addServlet(DispatchToResourceServlet.class, "/resourceServlet/*");
+        createServer(_contextCollection);
+        _server.start();
 
         String responses = _connector.getResponse("GET /context/resourceServlet/content.txt?do=forward&wrapped=true HTTP/1.0\n" + "Host: localhost\n\n");
 
@@ -452,10 +817,13 @@ public class DispatcherTest
     @Test
     public void testForwardFilterToRogerServlet() throws Exception
     {
+        createDefaultContextHandlerCollection();
         _contextHandler.addServlet(RogerThatServlet.class, "/*");
         _contextHandler.addServlet(ReserveEchoServlet.class, "/recho/*");
         _contextHandler.addServlet(EchoServlet.class, "/echo/*");
         _contextHandler.addFilter(ForwardFilter.class, "/*", EnumSet.of(DispatcherType.REQUEST));
+        createServer(_contextCollection);
+        _server.start();
 
         String rogerResponse = _connector.getResponse("GET /context/ HTTP/1.0\n" + "Host: localhost\n\n");
 
@@ -471,18 +839,22 @@ public class DispatcherTest
     @Test
     public void testWrappedForwardCloseIntercepted() throws Exception
     {
+        createServer(createDefaultContextHandlerCollection());
+        _server.start();
         // Add filter that wraps response, intercepts close and writes after doChain
         _contextHandler.addFilter(WrappingFilter.class, "/*", EnumSet.of(DispatcherType.REQUEST));
-        testForward();
+        testForwardInContext();
     }
 
     @Test
-    @Disabled // TODO
     public void testDispatchMapping() throws Exception
     {
+        createDefaultContextHandlerCollection();
         _contextHandler.addServlet(new ServletHolder("TestServlet", MappingServlet.class), "/TestServlet");
         _contextHandler.addServlet(new ServletHolder("DispatchServlet", AsyncDispatch2TestServlet.class), "/DispatchServlet");
         _contextHandler.addServlet(new ServletHolder("DispatchServlet2", AsyncDispatch2TestServlet.class), "/DispatchServlet2");
+        createServer(_contextCollection);
+        _server.start();
 
         // TODO Test TCK hack for https://github.com/eclipse-ee4j/jakartaee-tck/issues/585
         String response = _connector.getResponse("GET /context/DispatchServlet HTTP/1.0\n\n");
@@ -632,7 +1004,7 @@ public class DispatcherTest
         }
     }
 
-    /*
+    /**
      * Forward filter works with roger, echo and reverse echo servlets to test various
      * forwarding bits using filters.
      *
@@ -647,7 +1019,7 @@ public class DispatcherTest
         @Override
         public void init(FilterConfig filterConfig) throws ServletException
         {
-            servletContext = filterConfig.getServletContext().getContext("/context");
+            servletContext = filterConfig.getServletContext();
         }
 
         @Override
@@ -697,13 +1069,13 @@ public class DispatcherTest
             if (request.getParameter("include") != null)
             {
                 dispatcher = getServletContext().getRequestDispatcher(request.getParameter("include"));
-                dispatcher.include(new ServletRequestWrapper(request), new ServletResponseWrapper(response));
+                dispatcher.include(new HttpServletRequestWrapper(request), new HttpServletResponseWrapper(response));
             }
             else if (request.getParameter("forward") != null)
             {
                 dispatcher = getServletContext().getRequestDispatcher(request.getParameter("forward"));
                 if (dispatcher != null)
-                    dispatcher.forward(new ServletRequestWrapper(request), new ServletResponseWrapper(response));
+                    dispatcher.forward(new HttpServletRequestWrapper(request), new HttpServletResponseWrapper(response));
                 else
                     response.sendError(404);
             }
@@ -723,6 +1095,12 @@ public class DispatcherTest
                 dispatcher = getServletContext().getRequestDispatcher("/AssertForwardIncludeServlet/assertpath?do=end");
             else if (request.getParameter("do").equals("assertinclude"))
                 dispatcher = getServletContext().getRequestDispatcher("/AssertIncludeServlet?do=end&do=the");
+            else if (request.getParameter("do").equals("static"))
+            {
+                response.getWriter().println("Include:");
+                dispatcher = getServletContext().getRequestDispatcher("/test.txt");
+            }
+            assert dispatcher != null;
             dispatcher.include(request, response);
         }
     }
@@ -786,6 +1164,15 @@ public class DispatcherTest
         }
     }
 
+    public static class SendErrorServlet extends HttpServlet
+    {
+        @Override
+        public void service(HttpServletRequest req, HttpServletResponse res) throws ServletException, IOException
+        {
+            res.sendError(590, "Five Nine Zero");
+        }
+    }
+
     public static class EchoServlet extends GenericServlet
     {
         @Override
@@ -834,7 +1221,7 @@ public class DispatcherTest
         @Override
         public void service(HttpServletRequest req, HttpServletResponse res) throws ServletException, IOException
         {
-            ServletContext targetContext = getServletConfig().getServletContext().getContext("/resource");
+            ServletContext targetContext = getServletConfig().getServletContext();
 
             RequestDispatcher dispatcher = targetContext.getRequestDispatcher(req.getPathInfo());
 
@@ -885,35 +1272,56 @@ public class DispatcherTest
         }
     }
 
-    public static class AssertForwardServlet extends HttpServlet implements Servlet
+    public static class DumpForwardServlet extends HttpServlet
     {
         @Override
-        protected void doGet(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException
+        protected void doGet(HttpServletRequest request, HttpServletResponse response) throws IOException
         {
-            assertEquals("/context/ForwardServlet", request.getAttribute(Dispatcher.FORWARD_REQUEST_URI));
-            assertEquals("/context", request.getAttribute(Dispatcher.FORWARD_CONTEXT_PATH));
-            assertEquals("/ForwardServlet", request.getAttribute(Dispatcher.FORWARD_SERVLET_PATH));
-            assertEquals(null, request.getAttribute(Dispatcher.FORWARD_PATH_INFO));
-            assertEquals("do=assertforward&do=more&test=1", request.getAttribute(Dispatcher.FORWARD_QUERY_STRING));
-            HttpServletMapping fwdMapping = (HttpServletMapping)request.getAttribute(Dispatcher.FORWARD_MAPPING);
-            assertNotNull(fwdMapping);
-            assertEquals("ForwardServlet", fwdMapping.getMatchValue());
+            response.setCharacterEncoding("utf-8");
+            response.setContentType("text/plain");
+            PrintWriter writer = new PrintWriter(new OutputStreamWriter(response.getOutputStream(), StandardCharsets.UTF_8));
 
-            List<String> expectedAttributeNames = Arrays.asList(Dispatcher.FORWARD_REQUEST_URI, Dispatcher.FORWARD_CONTEXT_PATH,
-                Dispatcher.FORWARD_SERVLET_PATH, Dispatcher.FORWARD_QUERY_STRING, Dispatcher.FORWARD_MAPPING);
-            List<String> requestAttributeNames = Collections.list(request.getAttributeNames());
-            assertTrue(requestAttributeNames.containsAll(expectedAttributeNames));
+            List<String> attrNames = List.of(RequestDispatcher.FORWARD_REQUEST_URI,
+                RequestDispatcher.FORWARD_CONTEXT_PATH,
+                RequestDispatcher.FORWARD_SERVLET_PATH,
+                RequestDispatcher.FORWARD_PATH_INFO,
+                RequestDispatcher.FORWARD_QUERY_STRING,
+                RequestDispatcher.FORWARD_MAPPING);
 
-            assertEquals(null, request.getPathInfo());
-            assertEquals(null, request.getPathTranslated());
-            assertEquals("do=end&do=the", request.getQueryString());
-            assertEquals("/context/AssertForwardServlet", request.getRequestURI());
-            assertEquals("/context", request.getContextPath());
-            assertEquals("/AssertForwardServlet", request.getServletPath());
+            for (String attrName : attrNames)
+            {
+                Object value = request.getAttribute(attrName);
+                writer.printf("request.attr[%s]=%s%n", attrName, as(value));
+            }
 
-            response.setContentType("text/html");
+            HttpServletMapping fwdMapping = (HttpServletMapping)request.getAttribute(RequestDispatcher.FORWARD_MAPPING);
+            if (fwdMapping != null)
+            {
+                writer.printf("request.attr[%s].mappingMatch=%s%n", RequestDispatcher.FORWARD_MAPPING, as(fwdMapping.getMappingMatch()));
+                writer.printf("request.attr[%s].matchValue=%s%n", RequestDispatcher.FORWARD_MAPPING, as(fwdMapping.getMatchValue()));
+                writer.printf("request.attr[%s].pattern=%s%n", RequestDispatcher.FORWARD_MAPPING, as(fwdMapping.getPattern()));
+                writer.printf("request.attr[%s].servletName=%s%n", RequestDispatcher.FORWARD_MAPPING, as(fwdMapping.getServletName()));
+            }
+
+            writer.printf("request.requestURI=%s%n", as(request.getRequestURI()));
+            writer.printf("request.contextPath=%s%n", as(request.getContextPath()));
+            writer.printf("request.pathTranslated=%s%n", as(request.getPathTranslated()));
+            writer.printf("request.servletPath=%s%n", as(request.getServletPath()));
+            writer.printf("request.pathInfo=%s%n", as(request.getPathInfo()));
+            writer.printf("request.queryString=%s%n", as(request.getQueryString()));
+            writer.printf("request.dispatcherType=%s%n", request.getDispatcherType().name());
+
+            writer.flush();
             response.setStatus(HttpServletResponse.SC_OK);
-            response.getOutputStream().print(request.getDispatcherType().toString());
+        }
+
+        private String as(Object obj)
+        {
+            if (obj == null)
+                return "<null>";
+            if (obj instanceof String)
+                return String.format("'%s'", obj);
+            return Objects.toString(obj);
         }
     }
 
@@ -922,7 +1330,7 @@ public class DispatcherTest
         @Override
         protected void doGet(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException
         {
-            byte[] cp1251Bytes = TypeUtil.fromHexString("d2e5ecefe5f0e0f2f3f0e0");
+            byte[] cp1251Bytes = StringUtil.fromHexString("d2e5ecefe5f0e0f2f3f0e0");
             String expectedCP1251String = new String(cp1251Bytes, "cp1251");
 
             assertEquals("/context/ForwardServlet", request.getAttribute(Dispatcher.FORWARD_REQUEST_URI));

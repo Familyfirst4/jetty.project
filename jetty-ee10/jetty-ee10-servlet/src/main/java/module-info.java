@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -11,7 +11,7 @@
 // ========================================================================
 //
 
-import org.eclipse.jetty.ee10.servlet.security.Authenticator;
+import org.eclipse.jetty.security.Authenticator;
 
 module org.eclipse.jetty.ee10.servlet
 {
@@ -19,6 +19,7 @@ module org.eclipse.jetty.ee10.servlet
 
     requires transitive jakarta.servlet;
     requires transitive org.eclipse.jetty.server;
+    requires transitive org.eclipse.jetty.security;
     requires transitive org.eclipse.jetty.session;
 
     // Only required if using IntrospectorCleaner.
@@ -38,7 +39,7 @@ module org.eclipse.jetty.ee10.servlet
     exports org.eclipse.jetty.ee10.servlet.security;
     exports org.eclipse.jetty.ee10.servlet.security.authentication;
     exports org.eclipse.jetty.ee10.servlet.util;
-    exports org.eclipse.jetty.ee10.servlet.writer;
+
 
     exports org.eclipse.jetty.ee10.servlet.jmx to
          org.eclipse.jetty.jmx;

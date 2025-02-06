@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,7 +13,6 @@
 
 package org.eclipse.jetty.ee10.annotations;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -40,7 +39,7 @@ public class AnnotationIntrospector
 
     private final AutoLock _lock = new AutoLock();
     private final Set<Class<?>> _introspectedClasses = new HashSet<>();
-    private final List<IntrospectableAnnotationHandler> _handlers = new ArrayList<IntrospectableAnnotationHandler>();
+    private final List<IntrospectableAnnotationHandler> _handlers = new ArrayList<>();
     private final WebAppContext _context;
 
     /**
@@ -50,7 +49,7 @@ public class AnnotationIntrospector
      */
     public interface IntrospectableAnnotationHandler
     {
-        public void handle(Class<?> clazz);
+        void handle(Class<?> clazz);
     }
 
     /**
@@ -132,12 +131,11 @@ public class AnnotationIntrospector
         if (metaInfo == null)
             return true;  //no information about the object to introspect, assume introspectable
 
-        @SuppressWarnings("rawtypes")
-        BaseHolder holder = null;
+        BaseHolder<?> holder;
 
         try
         {
-            holder = (BaseHolder)metaInfo;
+            holder = (BaseHolder<?>)metaInfo;
         }
         catch (ClassCastException e)
         {
@@ -167,18 +165,10 @@ public class AnnotationIntrospector
                 if (_context.getMetaData().isMetaDataComplete())
                     return false;
 
-                String descriptorLocation = holder.getSource().getResource();
+                Resource descriptorLocation = holder.getSource().getResource();
                 if (descriptorLocation == null)
                     return true; //no descriptor, can't be metadata-complete
-                try
-                {
-                    return !WebDescriptor.isMetaDataComplete(_context.getMetaData().getFragmentDescriptor(Resource.newResource(descriptorLocation)));
-                }
-                catch (IOException e)
-                {
-                    LOG.warn("Unable to get Resource for descriptor {}", descriptorLocation, e);
-                    return false; //something wrong with the descriptor
-                }
+                return !WebDescriptor.isMetaDataComplete(_context.getMetaData().getFragmentDescriptor(descriptorLocation));
             }
         }
     }

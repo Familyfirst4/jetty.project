@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -17,11 +17,15 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.StringWriter;
+import java.nio.charset.CharacterCodingException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
+import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -59,7 +63,6 @@ public class UrlEncoded
             charset = System.getProperty("org.eclipse.jetty.util.UrlEncoding.charset");
             if (charset == null)
             {
-                charset = StandardCharsets.UTF_8.toString();
                 encoding = StandardCharsets.UTF_8;
             }
             else
@@ -195,6 +198,23 @@ public class UrlEncoded
      * Decoded parameters to Map.
      *
      * @param content the string containing the encoded parameters
+     * @param adder Function to add parameter
+     * @param charset the charset to use for decoding
+     */
+    public static void decodeTo(String content, BiConsumer<String, String> adder, Charset charset, int maxKeys)
+    {
+        AtomicInteger keys = new AtomicInteger(0);
+        decodeTo(content, (key, val) ->
+        {
+            adder.accept(key, val);
+            checkMaxKeys(keys.incrementAndGet(), maxKeys);
+        }, charset);
+    }
+
+    /**
+     * Decoded parameters to Map.
+     *
+     * @param content the string containing the encoded parameters
      * @param adder a {@link BiConsumer} to accept the name/value pairs.
      * @param charset the charset to use for decoding
      */
@@ -205,7 +225,7 @@ public class UrlEncoded
 
         if (StandardCharsets.UTF_8.equals(charset))
         {
-            decodeUtf8To(content, 0, content.length(), adder);
+            decodeUtf8To(content, 0, content.length(), adder, false);
             return;
         }
 
@@ -300,7 +320,7 @@ public class UrlEncoded
     @Deprecated
     public static void decodeUtf8To(String query, int offset, int length, MultiMap<String> map)
     {
-        decodeUtf8To(query, offset, length, map::add);
+        decodeUtf8To(query, offset, length, map::add, false);
     }
 
     /**
@@ -313,14 +333,44 @@ public class UrlEncoded
      */
     public static void decodeUtf8To(String uri, int offset, int length, Fields fields)
     {
-        decodeUtf8To(uri, offset, length, fields::add);
+        decodeUtf8To(uri, offset, length, fields::add, false);
     }
 
-    private static void decodeUtf8To(String query, int offset, int length, BiConsumer<String, String> adder)
+    /**
+     * <p>Decodes URI query parameters as UTF8 string</p>
+     *
+     * @param query the URI string.
+     * @param offset the offset at which query parameters start.
+     * @param length the length of query parameters string to parse.
+     * @param adder the method to call to add decoded parameters.
+     * @param allowBadUtf8 if {@code true} allow bad UTF-8 and insert the replacement character.
+     * @return {@code true} if the string was decoded without any bad UTF-8
+     * @throws org.eclipse.jetty.util.Utf8StringBuilder.Utf8IllegalArgumentException if there is illegal UTF-8 and `allowsBadUtf8` is {@code false}
+     */
+    public static boolean decodeUtf8To(String query, int offset, int length, BiConsumer<String, String> adder, boolean allowBadUtf8)
+        throws Utf8StringBuilder.Utf8IllegalArgumentException
     {
         Utf8StringBuilder buffer = new Utf8StringBuilder();
         String key = null;
         String value;
+
+        AtomicBoolean badUtf8;
+        Supplier<Utf8StringBuilder.Utf8IllegalArgumentException> onCodingError;
+
+        if (allowBadUtf8)
+        {
+            badUtf8 = new AtomicBoolean(false);
+            onCodingError = () ->
+            {
+                badUtf8.set(true);
+                return null;
+            };
+        }
+        else
+        {
+            badUtf8 = null;
+            onCodingError = Utf8StringBuilder.Utf8IllegalArgumentException::new;
+        }
 
         int end = offset + length;
         for (int i = offset; i < end; i++)
@@ -329,13 +379,12 @@ public class UrlEncoded
             switch (c)
             {
                 case '&':
-                    value = buffer.toReplacedString();
-                    buffer.reset();
+                    value = buffer.takeCompleteString(onCodingError);
                     if (key != null)
                     {
                         adder.accept(key, value);
                     }
-                    else if (value != null && value.length() > 0)
+                    else if (value != null && !value.isEmpty())
                     {
                         adder.accept(value, "");
                     }
@@ -348,8 +397,7 @@ public class UrlEncoded
                         buffer.append(c);
                         break;
                     }
-                    key = buffer.toReplacedString();
-                    buffer.reset();
+                    key = buffer.takeCompleteString(onCodingError);
                     break;
 
                 case '+':
@@ -363,9 +411,14 @@ public class UrlEncoded
                         char lo = query.charAt(++i);
                         buffer.append(decodeHexByte(hi, lo));
                     }
+                    else if (allowBadUtf8)
+                    {
+                        buffer.append(Utf8StringBuilder.REPLACEMENT);
+                        i = end;
+                    }
                     else
                     {
-                        throw new Utf8Appendable.NotUtf8Exception("Incomplete % encoding");
+                        throw new Utf8StringBuilder.Utf8IllegalArgumentException();
                     }
                     break;
 
@@ -377,14 +430,15 @@ public class UrlEncoded
 
         if (key != null)
         {
-            value = buffer.toReplacedString();
-            buffer.reset();
+            value = buffer.takeCompleteString(onCodingError);
             adder.accept(key, value);
         }
         else if (buffer.length() > 0)
         {
-            adder.accept(buffer.toReplacedString(), "");
+            adder.accept(buffer.toCompleteString(), "");
         }
+
+        return badUtf8 == null || !badUtf8.get();
     }
 
     /**
@@ -399,6 +453,21 @@ public class UrlEncoded
     public static void decode88591To(InputStream in, MultiMap<String> map, int maxLength, int maxKeys)
         throws IOException
     {
+        decode88591To(in, map::add, maxLength, maxKeys);
+    }
+
+    /**
+     * Decoded parameters to MultiMap, using ISO8859-1 encodings.
+     *
+     * @param in InputSteam to read
+     * @param adder Function to add parameter
+     * @param maxLength maximum length of form to read or -1 for no limit
+     * @param maxKeys maximum number of keys to read or -1 for no limit
+     * @throws IOException if unable to decode the InputStream as ISO8859-1
+     */
+    public static void decode88591To(InputStream in, BiConsumer<String, String> adder, int maxLength, int maxKeys)
+        throws IOException
+    {
         StringBuilder buffer = new StringBuilder();
         String key = null;
         String value;
@@ -406,6 +475,7 @@ public class UrlEncoded
         int b;
 
         int totalLength = 0;
+        int keys = 0;
         while ((b = in.read()) >= 0)
         {
             switch ((char)b)
@@ -415,14 +485,16 @@ public class UrlEncoded
                     buffer.setLength(0);
                     if (key != null)
                     {
-                        map.add(key, value);
+                        adder.accept(key, value);
+                        keys++;
                     }
                     else if (value.length() > 0)
                     {
-                        map.add(value, "");
+                        adder.accept(value, "");
+                        keys++;
                     }
                     key = null;
-                    checkMaxKeys(map, maxKeys);
+                    checkMaxKeys(keys, maxKeys);
                     break;
 
                 case '=':
@@ -456,13 +528,15 @@ public class UrlEncoded
         {
             value = buffer.length() == 0 ? "" : buffer.toString();
             buffer.setLength(0);
-            map.add(key, value);
+            adder.accept(key, value);
+            keys++;
         }
         else if (buffer.length() > 0)
         {
-            map.add(buffer.toString(), "");
+            adder.accept(buffer.toString(), "");
+            keys++;
         }
-        checkMaxKeys(map, maxKeys);
+        checkMaxKeys(keys, maxKeys);
     }
 
     /**
@@ -477,6 +551,21 @@ public class UrlEncoded
     public static void decodeUtf8To(InputStream in, MultiMap<String> map, int maxLength, int maxKeys)
         throws IOException
     {
+        decodeUtf8To(in, map::add, maxLength, maxKeys);
+    }
+
+    /**
+     * Decoded parameters to Map.
+     *
+     * @param in InputSteam to read
+     * @param adder Function to add parameters to
+     * @param maxLength maximum form length to decode or -1 for no limit
+     * @param maxKeys the maximum number of keys to read or -1 for no limit
+     * @throws IOException if unable to decode the input stream
+     */
+    public static void decodeUtf8To(InputStream in, BiConsumer<String, String> adder, int maxLength, int maxKeys)
+        throws IOException
+    {
         Utf8StringBuilder buffer = new Utf8StringBuilder();
         String key = null;
         String value;
@@ -484,23 +573,26 @@ public class UrlEncoded
         int b;
 
         int totalLength = 0;
+        int keys = 0;
         while ((b = in.read()) >= 0)
         {
             switch ((char)b)
             {
                 case '&':
-                    value = buffer.toReplacedString();
+                    value = buffer.toCompleteString();
                     buffer.reset();
                     if (key != null)
                     {
-                        map.add(key, value);
+                        adder.accept(key, value);
+                        keys++;
                     }
                     else if (value != null && value.length() > 0)
                     {
-                        map.add(value, "");
+                        adder.accept(value, "");
+                        keys++;
                     }
                     key = null;
-                    checkMaxKeys(map, maxKeys);
+                    checkMaxKeys(keys, maxKeys);
                     break;
 
                 case '=':
@@ -509,7 +601,7 @@ public class UrlEncoded
                         buffer.append((byte)b);
                         break;
                     }
-                    key = buffer.toReplacedString();
+                    key = buffer.toCompleteString();
                     buffer.reset();
                     break;
 
@@ -532,56 +624,42 @@ public class UrlEncoded
 
         if (key != null)
         {
-            value = buffer.toReplacedString();
+            value = buffer.toCompleteString();
             buffer.reset();
-            map.add(key, value);
+            adder.accept(key, value);
+            keys++;
         }
         else if (buffer.length() > 0)
         {
-            map.add(buffer.toReplacedString(), "");
+            adder.accept(buffer.toCompleteString(), "");
+            keys++;
         }
-        checkMaxKeys(map, maxKeys);
+        checkMaxKeys(keys, maxKeys);
     }
 
     public static void decodeUtf16To(InputStream in, MultiMap<String> map, int maxLength, int maxKeys) throws IOException
+    {
+        decodeUtf16To(in, map::add, maxLength, maxKeys);
+    }
+
+    public static void decodeUtf16To(InputStream in, BiConsumer<String, String> adder, int maxLength, int maxKeys) throws IOException
     {
         InputStreamReader input = new InputStreamReader(in, StandardCharsets.UTF_16);
         StringWriter buf = new StringWriter(8192);
         IO.copy(input, buf, maxLength);
 
-        decodeTo(buf.getBuffer().toString(), map, StandardCharsets.UTF_16, maxKeys);
+        decodeTo(buf.getBuffer().toString(), adder, StandardCharsets.UTF_16, maxKeys);
     }
 
     /**
-     * Decoded parameters to Map.
-     *
-     * @param in the stream containing the encoded parameters
-     * @param map the MultiMap to decode into
-     * @param charset the charset to use for decoding
-     * @param maxLength the maximum length of the form to decode or -1 for no limit
-     * @param maxKeys the maximum number of keys to decode or -1 for no limit
-     * @throws IOException if unable to decode the input stream
-     * @deprecated use {@link #decodeTo(InputStream, MultiMap, Charset, int, int)} instead
+     * @param charsetName The charset name for decoding or null for the default
+     * @return A Charset to use for decoding.
      */
-    @Deprecated(since = "10", forRemoval = true)
-    public static void decodeTo(InputStream in, MultiMap<String> map, String charset, int maxLength, int maxKeys)
-        throws IOException
+    public static Charset decodeCharset(String charsetName)
     {
-        if (charset == null)
-        {
-            if (ENCODING.equals(StandardCharsets.UTF_8))
-                decodeUtf8To(in, map, maxLength, maxKeys);
-            else
-                decodeTo(in, map, ENCODING, maxLength, maxKeys);
-        }
-        else if (StringUtil.__UTF8.equalsIgnoreCase(charset))
-            decodeUtf8To(in, map, maxLength, maxKeys);
-        else if (StringUtil.__ISO_8859_1.equalsIgnoreCase(charset))
-            decode88591To(in, map, maxLength, maxKeys);
-        else if (StringUtil.__UTF16.equalsIgnoreCase(charset))
-            decodeUtf16To(in, map, maxLength, maxKeys);
-        else
-            decodeTo(in, map, Charset.forName(charset), maxLength, maxKeys);
+        if (charsetName == null)
+            return ENCODING;
+        return Charset.forName(charsetName);
     }
 
     /**
@@ -597,25 +675,41 @@ public class UrlEncoded
     public static void decodeTo(InputStream in, MultiMap<String> map, Charset charset, int maxLength, int maxKeys)
         throws IOException
     {
+        decodeTo(in, map::add, charset, maxLength, maxKeys);
+    }
+
+    /**
+     * Decoded parameters to Map.
+     *
+     * @param in the stream containing the encoded parameters
+     * @param adder Function to add a parameter
+     * @param charset the charset to use for decoding
+     * @param maxLength the maximum length of the form to decode
+     * @param maxKeys the maximum number of keys to decode
+     * @throws IOException if unable to decode input stream
+     */
+    public static void decodeTo(InputStream in, BiConsumer<String, String> adder, Charset charset, int maxLength, int maxKeys)
+        throws IOException
+    {
         //no charset present, use the configured default
         if (charset == null)
             charset = ENCODING;
 
         if (StandardCharsets.UTF_8.equals(charset))
         {
-            decodeUtf8To(in, map, maxLength, maxKeys);
+            decodeUtf8To(in, adder, maxLength, maxKeys);
             return;
         }
 
         if (StandardCharsets.ISO_8859_1.equals(charset))
         {
-            decode88591To(in, map, maxLength, maxKeys);
+            decode88591To(in, adder, maxLength, maxKeys);
             return;
         }
 
         if (StandardCharsets.UTF_16.equals(charset)) // Should be all 2 byte encodings
         {
-            decodeUtf16To(in, map, maxLength, maxKeys);
+            decodeUtf16To(in, adder, maxLength, maxKeys);
             return;
         }
 
@@ -628,6 +722,7 @@ public class UrlEncoded
 
         try (ByteArrayOutputStream2 output = new ByteArrayOutputStream2())
         {
+            int keys = 0;
             int size;
 
             while ((c = in.read()) > 0)
@@ -640,14 +735,16 @@ public class UrlEncoded
                         output.setCount(0);
                         if (key != null)
                         {
-                            map.add(key, value);
+                            adder.accept(key, value);
+                            keys++;
                         }
                         else if (value != null && value.length() > 0)
                         {
-                            map.add(value, "");
+                            adder.accept(value, "");
+                            keys++;
                         }
                         key = null;
-                        checkMaxKeys(map, maxKeys);
+                        checkMaxKeys(keys, maxKeys);
                         break;
                     case '=':
                         if (key != null)
@@ -679,14 +776,22 @@ public class UrlEncoded
             {
                 value = size == 0 ? "" : output.toString(charset);
                 output.setCount(0);
-                map.add(key, value);
+                adder.accept(key, value);
+                keys++;
             }
             else if (size > 0)
             {
-                map.add(output.toString(charset), "");
+                adder.accept(output.toString(charset), "");
+                keys++;
             }
-            checkMaxKeys(map, maxKeys);
+            checkMaxKeys(keys, maxKeys);
         }
+    }
+
+    private static void checkMaxKeys(int size, int maxKeys)
+    {
+        if (maxKeys >= 0 && size > maxKeys)
+            throw new IllegalStateException(String.format("Form with too many keys [%d > %d]", size, maxKeys));
     }
 
     private static void checkMaxKeys(MultiMap<String> map, int maxKeys)
@@ -730,7 +835,7 @@ public class UrlEncoded
     {
         if (charset == null || StandardCharsets.UTF_8.equals(charset))
         {
-            Utf8StringBuffer buffer = null;
+            Utf8StringBuilder buffer = null;
 
             for (int i = 0; i < length; i++)
             {
@@ -739,28 +844,28 @@ public class UrlEncoded
                 {
                     if (buffer == null)
                     {
-                        buffer = new Utf8StringBuffer(length);
-                        buffer.getStringBuffer().append(encoded, offset, offset + i + 1);
+                        buffer = new Utf8StringBuilder(length);
+                        buffer.append(encoded, offset, i + 1);
                     }
                     else
-                        buffer.getStringBuffer().append(c);
+                        buffer.append(c);
                 }
                 else if (c == '+')
                 {
                     if (buffer == null)
                     {
-                        buffer = new Utf8StringBuffer(length);
-                        buffer.getStringBuffer().append(encoded, offset, offset + i);
+                        buffer = new Utf8StringBuilder(length);
+                        buffer.append(encoded, offset, i);
                     }
 
-                    buffer.getStringBuffer().append(' ');
+                    buffer.append(' ');
                 }
                 else if (c == '%')
                 {
                     if (buffer == null)
                     {
-                        buffer = new Utf8StringBuffer(length);
-                        buffer.getStringBuffer().append(encoded, offset, offset + i);
+                        buffer = new Utf8StringBuilder(length);
+                        buffer.append(encoded, offset, i);
                     }
 
                     if ((i + 2) < length)
@@ -772,12 +877,12 @@ public class UrlEncoded
                     }
                     else
                     {
-                        buffer.getStringBuffer().append(Utf8Appendable.REPLACEMENT);
+                        buffer.append(Utf8StringBuilder.REPLACEMENT);
                         i = length;
                     }
                 }
                 else if (buffer != null)
-                    buffer.getStringBuffer().append(c);
+                    buffer.append(c);
             }
 
             if (buffer == null)
@@ -787,11 +892,11 @@ public class UrlEncoded
                 return encoded.substring(offset, offset + length);
             }
 
-            return buffer.toReplacedString();
+            return buffer.toCompleteString();
         }
         else
         {
-            StringBuffer buffer = null;
+            CharsetStringBuilder buffer = null;
 
             for (int i = 0; i < length; i++)
             {
@@ -800,8 +905,8 @@ public class UrlEncoded
                 {
                     if (buffer == null)
                     {
-                        buffer = new StringBuffer(length);
-                        buffer.append(encoded, offset, offset + i + 1);
+                        buffer = CharsetStringBuilder.forCharset(charset);
+                        buffer.append(encoded, offset, i + 1);
                     }
                     else
                         buffer.append(c);
@@ -810,8 +915,8 @@ public class UrlEncoded
                 {
                     if (buffer == null)
                     {
-                        buffer = new StringBuffer(length);
-                        buffer.append(encoded, offset, offset + i);
+                        buffer = CharsetStringBuilder.forCharset(charset);
+                        buffer.append(encoded, offset, i);
                     }
 
                     buffer.append(' ');
@@ -820,8 +925,8 @@ public class UrlEncoded
                 {
                     if (buffer == null)
                     {
-                        buffer = new StringBuffer(length);
-                        buffer.append(encoded, offset, offset + i);
+                        buffer = CharsetStringBuilder.forCharset(charset);
+                        buffer.append(encoded, offset, i);
                     }
 
                     byte[] ba = new byte[length];
@@ -860,7 +965,8 @@ public class UrlEncoded
                     }
 
                     i--;
-                    buffer.append(new String(ba, 0, n, charset));
+                    String s = new String(ba, 0, n, charset);
+                    buffer.append(s, 0, s.length());
                 }
                 else if (buffer != null)
                     buffer.append(c);
@@ -873,7 +979,14 @@ public class UrlEncoded
                 return encoded.substring(offset, offset + length);
             }
 
-            return buffer.toString();
+            try
+            {
+                return buffer.build();
+            }
+            catch (CharacterCodingException e)
+            {
+                throw new RuntimeException(e);
+            }
         }
     }
 

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,11 +14,13 @@
 package org.eclipse.jetty.ee9.security.authentication;
 
 import java.io.IOException;
+import java.io.Serial;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.BitSet;
+import java.util.Iterator;
 import java.util.Objects;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentHashMap;
@@ -32,14 +34,13 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.eclipse.jetty.ee9.nested.Authentication;
 import org.eclipse.jetty.ee9.nested.Authentication.User;
 import org.eclipse.jetty.ee9.nested.Request;
-import org.eclipse.jetty.ee9.nested.UserIdentity;
 import org.eclipse.jetty.ee9.security.SecurityHandler;
 import org.eclipse.jetty.ee9.security.ServerAuthException;
 import org.eclipse.jetty.ee9.security.UserAuthentication;
 import org.eclipse.jetty.http.HttpHeader;
+import org.eclipse.jetty.security.UserIdentity;
 import org.eclipse.jetty.util.QuotedStringTokenizer;
 import org.eclipse.jetty.util.TypeUtil;
-import org.eclipse.jetty.util.security.Constraint;
 import org.eclipse.jetty.util.security.Credential;
 import org.eclipse.jetty.util.thread.AutoLock;
 import org.slf4j.Logger;
@@ -53,12 +54,13 @@ import org.slf4j.LoggerFactory;
 public class DigestAuthenticator extends LoginAuthenticator
 {
     private static final Logger LOG = LoggerFactory.getLogger(DigestAuthenticator.class);
+    private static final QuotedStringTokenizer TOKENIZER = QuotedStringTokenizer.builder().delimiters("=, ").returnDelimiters().allowEmbeddedQuotes().build();
 
     private final SecureRandom _random = new SecureRandom();
+    private final ConcurrentMap<String, Nonce> _nonceMap = new ConcurrentHashMap<>();
+    private final Queue<Nonce> _nonceQueue = new ConcurrentLinkedQueue<>();
     private long _maxNonceAgeMs = 60 * 1000;
     private int _maxNC = 1024;
-    private ConcurrentMap<String, Nonce> _nonceMap = new ConcurrentHashMap<>();
-    private Queue<Nonce> _nonceQueue = new ConcurrentLinkedQueue<>();
 
     @Override
     public void setConfiguration(AuthConfiguration configuration)
@@ -96,7 +98,7 @@ public class DigestAuthenticator extends LoginAuthenticator
     @Override
     public String getAuthMethod()
     {
-        return Constraint.__DIGEST_AUTH;
+        return DIGEST_AUTH;
     }
 
     @Override
@@ -118,20 +120,21 @@ public class DigestAuthenticator extends LoginAuthenticator
         try
         {
             Request baseRequest = Request.getBaseRequest(request);
+            if (baseRequest == null)
+                return Authentication.UNAUTHENTICATED;
 
             boolean stale = false;
             if (credentials != null)
             {
                 if (LOG.isDebugEnabled())
                     LOG.debug("Credentials: {}", credentials);
-                QuotedStringTokenizer tokenizer = new QuotedStringTokenizer(credentials, "=, ", true, false);
                 final Digest digest = new Digest(request.getMethod());
                 String last = null;
                 String name = null;
 
-                while (tokenizer.hasMoreTokens())
+                for (Iterator<String> i = TOKENIZER.tokenize(credentials); i.hasNext();)
                 {
-                    String tok = tokenizer.nextToken();
+                    String tok = i.next();
                     char c = (tok.length() == 1) ? tok.charAt(0) : '\0';
 
                     switch (c)
@@ -292,7 +295,7 @@ public class DigestAuthenticator extends LoginAuthenticator
 
         public boolean seen(int count)
         {
-            try (AutoLock l = _lock.lock())
+            try (AutoLock ignored = _lock.lock())
             {
                 if (count >= _seen.size())
                     return true;
@@ -305,6 +308,7 @@ public class DigestAuthenticator extends LoginAuthenticator
 
     private static class Digest extends Credential
     {
+        @Serial
         private static final long serialVersionUID = -2484639019549527724L;
         final String method;
         String username = "";
@@ -330,6 +334,7 @@ public class DigestAuthenticator extends LoginAuthenticator
 
             try
             {
+                // MD5 required by the specification
                 MessageDigest md = MessageDigest.getInstance("MD5");
                 byte[] ha1;
                 if (credentials instanceof Credential.MD5)

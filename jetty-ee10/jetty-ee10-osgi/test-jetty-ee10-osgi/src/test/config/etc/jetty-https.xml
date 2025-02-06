@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<!DOCTYPE Configure PUBLIC "-//Jetty//Configure//EN" "https://www.eclipse.org/jetty/configure_10_0.dtd">
+<!DOCTYPE Configure PUBLIC "-//Jetty//Configure//EN" "https://jetty.org/configure_10_0.dtd">
 
 <!-- ============================================================= -->
 <!-- Configure an HTTPS connector.                                  -->
@@ -16,13 +16,7 @@
       </New>
     </Arg>
   </Call>
-        <Call name="addEventListener">
-          <Arg>
-            <New class="org.eclipse.jetty.ee10.osgi.boot.utils.ServerConnectorListener">
-              <Set name="sysPropertyName">boot.https.port</Set>
-            </New>
-          </Arg>
-        </Call>
+
   <Call name="addConnectionFactory">
     <Arg>
       <New class="org.eclipse.jetty.server.HttpConnectionFactory">

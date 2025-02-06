@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -20,8 +20,8 @@ import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.server.handler.ContextHandler;
 import org.eclipse.jetty.server.handler.ContextHandlerCollection;
 import org.eclipse.jetty.server.handler.ResourceHandler;
-import org.eclipse.jetty.util.resource.PathResource;
 import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
 
 /**
  * A {@link ContextHandlerCollection} handler may be used to direct a request to
@@ -53,7 +53,7 @@ public class SplitFileServer
 
         ContextHandler context0 = new ContextHandler();
         context0.setContextPath("/");
-        context0.setBaseResource(baseResource0.getPath());
+        context0.setBaseResource(baseResource0);
         context0.setHandler(rh0);
 
         // Rinse and repeat the previous item, only specifying a different
@@ -63,7 +63,7 @@ public class SplitFileServer
 
         ContextHandler context1 = new ContextHandler();
         context1.setContextPath("/");
-        context1.setBaseResource(baseResource1.getPath());
+        context1.setBaseResource(baseResource1);
         context1.setHandler(rh1);
 
         // Create a ContextHandlerCollection and set the context handlers to it.
@@ -79,8 +79,8 @@ public class SplitFileServer
     public static void main(String[] args) throws Exception
     {
         int port = ExampleUtil.getPort(args, "jetty.http.port", 8080);
-        Resource resource0 = new PathResource(Paths.get("src/test/resources/dir0"));
-        Resource resource1 = new PathResource(Paths.get("src/test/resources/dir1"));
+        Resource resource0 = ResourceFactory.root().newResource(Paths.get("src/test/resources/dir0"));
+        Resource resource1 = ResourceFactory.root().newResource(Paths.get("src/test/resources/dir1"));
 
         Server server = createServer(port, resource0, resource1);
 

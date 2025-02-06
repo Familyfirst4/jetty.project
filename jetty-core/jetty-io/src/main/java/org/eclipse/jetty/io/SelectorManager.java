@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -53,7 +53,7 @@ import org.slf4j.LoggerFactory;
 public abstract class SelectorManager extends ContainerLifeCycle implements Dumpable
 {
     public static final int DEFAULT_CONNECT_TIMEOUT = 15000;
-    protected static final Logger LOG = LoggerFactory.getLogger(SelectorManager.class);
+    private static final Logger LOG = LoggerFactory.getLogger(SelectorManager.class);
 
     private final Executor executor;
     private final Scheduler scheduler;
@@ -140,6 +140,23 @@ public abstract class SelectorManager extends ContainerLifeCycle implements Dump
     }
 
     /**
+     * Get total number of keys from each selector.
+     *
+     * @return total number of selector keys
+     */
+    @ManagedAttribute(value = "Total number of keys in all selectors", readonly = true)
+    public int getTotalKeys()
+    {
+        int keys = 0;
+        for (ManagedSelector selector : _selectors)
+        {
+            if (selector != null)
+                keys += selector.getTotalKeys();
+        }
+        return keys;
+    }
+
+    /**
      * @return the number of selectors in use
      */
     @ManagedAttribute("The number of NIO Selectors")
@@ -166,7 +183,8 @@ public abstract class SelectorManager extends ContainerLifeCycle implements Dump
     public void connect(SelectableChannel channel, Object attachment)
     {
         ManagedSelector set = chooseSelector();
-        set.submit(set.new Connect(channel, attachment));
+        if (set != null)
+            set.submit(set.new Connect(channel, attachment));
     }
 
     /**
@@ -351,8 +369,18 @@ public abstract class SelectorManager extends ContainerLifeCycle implements Dump
     }
 
     /**
-     * <p>Callback method invoked when a non-blocking connect cannot be completed.</p>
-     * <p>By default it just logs with level warning.</p>
+     * <p>Callback method invoked when a non-blocking connect was succeeded.</p>
+     *
+     * @param channel the channel that attempted the connect
+     */
+    protected void connectionSucceeded(SelectableChannel channel)
+    {
+        if (LOG.isDebugEnabled())
+            LOG.debug("Connected {}", channel);
+    }
+
+    /**
+     * <p>Callback method invoked when a non-blocking connect failed.</p>
      *
      * @param channel the channel that attempted the connect
      * @param ex the exception that caused the connect to fail
@@ -360,7 +388,8 @@ public abstract class SelectorManager extends ContainerLifeCycle implements Dump
      */
     protected void connectionFailed(SelectableChannel channel, Throwable ex, Object attachment)
     {
-        LOG.warn(String.format("%s - %s", channel, attachment), ex);
+        if (LOG.isDebugEnabled())
+            LOG.debug("Failed to connect {}", channel, ex);
     }
 
     /**
@@ -504,5 +533,11 @@ public abstract class SelectorManager extends ContainerLifeCycle implements Dump
         default void onAccepted(SelectableChannel channel)
         {
         }
+    }
+
+    @Override
+    public String toString()
+    {
+        return String.format("%s@%x[keys=%d]", getClass().getSimpleName(), hashCode(), getTotalKeys());
     }
 }

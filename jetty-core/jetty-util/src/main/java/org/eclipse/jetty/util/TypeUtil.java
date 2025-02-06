@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -22,13 +22,11 @@ import java.lang.module.ModuleReference;
 import java.lang.module.ResolvedModule;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
-import java.security.AccessController;
+import java.nio.charset.StandardCharsets;
 import java.security.CodeSource;
-import java.security.PrivilegedAction;
 import java.security.ProtectionDomain;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -36,10 +34,16 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.ListIterator;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.ServiceConfigurationError;
 import java.util.ServiceLoader;
 import java.util.function.Function;
+import java.util.function.Predicate;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
@@ -61,6 +65,7 @@ public class TypeUtil
     public static final Class<?>[] NO_ARGS = new Class[]{};
     public static final int CR = '\r';
     public static final int LF = '\n';
+    private static final  Pattern TRAILING_DIGITS = Pattern.compile("^\\D*(\\d+)$");
 
     private static final HashMap<String, Class<?>> name2Class = new HashMap<>();
 
@@ -110,75 +115,25 @@ public class TypeUtil
         name2Class.put("java.lang.String", java.lang.String.class);
     }
 
-    private static final HashMap<Class<?>, String> class2Name = new HashMap<>();
+    private static final HashMap<Class<?>, Function<String, Object>> class2Value = new HashMap<>();
 
     static
     {
-        class2Name.put(java.lang.Boolean.TYPE, "boolean");
-        class2Name.put(java.lang.Byte.TYPE, "byte");
-        class2Name.put(java.lang.Character.TYPE, "char");
-        class2Name.put(java.lang.Double.TYPE, "double");
-        class2Name.put(java.lang.Float.TYPE, "float");
-        class2Name.put(java.lang.Integer.TYPE, "int");
-        class2Name.put(java.lang.Long.TYPE, "long");
-        class2Name.put(java.lang.Short.TYPE, "short");
-        class2Name.put(java.lang.Void.TYPE, "void");
-
-        class2Name.put(java.lang.Boolean.class, "java.lang.Boolean");
-        class2Name.put(java.lang.Byte.class, "java.lang.Byte");
-        class2Name.put(java.lang.Character.class, "java.lang.Character");
-        class2Name.put(java.lang.Double.class, "java.lang.Double");
-        class2Name.put(java.lang.Float.class, "java.lang.Float");
-        class2Name.put(java.lang.Integer.class, "java.lang.Integer");
-        class2Name.put(java.lang.Long.class, "java.lang.Long");
-        class2Name.put(java.lang.Short.class, "java.lang.Short");
-
-        class2Name.put(null, "void");
-        class2Name.put(java.lang.String.class, "java.lang.String");
-    }
-
-    private static final HashMap<Class<?>, Method> class2Value = new HashMap<>();
-
-    static
-    {
-        try
-        {
-            Class<?>[] s = {java.lang.String.class};
-
-            class2Value.put(java.lang.Boolean.TYPE,
-                java.lang.Boolean.class.getMethod("valueOf", s));
-            class2Value.put(java.lang.Byte.TYPE,
-                java.lang.Byte.class.getMethod("valueOf", s));
-            class2Value.put(java.lang.Double.TYPE,
-                java.lang.Double.class.getMethod("valueOf", s));
-            class2Value.put(java.lang.Float.TYPE,
-                java.lang.Float.class.getMethod("valueOf", s));
-            class2Value.put(java.lang.Integer.TYPE,
-                java.lang.Integer.class.getMethod("valueOf", s));
-            class2Value.put(java.lang.Long.TYPE,
-                java.lang.Long.class.getMethod("valueOf", s));
-            class2Value.put(java.lang.Short.TYPE,
-                java.lang.Short.class.getMethod("valueOf", s));
-
-            class2Value.put(java.lang.Boolean.class,
-                java.lang.Boolean.class.getMethod("valueOf", s));
-            class2Value.put(java.lang.Byte.class,
-                java.lang.Byte.class.getMethod("valueOf", s));
-            class2Value.put(java.lang.Double.class,
-                java.lang.Double.class.getMethod("valueOf", s));
-            class2Value.put(java.lang.Float.class,
-                java.lang.Float.class.getMethod("valueOf", s));
-            class2Value.put(java.lang.Integer.class,
-                java.lang.Integer.class.getMethod("valueOf", s));
-            class2Value.put(java.lang.Long.class,
-                java.lang.Long.class.getMethod("valueOf", s));
-            class2Value.put(java.lang.Short.class,
-                java.lang.Short.class.getMethod("valueOf", s));
-        }
-        catch (Exception e)
-        {
-            throw new Error(e);
-        }
+        class2Value.put(java.lang.Boolean.TYPE, Boolean::valueOf);
+        class2Value.put(java.lang.Byte.TYPE, Byte::valueOf);
+        class2Value.put(java.lang.Double.TYPE, Double::valueOf);
+        class2Value.put(java.lang.Float.TYPE, Float::valueOf);
+        class2Value.put(java.lang.Integer.TYPE, Integer::valueOf);
+        class2Value.put(java.lang.Long.TYPE, Long::valueOf);
+        class2Value.put(java.lang.Short.TYPE, Short::valueOf);
+  
+        class2Value.put(java.lang.Boolean.class, Boolean::valueOf);
+        class2Value.put(java.lang.Byte.class, Byte::valueOf);
+        class2Value.put(java.lang.Double.class, Double::valueOf);
+        class2Value.put(java.lang.Float.class, Float::valueOf);
+        class2Value.put(java.lang.Integer.class, Integer::valueOf);
+        class2Value.put(java.lang.Long.class, Long::valueOf);
+        class2Value.put(java.lang.Short.class, Short::valueOf);
     }
 
     private static final MethodHandle[] LOCATION_METHODS;
@@ -221,6 +176,32 @@ public class TypeUtil
     }
 
     /**
+     * <p>Returns a {@link ListIterator} positioned at the last item in a list.</p>
+     * @param list the list
+     * @param <T> the element type
+     * @return A {@link ListIterator} positioned at the last item of the list.
+     */
+    public static <T> ListIterator<T> listIteratorAtEnd(List<T> list)
+    {
+        try
+        {
+            int size = list.size();
+            if (size == 0)
+                return Collections.emptyListIterator();
+            return list.listIterator(size);
+        }
+        catch (IndexOutOfBoundsException e)
+        {
+            // list was concurrently modified, so do this the hard way
+            ListIterator<T> i = list.listIterator();
+            while (i.hasNext())
+                i.next();
+
+            return i;
+        }
+    }
+
+    /**
      * Class from a canonical name for a type.
      *
      * @param name A class or type name.
@@ -229,45 +210,6 @@ public class TypeUtil
     public static Class<?> fromName(String name)
     {
         return name2Class.get(name);
-    }
-
-    /**
-     * @param e1 An exception
-     * @param e2 Another exception
-     * @return true iff the exceptions are associated by being the same instance, sharing a cause or one suppressing the other.
-     */
-    public static boolean isAssociated(Throwable e1, Throwable e2)
-    {
-        while (e1 != null)
-        {
-            while (e2 != null)
-            {
-                if (e1 == e2)
-                    return true;
-                if (e1.getCause() == e2)
-                    return true;
-                if (Arrays.asList(e1.getSuppressed()).contains(e2))
-                    return true;
-                if (Arrays.asList(e2.getSuppressed()).contains(e1))
-                    return true;
-
-                e2 = e2.getCause();
-            }
-            e1 = e1.getCause();
-        }
-
-        return false;
-    }
-
-    /**
-     * Canonical name for a type.
-     *
-     * @param type A class , which may be a primitive TYPE field.
-     * @return Canonical name.
-     */
-    public static String toName(Class<?> type)
-    {
-        return class2Name.get(type);
     }
 
     public static String toShortName(Class<?> type)
@@ -281,7 +223,12 @@ public class TypeUtil
             {
                 String[] ss = p.split("\\.");
                 for (String s : ss)
+                {
                     b.append(s.charAt(0));
+                    Matcher matcher = TRAILING_DIGITS.matcher(s);
+                    if (matcher.matches())
+                        b.append(matcher.group(1));
+                }
             }
             b.append('.');
         }
@@ -354,9 +301,9 @@ public class TypeUtil
             if (type.equals(java.lang.String.class))
                 return value;
 
-            Method m = class2Value.get(type);
-            if (m != null)
-                return m.invoke(null, value);
+            Function<String, Object> vos = class2Value.get(type);
+            if (vos != null)
+                return vos.apply(value);
 
             if (type.equals(java.lang.Character.TYPE) ||
                 type.equals(java.lang.Character.class))
@@ -452,24 +399,10 @@ public class TypeUtil
                     digit = 10 + c - 'a';
             }
             if (digit < 0 || digit >= base)
-                throw new NumberFormatException(new String(b, offset, length));
+                throw new NumberFormatException(new String(b, offset, length, StandardCharsets.US_ASCII));
             value = value * base + digit;
         }
         return value;
-    }
-
-    /**
-     * @deprecated use {@link StringUtil#fromHexString(String)} instead
-     */
-    @Deprecated
-    public static byte[] parseBytes(String s, int base)
-    {
-        byte[] bytes = new byte[s.length() / 2];
-        for (int i = 0; i < s.length(); i += 2)
-        {
-            bytes[i / 2] = (byte)TypeUtil.parseInt(s, i, 2, base);
-        }
-        return bytes;
     }
 
     public static String toString(byte[] bytes, int base)
@@ -526,6 +459,26 @@ public class TypeUtil
         return d;
     }
 
+    public static boolean isHex(String str, int offset, int len)
+    {
+        if (str == null)
+            return false;
+
+        if (offset + len > str.length())
+            return false;
+
+        for (int i = offset; i < offset + len; i++)
+        {
+            char c = str.charAt(i);
+            if (!(c >= '0' && c <= '9') &&
+                !(c >= 'a' && c <= 'f') &&
+                !(c >= 'A' && c <= 'F'))
+                return false;
+        }
+
+        return true;
+    }
+
     public static void toHex(byte b, Appendable buf)
     {
         try
@@ -559,50 +512,12 @@ public class TypeUtil
         buf.append((char)((d > 9 ? ('A' - 10) : '0') + d));
         d = 0xf & value;
         buf.append((char)((d > 9 ? ('A' - 10) : '0') + d));
-
-        Integer.toString(0, 36);
     }
 
     public static void toHex(long value, Appendable buf) throws IOException
     {
         toHex((int)(value >> 32), buf);
         toHex((int)value, buf);
-    }
-
-    /**
-     * @deprecated use {@link StringUtil#toHexString(byte)} instead
-     */
-    @Deprecated
-    public static String toHexString(byte b)
-    {
-        return StringUtil.toHexString(b);
-    }
-
-    /**
-     * @deprecated use {@link StringUtil#toHexString(byte[])} instead
-     */
-    @Deprecated
-    public static String toHexString(byte[] b)
-    {
-        return StringUtil.toHexString(b);
-    }
-
-    /**
-     * @deprecated use {@link StringUtil#toHexString(byte[], int, int)} instead
-     */
-    @Deprecated
-    public static String toHexString(byte[] b, int offset, int length)
-    {
-        return StringUtil.toHexString(b, offset, length);
-    }
-
-    /**
-     * @deprecated use {@link StringUtil#fromHexString(String)}
-     */
-    @Deprecated
-    public static byte[] fromHexString(String s)
-    {
-        return StringUtil.fromHexString(s);
     }
 
     public static void dump(Class<?> c)
@@ -630,7 +545,7 @@ public class TypeUtil
         if (o == null)
             return false;
         if (o instanceof Boolean)
-            return ((Boolean)o).booleanValue();
+            return (Boolean)o;
         return Boolean.parseBoolean(o.toString());
     }
 
@@ -643,7 +558,7 @@ public class TypeUtil
         if (o == null)
             return false;
         if (o instanceof Boolean)
-            return !((Boolean)o).booleanValue();
+            return !(Boolean)o;
         return "false".equalsIgnoreCase(o.toString());
     }
 
@@ -699,24 +614,11 @@ public class TypeUtil
         try
         {
             String resourceName = TypeUtil.toClassReference(clazz);
-            if (loader != null)
+            URL url = loader.getResource(resourceName);
+            if (url != null)
             {
-                URL url = loader.getResource(resourceName);
-                if (url != null)
-                {
-                    URI uri = url.toURI();
-                    String uriStr = uri.toASCIIString();
-                    if (uriStr.startsWith("jar:file:"))
-                    {
-                        uriStr = uriStr.substring(4);
-                        int idx = uriStr.indexOf("!/");
-                        if (idx > 0)
-                        {
-                            return URI.create(uriStr.substring(0, idx));
-                        }
-                    }
-                    return uri;
-                }
+                URI uri = url.toURI();
+                return URIUtil.unwrapContainer(uri);
             }
         }
         catch (URISyntaxException ignored)
@@ -729,7 +631,7 @@ public class TypeUtil
     {
         try
         {
-            ProtectionDomain domain = AccessController.doPrivileged((PrivilegedAction<ProtectionDomain>)() -> clazz.getProtectionDomain());
+            ProtectionDomain domain = clazz.getProtectionDomain();
             if (domain != null)
             {
                 CodeSource source = domain.getCodeSource();
@@ -771,7 +673,7 @@ public class TypeUtil
         }
 
         Optional<ResolvedModule> resolvedModule = configuration.findModule(module.getName());
-        if ((resolvedModule == null) || !resolvedModule.isPresent())
+        if (resolvedModule.isEmpty())
         {
             return null;
         }
@@ -783,12 +685,7 @@ public class TypeUtil
         }
 
         Optional<URI> location = moduleReference.location();
-        if (location.isPresent())
-        {
-            return location.get();
-        }
-
-        return null;
+        return location.orElse(null);
     }
 
     public static <T> Iterator<T> concat(Iterator<T> i1, Iterator<T> i2)
@@ -847,7 +744,7 @@ public class TypeUtil
 
     /**
      * Utility to create a stream which provides the same functionality as {@link ServiceLoader#stream()}.
-     * However this also guards the case in which {@link Iterator#hasNext()} throws. Any exceptions
+     * However, this also guards the case in which {@link Iterator#hasNext()} throws. Any exceptions
      * from the underlying iterator will be cached until the {@link ServiceLoader.Provider#get()} is called.
      * @param serviceLoader the ServiceLoader instance to use.
      * @param <T> the type of the service to load.
@@ -857,4 +754,150 @@ public class TypeUtil
     {
         return StreamSupport.stream(new ServiceLoaderSpliterator<>(serviceLoader), false);
     }
+
+    /**
+     * A Predicate that is always true, with optimized {@code and}/{@code or}/{@code not} methods.
+     * @param <T> The type of the predicate test
+     * @return true
+     */
+    public static <T> Predicate<T> truePredicate()
+    {
+        return new Predicate<T>()
+        {
+            @Override
+            public boolean test(T t)
+            {
+                return true;
+            }
+
+            @Override
+            @SuppressWarnings("unchecked")
+            public Predicate<T> and(Predicate<? super T> other)
+            {
+                return (Predicate<T>)Objects.requireNonNull(other);
+            }
+
+            @Override
+            public Predicate<T> negate()
+            {
+                return falsePredicate();
+            }
+
+            @Override
+            public Predicate<T> or(Predicate<? super T> other)
+            {
+                return this;
+            }
+        };
+    }
+
+    /**
+     * A {@link Predicate} that is always false, with optimized {@code and}/{@code or}/{@code not} methods.
+     * @param <T> The type of the predicate test
+     * @return true
+     */
+    public static <T> Predicate<T> falsePredicate()
+    {
+        return new Predicate<T>()
+        {
+            @Override
+            public boolean test(T t)
+            {
+                return false;
+            }
+
+            @Override
+            public Predicate<T> and(Predicate<? super T> other)
+            {
+                return this;
+            }
+
+            @Override
+            public Predicate<T> negate()
+            {
+                return truePredicate();
+            }
+
+            @Override
+            @SuppressWarnings("unchecked")
+            public Predicate<T> or(Predicate<? super T> other)
+            {
+                return (Predicate<T>)Objects.requireNonNull(other);
+            }
+        };
+    }
+
+    private TypeUtil()
+    {
+        // prevents instantiation
+    }
+
+    /**
+     * Get the next highest power of two
+     * @param value An integer
+     * @return a power of two that is greater than or equal to {@code value}
+     */
+    public static int ceilToNextPowerOfTwo(int value)
+    {
+        if (value < 0)
+            throw new IllegalArgumentException("value must not be negative");
+        int result = 1 << (Integer.SIZE - Integer.numberOfLeadingZeros(value - 1));
+        return result > 0 ? result : Integer.MAX_VALUE;
+    }
+
+    /**
+     * Test is a method has been declared on the class of an instance
+     * @param object The object to check
+     * @param methodName The method name
+     * @param args The arguments to the method
+     * @return {@code true} iff {@link Class#getDeclaredMethod(String, Class[])} can be called on the
+     *         {@link Class} of the object, without throwing {@link NoSuchMethodException}.
+     */
+    public static boolean isDeclaredMethodOn(Object object, String methodName, Class<?>... args)
+    {
+        try
+        {
+            object.getClass().getDeclaredMethod(methodName, args);
+            return true;
+        }
+        catch (NoSuchMethodException e)
+        {
+            return false;
+        }
+    }
+
+    /**
+     * Pretty print a map. Specifically expanding Array values.
+     * @param map The map to render as a String
+     * @return A String representation of the map
+     */
+    public static String toString(Map<?, ?> map)
+    {
+        if (map.isEmpty())
+            return "{}";
+
+        StringBuilder sb = new StringBuilder();
+        sb.append('{');
+        for (Iterator<? extends Map.Entry<?, ?>> i = map.entrySet().iterator(); i.hasNext();)
+        {
+            Map.Entry<?, ?> e = i.next();
+            Object key = e.getKey();
+            sb.append(key);
+            sb.append('=');
+
+            Object value = e.getValue();
+
+            if (value == null)
+                sb.append("null");
+            else if (value.getClass().isArray())
+                sb.append(Arrays.asList((Object[])value));
+            else
+                sb.append(value);
+            if (i.hasNext())
+                sb.append(',');
+        }
+        sb.append('}');
+        return sb.toString();
+    }
+
 }

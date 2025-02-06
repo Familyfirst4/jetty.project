@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -18,6 +18,7 @@ import java.util.function.Function;
 
 import org.eclipse.jetty.http.HttpCookie;
 import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.server.Session;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -26,9 +27,6 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- *
- */
 public class AbstractSessionManagerTest
 {
     @Test
@@ -37,37 +35,39 @@ public class AbstractSessionManagerTest
         //Make a session
         SessionData sessionData = new SessionData("1234", "_test", "0.0.0.0", 100, 200, 200, -1);
         TestableSessionManager sessionManager = new TestableSessionManager();
-        Session session = new Session(sessionManager, sessionData);
+        sessionManager.setSessionPath("/test");
+        ManagedSession session = new ManagedSession(sessionManager, sessionData);
         session.setExtendedId("1234.foo");
         session.getSessionData().setLastNode("foo");
 
         //check cookie with all default cookie config settings
-        HttpCookie cookie = sessionManager.getSessionCookie(session, "/test", false);
+        HttpCookie cookie = sessionManager.getSessionCookie(session, false);
         assertNotNull(cookie);
-        assertEquals(SessionManager.__DefaultSessionCookie, cookie.getName());
-        assertEquals(SessionManager.__DefaultSessionDomain, cookie.getDomain());
+        assertEquals(SessionConfig.__DefaultSessionCookie, cookie.getName());
+        assertEquals(SessionConfig.__DefaultSessionDomain, cookie.getDomain());
         assertEquals("/test", cookie.getPath());
         assertFalse(cookie.isSecure());
         assertFalse(cookie.isHttpOnly());
-        
+        assertFalse(cookie.isPartitioned());
+
         //check cookie with httpOnly and secure
         sessionManager.setHttpOnly(true);
         sessionManager.setSecureRequestOnly(true);
         sessionManager.setSecureCookies(true);
-        cookie = sessionManager.getSessionCookie(session, "/test", true);
+        cookie = sessionManager.getSessionCookie(session, true);
         assertNotNull(cookie);
-        assertEquals(SessionManager.__DefaultSessionCookie, cookie.getName());
-        assertEquals(SessionManager.__DefaultSessionDomain, cookie.getDomain());
+        assertEquals(SessionConfig.__DefaultSessionCookie, cookie.getName());
+        assertEquals(SessionConfig.__DefaultSessionDomain, cookie.getDomain());
         assertEquals("/test", cookie.getPath());
         assertTrue(cookie.isHttpOnly());
         assertTrue(cookie.isSecure());
         
         //check cookie when cookie config is set
-        sessionManager.getCookieConfig().put(SessionManager.__SessionCookieProperty, "MYSESSIONID");
-        sessionManager.getCookieConfig().put(SessionManager.__SessionDomainProperty, "foo.bar");
-        sessionManager.getCookieConfig().put(SessionManager.__SessionPathProperty, "/special");
+        sessionManager.getCookieConfig().put(SessionConfig.__SessionCookieProperty, "MYSESSIONID");
+        sessionManager.getCookieConfig().put(SessionConfig.__SessionDomainProperty, "foo.bar");
+        sessionManager.getCookieConfig().put(SessionConfig.__SessionPathProperty, "/special");
         sessionManager.configureCookies();
-        cookie = sessionManager.getSessionCookie(session, "/test", false);
+        cookie = sessionManager.getSessionCookie(session, false);
         assertNotNull(cookie);
         assertEquals("MYSESSIONID", cookie.getName());
         assertEquals("foo.bar", cookie.getDomain());
@@ -82,7 +82,7 @@ public class AbstractSessionManagerTest
         //Make a session
         SessionData sessionData = new SessionData("1234", "_test", "0.0.0.0", 100, 200, 200, -1);
         TestableSessionManager sessionManager = new TestableSessionManager();
-        Session session = new Session(sessionManager, sessionData);
+        ManagedSession session = new ManagedSession(sessionManager, sessionData);
         session.setExtendedId("1234.foo");
         session.getSessionData().setLastNode("foo");
         session.setResident(true); //pretend its in a cache
@@ -120,37 +120,37 @@ public class AbstractSessionManagerTest
             }
 
             @Override
-            public Session newSession(SessionData data)
+            public ManagedSession newSession(SessionData data)
             {
                 return null;
             }
 
             @Override
-            protected Session doGet(String id)
+            protected ManagedSession doGet(String id)
             {
                 return null;
             }
 
             @Override
-            protected Session doPutIfAbsent(String id, Session session)
+            protected Session doPutIfAbsent(String id, ManagedSession session)
             {
                 return null;
             }
 
             @Override
-            protected Session doComputeIfAbsent(String id, Function<String, Session> mappingFunction)
+            protected ManagedSession doComputeIfAbsent(String id, Function<String, ManagedSession> mappingFunction)
             {
                 return null;
             }
 
             @Override
-            protected boolean doReplace(String id, Session oldValue, Session newValue)
+            protected boolean doReplace(String id, ManagedSession oldValue, ManagedSession newValue)
             {
                 return false;
             }
 
             @Override
-            public Session doDelete(String id)
+            public ManagedSession doDelete(String id)
             {
                 return null;
             }
@@ -201,7 +201,7 @@ public class AbstractSessionManagerTest
      * Test that an immortal session is never scavenged, regardless of whether it
      * is evicted from the cache or not.
      * 
-     * @throws Exception
+     * @throws Exception if there is an unspecified problem
      */
     @Test
     public void testImmortalScavenge() throws Exception
@@ -254,7 +254,7 @@ public class AbstractSessionManagerTest
     /**
      * Test that a session that has a max valid time is always scavenged,
      * regardless of whether it is evicted from the cache or not.
-     * @throws Exception
+     * @throws Exception if there is an unspecified problem
      */
     @Test
     public void testNonImmortalScavenge() throws Exception
@@ -312,7 +312,7 @@ public class AbstractSessionManagerTest
 
         TestableSessionConsumer consumer = new TestableSessionConsumer();
         sessionManager.newSession(null, "1234", consumer);
-        Session session = consumer.getSession();
+        ManagedSession session = consumer.getSession();
         String id = session.getId();
         sessionManager.commit(session);
         sessionManager.complete(session); //exit the session
@@ -333,7 +333,7 @@ public class AbstractSessionManagerTest
         Thread.sleep(waitMs);
 
         //test the session
-        session = sessionManager.getSession(id);
+        session = sessionManager.getManagedSession(id);
         if (expectExist)
         {
             assertNotNull(session);

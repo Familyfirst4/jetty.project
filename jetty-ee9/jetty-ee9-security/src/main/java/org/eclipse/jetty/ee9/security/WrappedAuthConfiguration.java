@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -16,6 +16,8 @@ package org.eclipse.jetty.ee9.security;
 import java.util.Set;
 
 import org.eclipse.jetty.ee9.security.Authenticator.AuthConfiguration;
+import org.eclipse.jetty.security.IdentityService;
+import org.eclipse.jetty.security.LoginService;
 
 /**
  * A wrapper for {@link AuthConfiguration}. This allows you create a new AuthConfiguration which can
@@ -70,5 +72,11 @@ public class WrappedAuthConfiguration implements AuthConfiguration
     public boolean isSessionRenewedOnAuthentication()
     {
         return _configuration.isSessionRenewedOnAuthentication();
+    }
+
+    @Override
+    public int getSessionMaxInactiveIntervalOnAuthentication()
+    {
+        return _configuration.getSessionMaxInactiveIntervalOnAuthentication();
     }
 }

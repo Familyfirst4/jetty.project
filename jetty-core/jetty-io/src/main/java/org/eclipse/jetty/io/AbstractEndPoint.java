@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -69,10 +69,7 @@ public abstract class AbstractEndPoint extends IdleTimeout implements EndPoint
     }
 
     @Override
-    public SocketAddress getLocalSocketAddress()
-    {
-        return null;
-    }
+    public abstract SocketAddress getLocalSocketAddress();
 
     @Override
     public InetSocketAddress getRemoteAddress()
@@ -84,10 +81,7 @@ public abstract class AbstractEndPoint extends IdleTimeout implements EndPoint
     }
 
     @Override
-    public SocketAddress getRemoteSocketAddress()
-    {
-        return null;
-    }
+    public abstract SocketAddress getRemoteSocketAddress();
 
     protected final void shutdownInput()
     {
@@ -113,8 +107,6 @@ public abstract class AbstractEndPoint extends IdleTimeout implements EndPoint
                             // then we do the close for them
                             if (_state.get() == State.CLOSED)
                                 doOnClose(null);
-                            else
-                                throw new IllegalStateException();
                         }
                     }
                     return;
@@ -170,8 +162,6 @@ public abstract class AbstractEndPoint extends IdleTimeout implements EndPoint
                             // then we do the close for them
                             if (_state.get() == State.CLOSED)
                                 doOnClose(null);
-                            else
-                                throw new IllegalStateException();
                         }
                     }
                     return;
@@ -273,29 +263,21 @@ public abstract class AbstractEndPoint extends IdleTimeout implements EndPoint
     @Override
     public boolean isOutputShutdown()
     {
-        switch (_state.get())
+        return switch (_state.get())
         {
-            case CLOSED:
-            case OSHUT:
-            case OSHUTTING:
-                return true;
-            default:
-                return false;
-        }
+            case CLOSED, OSHUT, OSHUTTING -> true;
+            default -> false;
+        };
     }
 
     @Override
     public boolean isInputShutdown()
     {
-        switch (_state.get())
+        return switch (_state.get())
         {
-            case CLOSED:
-            case ISHUT:
-            case ISHUTTING:
-                return true;
-            default:
-                return false;
-        }
+            case CLOSED, ISHUT, ISHUTTING -> true;
+            default -> false;
+        };
     }
 
     @Override
@@ -404,30 +386,27 @@ public abstract class AbstractEndPoint extends IdleTimeout implements EndPoint
     protected void onIdleExpired(TimeoutException timeout)
     {
         Connection connection = _connection;
-        if (connection != null && !connection.onIdleExpired())
+        if (connection != null && !connection.onIdleExpired(timeout))
             return;
 
         boolean outputShutdown = isOutputShutdown();
         boolean inputShutdown = isInputShutdown();
         boolean fillFailed = _fillInterest.onFail(timeout);
         boolean writeFailed = _writeFlusher.onFail(timeout);
+        boolean isOpen = isOpen();
 
-        // If the endpoint is half closed and there was no fill/write handling, then close here.
-        // This handles the situation where the connection has completed its close handling
-        // and the endpoint is half closed, but the other party does not complete the close.
-        // This perhaps should not check for half closed, however the servlet spec case allows
-        // for a dispatched servlet or suspended request to extend beyond the connections idle
-        // time.  So if this test would always close an idle endpoint that is not handled, then
-        // we would need a mode to ignore timeouts for some HTTP states
-        if (isOpen() && (inputShutdown || outputShutdown) && !(fillFailed || writeFailed))
-            close();
-        else
-            LOG.debug("handled idle inputShutdown={} outputShutdown={} fillFailed={} writeFailed={} for {}",
+        if (LOG.isDebugEnabled())
+            LOG.debug("handled idle isOpen={} inputShutdown={} outputShutdown={} fillFailed={} writeFailed={} for {}",
+                isOpen,
                 inputShutdown,
                 outputShutdown,
                 fillFailed,
                 writeFailed,
                 this);
+
+        // If the endpoint is open and there was no fill/write handling, then close here.
+        if (isOpen && !(fillFailed || writeFailed))
+            close(timeout);
     }
 
     @Override

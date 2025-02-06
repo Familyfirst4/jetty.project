@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -15,12 +15,13 @@ package org.eclipse.jetty.deploy;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
 import org.eclipse.jetty.deploy.graph.GraphOutputDot;
 import org.eclipse.jetty.deploy.graph.Node;
-import org.eclipse.jetty.deploy.graph.Path;
+import org.eclipse.jetty.deploy.graph.Route;
 import org.eclipse.jetty.toolchain.test.jupiter.WorkDir;
 import org.eclipse.jetty.toolchain.test.jupiter.WorkDirExtension;
 import org.junit.jupiter.api.Test;
@@ -35,18 +36,16 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 @ExtendWith(WorkDirExtension.class)
 public class AppLifeCycleTest
 {
-    public WorkDir testdir;
-
     private void assertNoPath(String from, String to)
     {
-        assertPath(from, to, new ArrayList<String>());
+        assertPath(from, to, new ArrayList<>());
     }
 
     private void assertPath(AppLifeCycle lifecycle, String from, String to, List<String> expected)
     {
         Node fromNode = lifecycle.getNodeByName(from);
         Node toNode = lifecycle.getNodeByName(to);
-        Path actual = lifecycle.getPath(fromNode, toNode);
+        Route actual = lifecycle.getPath(fromNode, toNode);
         String msg = "LifeCycle path from " + from + " to " + to;
         assertNotNull(actual, msg + " should never be null");
 
@@ -89,30 +88,21 @@ public class AppLifeCycleTest
     @Test
     public void testFindPathDeployedStarted()
     {
-        List<String> expected = new ArrayList<String>();
-        expected.add("deployed");
-        expected.add("starting");
-        expected.add("started");
+        List<String> expected = List.of("deployed", "starting", "started");
         assertPath("deployed", "started", expected);
     }
 
     @Test
     public void testFindPathDeployedUndeployed()
     {
-        List<String> expected = new ArrayList<String>();
-        expected.add("deployed");
-        expected.add("undeploying");
-        expected.add("undeployed");
+        List<String> expected = List.of("deployed", "undeploying", "undeployed");
         assertPath("deployed", "undeployed", expected);
     }
 
     @Test
     public void testFindPathStartedDeployed()
     {
-        List<String> expected = new ArrayList<String>();
-        expected.add("started");
-        expected.add("stopping");
-        expected.add("deployed");
+        List<String> expected = List.of("started", "stopping", "deployed");
         assertPath("started", "deployed", expected);
     }
 
@@ -125,34 +115,21 @@ public class AppLifeCycleTest
     @Test
     public void testFindPathStartedUndeployed()
     {
-        List<String> expected = new ArrayList<String>();
-        expected.add("started");
-        expected.add("stopping");
-        expected.add("deployed");
-        expected.add("undeploying");
-        expected.add("undeployed");
+        List<String> expected = List.of("started", "stopping", "deployed", "undeploying", "undeployed");
         assertPath("started", "undeployed", expected);
     }
 
     @Test
     public void testFindPathUndeployedDeployed()
     {
-        List<String> expected = new ArrayList<String>();
-        expected.add("undeployed");
-        expected.add("deploying");
-        expected.add("deployed");
+        List<String> expected = List.of("undeployed", "deploying", "deployed");
         assertPath("undeployed", "deployed", expected);
     }
 
     @Test
     public void testFindPathUndeployedStarted()
     {
-        List<String> expected = new ArrayList<String>();
-        expected.add("undeployed");
-        expected.add("deploying");
-        expected.add("deployed");
-        expected.add("starting");
-        expected.add("started");
+        List<String> expected = List.of("undeployed", "deploying", "deployed", "starting", "started");
         assertPath("undeployed", "started", expected);
     }
 
@@ -169,12 +146,13 @@ public class AppLifeCycleTest
      * @throws IOException on test failure
      */
     @Test
-    public void testFindPathMultiple() throws IOException
+    public void testFindPathMultiple(WorkDir workDir) throws IOException
     {
+        Path tmpPath = workDir.getEmptyPathDir();
         AppLifeCycle lifecycle = new AppLifeCycle();
-        List<String> expected = new ArrayList<String>();
+        List<String> expected = new ArrayList<>();
 
-        File outputDir = testdir.getEmptyPathDir().toFile();
+        File outputDir = tmpPath.toFile();
 
         // Modify graph to add new 'staging' -> 'staged' between 'deployed' and 'started'
         GraphOutputDot.write(lifecycle, new File(outputDir, "multiple-1.dot")); // before change

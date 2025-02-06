@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -16,14 +16,15 @@ package org.eclipse.jetty.client;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 
-import org.eclipse.jetty.client.api.ContentResponse;
-import org.eclipse.jetty.client.api.Destination;
+import org.eclipse.jetty.client.transport.HttpDestination;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpHeaderValue;
 import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.http.MimeTypes;
+import org.eclipse.jetty.io.ArrayByteBufferPool;
 import org.eclipse.jetty.io.Content;
 import org.eclipse.jetty.io.EndPoint;
 import org.eclipse.jetty.server.Handler;
@@ -34,6 +35,7 @@ import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.util.Callback;
+import org.eclipse.jetty.util.component.LifeCycle;
 import org.eclipse.jetty.util.thread.QueuedThreadPool;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -47,15 +49,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class HttpClientProxyProtocolTest
 {
+    private ArrayByteBufferPool.Tracking serverBufferPool;
     private Server server;
     private ServerConnector connector;
+    private ArrayByteBufferPool.Tracking clientBufferPool;
     private HttpClient client;
 
     private void startServer(Handler handler) throws Exception
     {
         QueuedThreadPool serverThreads = new QueuedThreadPool();
         serverThreads.setName("server");
-        server = new Server(serverThreads);
+        serverBufferPool = new ArrayByteBufferPool.Tracking();
+        server = new Server(serverThreads, null, serverBufferPool);
         HttpConnectionFactory http = new HttpConnectionFactory();
         ProxyConnectionFactory proxy = new ProxyConnectionFactory(http.getProtocol());
         connector = new ServerConnector(server, 1, 1, proxy, http);
@@ -68,31 +73,35 @@ public class HttpClientProxyProtocolTest
     {
         QueuedThreadPool clientThreads = new QueuedThreadPool();
         clientThreads.setName("client");
+        clientBufferPool = new ArrayByteBufferPool.Tracking();
         client = new HttpClient();
         client.setExecutor(clientThreads);
-        client.setRemoveIdleDestinations(false);
+        client.setByteBufferPool(clientBufferPool);
         client.start();
     }
 
     @AfterEach
     public void dispose() throws Exception
     {
-        if (server != null)
-            server.stop();
-        if (client != null)
-            client.stop();
+        LifeCycle.stop(client);
+        LifeCycle.stop(server);
+        Set<ArrayByteBufferPool.Tracking.Buffer> serverLeaks = serverBufferPool.getLeaks();
+        assertEquals(0, serverLeaks.size(), serverBufferPool.dumpLeaks());
+        Set<ArrayByteBufferPool.Tracking.Buffer> clientLeaks = clientBufferPool.getLeaks();
+        assertEquals(0, clientLeaks.size(), clientBufferPool.dumpLeaks());
     }
 
     @Test
     public void testClientProxyProtocolV1() throws Exception
     {
-        startServer(new Handler.Processor()
+        startServer(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 response.getHeaders().put(HttpHeader.CONTENT_TYPE, MimeTypes.Type.TEXT_PLAIN.asString());
                 Content.Sink.write(response, true, String.valueOf(Request.getRemotePort(request)), callback);
+                return true;
             }
         });
         startClient();
@@ -124,13 +133,14 @@ public class HttpClientProxyProtocolTest
     @Test
     public void testClientProxyProtocolV2() throws Exception
     {
-        startServer(new Handler.Processor()
+        startServer(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 response.getHeaders().put(HttpHeader.CONTENT_TYPE, MimeTypes.Type.TEXT_PLAIN.asString());
                 Content.Sink.write(response, true, String.valueOf(Request.getRemotePort(request)), callback);
+                return true;
             }
         });
         startClient();
@@ -165,21 +175,22 @@ public class HttpClientProxyProtocolTest
         int typeTLS = 0x20;
         String tlsVersion = "TLSv1.3";
         byte[] tlsVersionBytes = tlsVersion.getBytes(StandardCharsets.US_ASCII);
-        startServer(new Handler.Processor()
+        startServer(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 EndPoint endPoint = request.getConnectionMetaData().getConnection().getEndPoint();
                 assertTrue(endPoint instanceof ProxyConnectionFactory.ProxyEndPoint);
                 ProxyConnectionFactory.ProxyEndPoint proxyEndPoint = (ProxyConnectionFactory.ProxyEndPoint)endPoint;
-                if (request.getPathInContext().equals("/tls_version"))
+                if (Request.getPathInContext(request).equals("/tls_version"))
                 {
                     assertNotNull(proxyEndPoint.getTLV(typeTLS));
-                    assertEquals(tlsVersion, proxyEndPoint.getAttribute(ProxyConnectionFactory.TLS_VERSION));
+                    assertNotNull(proxyEndPoint.getSslSessionData());
                 }
                 response.getHeaders().put(HttpHeader.CONTENT_TYPE, MimeTypes.Type.TEXT_PLAIN.asString());
                 Content.Sink.write(response, true, String.valueOf(Request.getRemotePort(request)), callback);
+                return true;
             }
         });
         startClient();
@@ -219,20 +230,21 @@ public class HttpClientProxyProtocolTest
     @Test
     public void testProxyProtocolWrappingHTTPProxy() throws Exception
     {
-        startServer(new Handler.Processor()
+        startServer(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 response.getHeaders().put(HttpHeader.CONTENT_TYPE, MimeTypes.Type.TEXT_PLAIN.asString());
                 Content.Sink.write(response, true, String.valueOf(Request.getRemotePort(request)), callback);
+                return true;
             }
         });
         startClient();
 
         int proxyPort = connector.getLocalPort();
         int serverPort = proxyPort + 1; // Any port will do.
-        client.getProxyConfiguration().getProxies().add(new HttpProxy("localhost", proxyPort));
+        client.getProxyConfiguration().addProxy(new HttpProxy("localhost", proxyPort));
 
         // We are simulating to be a HttpClient inside a proxy.
         // The server is configured with the PROXY protocol to know the socket address of clients.

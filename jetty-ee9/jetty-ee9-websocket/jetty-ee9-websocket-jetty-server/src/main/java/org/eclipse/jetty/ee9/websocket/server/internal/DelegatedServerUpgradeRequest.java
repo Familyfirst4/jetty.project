@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -18,7 +18,6 @@ import java.net.SocketAddress;
 import java.net.URI;
 import java.security.Principal;
 import java.security.cert.X509Certificate;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Enumeration;
@@ -31,14 +30,14 @@ import java.util.stream.Collectors;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
-import org.eclipse.jetty.ee9.nested.ContextHandler;
 import org.eclipse.jetty.ee9.websocket.api.ExtensionConfig;
 import org.eclipse.jetty.ee9.websocket.common.JettyExtensionConfig;
 import org.eclipse.jetty.ee9.websocket.server.JettyServerUpgradeRequest;
 import org.eclipse.jetty.http.BadMessageException;
+import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpHeader;
-import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.util.URIUtil;
+import org.eclipse.jetty.websocket.core.WebSocketConstants;
 import org.eclipse.jetty.websocket.core.server.ServerUpgradeRequest;
 
 public class DelegatedServerUpgradeRequest implements JettyServerUpgradeRequest
@@ -47,19 +46,17 @@ public class DelegatedServerUpgradeRequest implements JettyServerUpgradeRequest
     private final String queryString;
     private final ServerUpgradeRequest upgradeRequest;
     private final HttpServletRequest httpServletRequest;
+    private final Map<String, List<String>> headers;
     private List<HttpCookie> cookies;
     private Map<String, List<String>> parameterMap;
 
     public DelegatedServerUpgradeRequest(ServerUpgradeRequest request)
     {
-        this(request, Request.as(request, ContextHandler.CoreContextRequest.class).getHttpChannel().getRequest());
-    }
-
-    public DelegatedServerUpgradeRequest(ServerUpgradeRequest request, HttpServletRequest servletRequest)
-    {
+        this.httpServletRequest = (HttpServletRequest)request
+            .getAttribute(WebSocketConstants.WEBSOCKET_WRAPPED_REQUEST_ATTRIBUTE);
         this.upgradeRequest = request;
-        this.httpServletRequest = servletRequest;
         this.queryString = httpServletRequest.getQueryString();
+        this.headers = HttpFields.asMap(upgradeRequest.getHeaders());
 
         try
         {
@@ -119,9 +116,7 @@ public class DelegatedServerUpgradeRequest implements JettyServerUpgradeRequest
     @Override
     public Map<String, List<String>> getHeaders()
     {
-        Map<String, List<String>> headers = upgradeRequest.getHeaders().getFieldNamesCollection().stream()
-            .collect(Collectors.toMap((name) -> name, (name) -> new ArrayList<>(getHeaders(name))));
-        return Collections.unmodifiableMap(headers);
+        return headers;
     }
 
     @Override
@@ -145,13 +140,13 @@ public class DelegatedServerUpgradeRequest implements JettyServerUpgradeRequest
     @Override
     public String getMethod()
     {
-        return upgradeRequest.getMethod();
+        return httpServletRequest.getMethod();
     }
 
     @Override
     public String getOrigin()
     {
-        return upgradeRequest.getHeaders().get(HttpHeader.ORIGIN);
+        return httpServletRequest.getHeader(HttpHeader.ORIGIN.asString());
     }
 
     @Override
@@ -265,7 +260,7 @@ public class DelegatedServerUpgradeRequest implements JettyServerUpgradeRequest
     @Override
     public Object getServletAttribute(String name)
     {
-        return httpServletRequest.getAttribute(name);
+        return upgradeRequest.getAttribute(name);
     }
 
     @Override
@@ -296,6 +291,6 @@ public class DelegatedServerUpgradeRequest implements JettyServerUpgradeRequest
     @Override
     public void setServletAttribute(String name, Object value)
     {
-        httpServletRequest.setAttribute(name, value);
+        upgradeRequest.setAttribute(name, value);
     }
 }

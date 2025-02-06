@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -22,7 +22,6 @@ import jakarta.servlet.UnavailableException;
 import jakarta.servlet.http.HttpServlet;
 import org.eclipse.jetty.logging.StacklessLogging;
 import org.eclipse.jetty.server.handler.ContextHandler;
-import org.eclipse.jetty.util.MultiException;
 import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -44,7 +43,7 @@ public class ServletHolderTest
     @Test
     public void testInitParams() throws Exception
     {
-        ServletHolder holder = new ServletHolder(Source.JAVAX_API);
+        ServletHolder holder = new ServletHolder(Source.JAKARTA_API);
         ServletRegistration reg = holder.getRegistration();
 
         assertThrows(IllegalArgumentException.class, () -> reg.setInitParameter(null, "foo"));
@@ -151,10 +150,6 @@ public class ServletHolderTest
         {
             assertThat(e.getMessage(), containsString("foo"));
         }
-        catch (MultiException e)
-        {
-            assertThat(e.getCause().getMessage(), containsString("foo"));
-        }
     }
 
     @Test
@@ -210,10 +205,6 @@ public class ServletHolderTest
         catch (UnavailableException e)
         {
             assertThat(e.getMessage(), containsString("foo"));
-        }
-        catch (MultiException e)
-        {
-            assertThat(e.getCause().getMessage(), containsString("foo"));
         }
     }
 }

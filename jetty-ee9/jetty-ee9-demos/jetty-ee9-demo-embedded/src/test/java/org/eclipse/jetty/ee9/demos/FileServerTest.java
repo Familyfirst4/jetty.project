@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -18,14 +18,14 @@ import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-import org.eclipse.jetty.client.api.ContentResponse;
+import org.eclipse.jetty.client.ContentResponse;
 import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpMethod;
 import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.toolchain.test.jupiter.WorkDir;
 import org.eclipse.jetty.toolchain.test.jupiter.WorkDirExtension;
-import org.eclipse.jetty.util.resource.PathResource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -40,21 +40,19 @@ public class FileServerTest extends AbstractEmbeddedTest
 {
     private static final String TEXT_CONTENT = "I am an old man and I have known a great " +
         "many troubles, but most of them never happened. - Mark Twain";
-    public WorkDir workDir;
     private Server server;
 
     @BeforeEach
-    public void startServer() throws Exception
+    public void startServer(WorkDir workDir) throws Exception
     {
         Path baseDir = workDir.getEmptyPathDir();
-
         Path textFile = baseDir.resolve("simple.txt");
         try (BufferedWriter writer = Files.newBufferedWriter(textFile, UTF_8))
         {
             writer.write(TEXT_CONTENT);
         }
 
-        server = FileServer.createServer(0, new PathResource(baseDir));
+        server = FileServer.createServer(0, ResourceFactory.root().newResource(baseDir));
         server.start();
     }
 

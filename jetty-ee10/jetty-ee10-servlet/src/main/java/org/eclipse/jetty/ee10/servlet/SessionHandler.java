@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -17,11 +17,13 @@ import java.util.Collections;
 import java.util.EnumSet;
 import java.util.Enumeration;
 import java.util.EventListener;
-import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.ListIterator;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import jakarta.servlet.ServletContext;
@@ -35,23 +37,21 @@ import jakarta.servlet.http.HttpSessionBindingListener;
 import jakarta.servlet.http.HttpSessionEvent;
 import jakarta.servlet.http.HttpSessionIdListener;
 import jakarta.servlet.http.HttpSessionListener;
-import org.eclipse.jetty.ee10.servlet.ServletContextRequest.ServletApiRequest;
 import org.eclipse.jetty.http.HttpCookie;
-import org.eclipse.jetty.http.Syntax;
+import org.eclipse.jetty.http.HttpCookie.SameSite;
 import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.server.Server;
-import org.eclipse.jetty.server.handler.ContextHandler;
+import org.eclipse.jetty.server.Session;
 import org.eclipse.jetty.session.AbstractSessionManager;
-import org.eclipse.jetty.session.Session;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.eclipse.jetty.session.ManagedSession;
+import org.eclipse.jetty.session.SessionConfig;
+import org.eclipse.jetty.util.Callback;
+import org.eclipse.jetty.util.TypeUtil;
 
-public class SessionHandler extends AbstractSessionManager implements Handler.Nested
-{    
-    static final Logger LOG = LoggerFactory.getLogger(SessionHandler.class);
-    
+public class SessionHandler extends AbstractSessionManager implements Handler.Singleton
+{
     public static final EnumSet<SessionTrackingMode> DEFAULT_SESSION_TRACKING_MODES =
         EnumSet.of(SessionTrackingMode.COOKIE, SessionTrackingMode.URL);
     
@@ -59,8 +59,6 @@ public class SessionHandler extends AbstractSessionManager implements Handler.Ne
     final List<HttpSessionListener> _sessionListeners = new CopyOnWriteArrayList<>();
     final List<HttpSessionIdListener> _sessionIdListeners = new CopyOnWriteArrayList<>();
     private final SessionCookieConfig _cookieConfig = new CookieConfig();
-
-    private ServletContextHandler.Context _servletContextHandlerContext;
 
     private Server _server;
     private Handler _handler;
@@ -75,6 +73,13 @@ public class SessionHandler extends AbstractSessionManager implements Handler.Ne
     }
 
     @Override
+    public InvocationType getInvocationType()
+    {
+        // Session operations may be blocking
+        return InvocationType.BLOCKING;
+    }
+
+    @Override
     public Handler getHandler()
     {
         return _handler;
@@ -83,7 +88,7 @@ public class SessionHandler extends AbstractSessionManager implements Handler.Ne
     @Override
     public void setHandler(Handler handler)
     {
-        _handler = Nested.updateHandler(this, handler);
+        _handler = Handler.Singleton.updateHandler(this, handler);
     }
 
     @Override
@@ -94,7 +99,6 @@ public class SessionHandler extends AbstractSessionManager implements Handler.Ne
 
     /**
      * CookieConfig
-     *
      * Implementation of the jakarta.servlet.SessionCookieConfig.
      * SameSite configuration can be achieved by using setComment
      *
@@ -102,8 +106,6 @@ public class SessionHandler extends AbstractSessionManager implements Handler.Ne
      */
     public final class CookieConfig implements SessionCookieConfig
     {
-        private final Map<String, String> _attributes = new HashMap<>();
-
         @Override
         public String getComment()
         {
@@ -125,21 +127,57 @@ public class SessionHandler extends AbstractSessionManager implements Handler.Ne
         @Override
         public void setAttribute(String name, String value)
         {
-            // TODO check that context is not available
-            _attributes.put(name, value);
+            checkState();
+            String lcase = name.toLowerCase(Locale.ENGLISH);
+
+            switch (lcase)
+            {
+                case "name" -> setName(value);
+                case "max-age" -> setMaxAge(value == null ? -1 : Integer.parseInt(value));
+                case "comment" -> setComment(value);
+                case "domain" -> setDomain(value);
+                case "httponly" -> setHttpOnly(Boolean.parseBoolean(value));
+                case "secure" -> setSecure(Boolean.parseBoolean(value));
+                case "path" -> setPath(value);
+                default -> setSessionCookieAttribute(name, value);
+            }
         }
 
         @Override
         public String getAttribute(String name)
         {
-            // TODO use these attributes
-            return _attributes.get(name);
+            String lcase = name.toLowerCase(Locale.ENGLISH);
+            return switch (lcase)
+            {
+                case "name" -> getName();
+                case "max-age" -> Integer.toString(getMaxAge());
+                case "comment" -> getComment();
+                case "domain" -> getDomain();
+                case "httponly" -> String.valueOf(isHttpOnly());
+                case "secure" -> String.valueOf(isSecure());
+                case "path" -> getPath();
+                default -> getSessionCookieAttribute(name);
+            };
         }
 
+        /**
+         * According to the SessionCookieConfig javadoc, the attributes must also include
+         * all values set by explicit setters.
+         * @see SessionCookieConfig
+         */
         @Override
         public Map<String, String> getAttributes()
         {
-            return Collections.unmodifiableMap(_attributes);
+            Map<String, String> specials = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+            specials.put("name", getAttribute("name"));
+            specials.put("max-age", getAttribute("max-age"));
+            specials.put("comment", getAttribute("comment"));
+            specials.put("domain", getAttribute("domain"));
+            specials.put("httponly", getAttribute("httponly"));
+            specials.put("secure", getAttribute("secure"));
+            specials.put("path", getAttribute("path"));
+            specials.putAll(getSessionCookieAttributes());
+            return Collections.unmodifiableMap(specials);
         }
 
         @Override
@@ -198,10 +236,6 @@ public class SessionHandler extends AbstractSessionManager implements Handler.Ne
         public void setName(String name)
         {
             checkState();
-            if ("".equals(name))
-                throw new IllegalArgumentException("Blank cookie name");
-            if (name != null)
-                Syntax.requireValidRFC2616Token(name, "Bad Session cookie name");
             SessionHandler.this.setSessionCookie(name);
         }
 
@@ -219,36 +253,49 @@ public class SessionHandler extends AbstractSessionManager implements Handler.Ne
             SessionHandler.this.setSecureCookies(secure);
         }
 
+        @Override
+        public String toString()
+        {
+              return String.format("%s@%x[name=%s,domain=%s,path=%s,max-age=%d,secure=%b,http-only=%b,comment=%s,attributes=%s]",
+                this.getClass().getName(), this.hashCode(), getName(), getDomain(), getPath(),
+               getMaxAge(), isSecure(), isHttpOnly(),  getComment(), getSessionCookieAttributes().toString());
+        }
+
         private void checkState()
         {
-            if (_servletContextHandlerContext != null && _servletContextHandlerContext.getServletContextHandler().isAvailable())
+            //It is allowable to call the CookieConfig.setXX methods after the SessionHandler has started,
+            //but before the context has fully started. Ie it is allowable for ServletContextListeners
+            //to call these methods in contextInitialized().
+            ServletContextHandler handler = ServletContextHandler.getCurrentServletContextHandler();
+            if (handler != null && handler.isAvailable())
                 throw new IllegalStateException("CookieConfig cannot be set after ServletContext is started");
+
         }
     }
 
-    public static class ServletAPISession implements HttpSession, Session.APISession
+    public static class ServletSessionApi implements HttpSession, Session.API
     {
-        public static ServletAPISession wrapSession(Session session)
+        public static ServletSessionApi wrapSession(ManagedSession session)
         {
-            return new ServletAPISession(session);
+            return new ServletSessionApi(session);
         }
         
-        public static Session getSession(HttpSession httpSession)
+        public static ManagedSession getSession(HttpSession httpSession)
         {
-            if (httpSession instanceof ServletAPISession apiSession)
-                return apiSession.getCoreSession();
+            if (httpSession instanceof ServletSessionApi apiSession)
+                return apiSession.getSession();
             return null;
         }
         
-        private final Session _session;
+        private final ManagedSession _session;
         
-        private ServletAPISession(Session session)
+        private ServletSessionApi(ManagedSession session)
         {
             _session = session;           
         }
 
         @Override
-        public Session getCoreSession()
+        public ManagedSession getSession()
         {
             return _session;
         }
@@ -274,7 +321,7 @@ public class SessionHandler extends AbstractSessionManager implements Handler.Ne
         @Override
         public ServletContext getServletContext()
         {
-            return ServletContextHandler.getServletContext((ContextHandler.Context)_session.getSessionManager().getContext());
+            return ServletContextHandler.getServletContext(_session.getSessionManager().getContext());
         }
 
         @Override
@@ -298,7 +345,7 @@ public class SessionHandler extends AbstractSessionManager implements Handler.Ne
         @Override
         public Enumeration<String> getAttributeNames()
         {
-            final Iterator<String> itor = _session.getNames().iterator();
+            final Iterator<String> itor = _session.getAttributeNameSet().iterator();
             return new Enumeration<>()
             {
 
@@ -344,13 +391,26 @@ public class SessionHandler extends AbstractSessionManager implements Handler.Ne
     public SessionHandler()
     {
         setSessionTrackingModes(DEFAULT_SESSION_TRACKING_MODES);
+        installBean(_cookieConfig);
+        installBean(_sessionListeners);
+        installBean(_sessionIdListeners);
+        installBean(_sessionAttributeListeners);
     }
 
     @Override
-    public Session getSession(Request request)
+    public ManagedSession getManagedSession(Request request)
     {
-        ServletApiRequest apiRequest = Request.get(request, ServletContextRequest.class, ServletContextRequest::getServletApiRequest);
-        return apiRequest == null ? null : apiRequest.getCoreSession();
+        ServletContextRequest servletContextRequest = Request.as(request, ServletContextRequest.class);
+        if (servletContextRequest != null)
+            return servletContextRequest.getManagedSession();
+
+        NonServletSessionRequest nonServletSessionRequest = Request.as(request, NonServletSessionRequest.class);
+        if (nonServletSessionRequest != null)
+            return nonServletSessionRequest.getManagedSession();
+
+        if (request.getSession(false) instanceof ManagedSession managedSession)
+            return managedSession;
+        return null;
     }
 
     /**
@@ -402,63 +462,65 @@ public class SessionHandler extends AbstractSessionManager implements Handler.Ne
     public void doStart() throws Exception
     {
         super.doStart();
-        if (!(getContext() instanceof ServletContextHandler.Context))
-            throw new IllegalStateException("!ServlerContextHandler.Context");
-        _servletContextHandlerContext = (ServletContextHandler.Context)getContext();
         configureCookies();
     }
 
     /**
-     * Set up cookie configuration based on init params, if
-     * the SessionCookieConfig has not been set.
+     * Set up cookie configuration based on init params
      */
     protected void configureCookies()
     {
-        // Look for a session cookie name
-        if (_servletContextHandlerContext != null)
-        {
-            ServletContext servletContext = _servletContextHandlerContext.getServletContext();
-            String tmp = servletContext.getInitParameter(__SessionCookieProperty);
-            if (tmp != null)
-                setSessionCookie(tmp);
+        ServletContextHandler contextHandler = ServletContextHandler.getCurrentServletContextHandler();
+        if (contextHandler == null)
+            return;
 
-            tmp = servletContext.getInitParameter(__SessionIdPathParameterNameProperty);
-            if (tmp != null)
-                setSessionIdPathParameterName(tmp);
+        //configure the name of the session cookie set by an init param
+        String tmp = contextHandler.getInitParameter(SessionConfig.__SessionCookieProperty);
+        if (tmp != null)
+            setSessionCookie(tmp);
 
-            // set up the max session cookie age if it isn't already
-            if (getMaxCookieAge() == -1)
-            {
-                tmp = servletContext.getInitParameter(__MaxAgeProperty);
-                if (tmp != null)
-                    setMaxCookieAge(Integer.parseInt(tmp.trim()));
-            }
+        //configure the name of the session id path param set by an init param
+        tmp = contextHandler.getInitParameter(SessionConfig.__SessionIdPathParameterNameProperty);
+        if (tmp != null)
+            setSessionIdPathParameterName(tmp);
 
-            // set up the session domain if it isn't already
-            if (getSessionDomain() == null)
-                setSessionDomain(servletContext.getInitParameter(__SessionDomainProperty));
+        //configure checkRemoteSessionEncoding set by an init param
+        tmp = contextHandler.getInitParameter(SessionConfig.__CheckRemoteSessionEncodingProperty);
+        if (tmp != null)
+            setCheckingRemoteSessionIdEncoding(Boolean.parseBoolean(tmp));
 
-            // set up the sessionPath if it isn't already
-            if (getSessionPath() == null)
-                setSessionPath(servletContext.getInitParameter(__SessionPathProperty));
+        //configure the domain of the session cookie set by an init param
+        tmp = contextHandler.getInitParameter(SessionConfig.__SessionDomainProperty);
+        if (tmp != null)
+            setSessionDomain(tmp);
 
-            tmp = servletContext.getInitParameter(__CheckRemoteSessionEncoding);
-            if (tmp != null)
-                setCheckingRemoteSessionIdEncoding(Boolean.parseBoolean(tmp));
-        }
+        //configure the path of the session cookie set by an init param
+        tmp = contextHandler.getInitParameter(SessionConfig.__SessionPathProperty);
+        if (tmp != null)
+            setSessionPath(tmp);
+
+        //configure the max age of the session cookie set by an init param
+        tmp = contextHandler.getInitParameter(SessionConfig.__MaxAgeProperty);
+        if (tmp != null)
+            setMaxCookieAge(Integer.parseInt(tmp.trim()));
     }
 
-    public Session.APISession newSessionAPIWrapper(Session session)
+    public Session.API newSessionAPIWrapper(ManagedSession session)
     {
-        return ServletAPISession.wrapSession(session);
+        return ServletSessionApi.wrapSession(session);
     }
 
     @Override
-    public void callSessionAttributeListeners(Session session, String name, Object old, Object value)
+    public void onSessionAttributeUpdate(Session session, String name, Object old, Object value)
     {
+        if (old != null)
+            callUnboundBindingListener(session, name, old);
+        if (value != null)
+            callBoundBindingListener(session, name, value);
+
         if (!_sessionAttributeListeners.isEmpty())
         {
-            HttpSessionBindingEvent event = new HttpSessionBindingEvent(session.getAPISession(), name, old == null ? value : old);
+            HttpSessionBindingEvent event = new HttpSessionBindingEvent(session.getApi(), name, old == null ? value : old);
 
             for (HttpSessionAttributeListener l : _sessionAttributeListeners)
             {
@@ -479,12 +541,12 @@ public class SessionHandler extends AbstractSessionManager implements Handler.Ne
      * @param session the session on which to call the lifecycle listeners
      */
     @Override
-    public void callSessionCreatedListeners(Session session)
+    public void onSessionCreated(Session session)
     {
         if (session == null)
             return;
-
-        HttpSessionEvent event = new HttpSessionEvent(session.getAPISession());
+        super.onSessionCreated(session);
+        HttpSessionEvent event = new HttpSessionEvent(session.getApi());
         for (HttpSessionListener  l : _sessionListeners)
         {
             l.sessionCreated(event);
@@ -498,31 +560,32 @@ public class SessionHandler extends AbstractSessionManager implements Handler.Ne
      * @param session the session on which to call the lifecycle listeners
      */
     @Override
-    public void callSessionDestroyedListeners(Session session)
+    public void onSessionDestroyed(Session session)
     {
         if (session == null)
             return;
-
+        super.onSessionDestroyed(session);
         //We annoint the calling thread with
         //the webapp's classloader because the calling thread may
         //come from the scavenger, rather than a request thread
         getSessionContext().run(() ->
         {
-            HttpSessionEvent event = new HttpSessionEvent(session.getAPISession());
-            for (int i = _sessionListeners.size() - 1; i >= 0; i--)
+            HttpSessionEvent event = new HttpSessionEvent(session.getApi());
+            for (ListIterator<HttpSessionListener> i = TypeUtil.listIteratorAtEnd(_sessionListeners); i.hasPrevious();)
             {
-                _sessionListeners.get(i).sessionDestroyed(event);
+                i.previous().sessionDestroyed(event);
             }
         });
     }
 
     @Override
-    public void callSessionIdListeners(Session session, String oldId)
+    public void onSessionIdChanged(Session session, String oldId)
     {
         //inform the listeners
+        super.onSessionIdChanged(session, oldId);
         if (!_sessionIdListeners.isEmpty())
         {
-            HttpSessionEvent event = new HttpSessionEvent(session.getAPISession());
+            HttpSessionEvent event = new HttpSessionEvent(session.getApi());
             for (HttpSessionIdListener l : _sessionIdListeners)
             {
                 l.sessionIdChanged(event, oldId);
@@ -530,37 +593,43 @@ public class SessionHandler extends AbstractSessionManager implements Handler.Ne
         }
     }
     
-    @Override
-    public void callUnboundBindingListener(Session session, String name, Object value)
+    protected void callUnboundBindingListener(Session session, String name, Object value)
     {
         if (value instanceof HttpSessionBindingListener)
-            ((HttpSessionBindingListener)value).valueUnbound(new HttpSessionBindingEvent(session.getAPISession(), name));
+            ((HttpSessionBindingListener)value).valueUnbound(new HttpSessionBindingEvent(session.getApi(), name));
     }
     
-    @Override
-    public void callBoundBindingListener(Session session, String name, Object value)
+    protected void callBoundBindingListener(Session session, String name, Object value)
     {
         if (value instanceof HttpSessionBindingListener)
-            ((HttpSessionBindingListener)value).valueBound(new HttpSessionBindingEvent(session.getAPISession(), name)); 
+            ((HttpSessionBindingListener)value).valueBound(new HttpSessionBindingEvent(session.getApi(), name));
     }
-    
+
     @Override
-    public void callSessionActivationListener(Session session, String name, Object value)
+    public void onSessionActivation(Session session)
     {
-        if (value instanceof HttpSessionActivationListener listener)
+        for (String name : session.getAttributeNameSet())
         {
-            HttpSessionEvent event = new HttpSessionEvent(session.getAPISession());
-            listener.sessionDidActivate(event);
+            Object value = session.getAttribute(name);
+            if (value instanceof HttpSessionActivationListener listener)
+            {
+                HttpSessionEvent event = new HttpSessionEvent(session.getApi());
+                listener.sessionDidActivate(event);
+            }
         }
     }
 
     @Override
-    public void callSessionPassivationListener(Session session, String name, Object value)
+    public void onSessionPassivation(Session session)
     {
-        if (value instanceof HttpSessionActivationListener listener)
+        for (String name : session.getAttributeNameSet())
         {
-            HttpSessionEvent event = new HttpSessionEvent(session.getAPISession());
-            listener.sessionWillPassivate(event);
+            Object value = session.getAttribute(name);
+            if (value instanceof HttpSessionActivationListener listener)
+            {
+                HttpSessionEvent event = new HttpSessionEvent(session.getApi());
+                listener.sessionWillPassivate(event);
+            }
         }
     }
     
@@ -578,17 +647,38 @@ public class SessionHandler extends AbstractSessionManager implements Handler.Ne
     {
         if (isUsingCookies())
         {
-            if (isUsingURLs())
+            if (isUsingUriParameters())
                 return Set.of(SessionTrackingMode.COOKIE, SessionTrackingMode.URL);
             return Set.of(SessionTrackingMode.COOKIE);
         }
 
-        if (isUsingURLs())
+        if (isUsingUriParameters())
             return Set.of(SessionTrackingMode.URL);
 
         return Collections.emptySet();
     }
-
+    
+    @Override
+    public HttpCookie.SameSite getSameSite()
+    {
+        String sameSite = getSessionCookieAttribute("SameSite");
+        if (sameSite == null)
+            return null;
+        return SameSite.valueOf(sameSite.toUpperCase(Locale.ENGLISH));
+    }
+    
+    /**
+     * Set Session cookie sameSite mode.
+     * In ee10 this is set as a generic session cookie attribute.
+     *
+     * @param sameSite The sameSite setting for Session cookies (or null for no sameSite setting)
+     */
+    @Override
+    public void setSameSite(HttpCookie.SameSite sameSite)
+    {
+        setSessionCookieAttribute("SameSite", sameSite.getAttributeValue());
+    }
+    
     public void setSessionTrackingModes(Set<SessionTrackingMode> sessionTrackingModes)
     {
         if (sessionTrackingModes != null &&
@@ -598,47 +688,71 @@ public class SessionHandler extends AbstractSessionManager implements Handler.Ne
             throw new IllegalArgumentException("sessionTrackingModes specifies a combination of SessionTrackingMode.SSL with a session tracking mode other than SessionTrackingMode.SSL");
         }
         setUsingCookies(sessionTrackingModes != null && sessionTrackingModes.contains(SessionTrackingMode.COOKIE));
-        setUsingURLs(sessionTrackingModes != null && sessionTrackingModes.contains(SessionTrackingMode.URL));
+        setUsingUriParameters(sessionTrackingModes != null && sessionTrackingModes.contains(SessionTrackingMode.URL));
     }
 
     @Override
-    public Request.Processor handle(Request request) throws Exception
+    public boolean handle(Request request, Response response, Callback callback) throws Exception
     {
-        ServletContextRequest servletContextRequest = Request.as(request, ServletContextRequest.class);
-        ServletContextRequest.ServletApiRequest servletApiRequest =
-            (servletContextRequest == null ? null : servletContextRequest.getServletApiRequest());
-        if (servletApiRequest == null)
-            throw new IllegalStateException("Request is not a valid ServletContextRequest");
-
-        Request.Processor processor = getHandler().handle(request);
-        if (processor == null)
-            return null;
+        Handler next = getHandler();
+        if (next == null)
+            return false;
 
         addSessionStreamWrapper(request);
 
-        // TODO rather than wrapping the processor yet again here, we could just inject the
-        //      SessionManager to the servletContextRequest, which already has the ability to
-        //      extend the processor as the ContextRequest is-a Request.WrapperProcessor
-        return (req, res, callback) ->
+        // find and set the session if one exists
+        RequestedSession requestedSession = resolveRequestedSessionId(request);
+
+        ServletContextRequest servletContextRequest = Request.as(request, ServletContextRequest.class);
+        if (servletContextRequest == null)
+            request = new NonServletSessionRequest(request, response, requestedSession);
+        else
+            servletContextRequest.setRequestedSession(requestedSession);
+
+        // Handle changed ID or max-age refresh, but only if this is not a redispatched request
+        HttpCookie cookie = access(requestedSession.session(), request.getConnectionMetaData().isSecure());
+        if (cookie != null)
+            Response.putCookie(response, cookie);
+
+        return next.handle(request, response, callback);
+    }
+
+    private class NonServletSessionRequest extends Request.Wrapper
+    {
+        private final Response _response;
+        private RequestedSession _session;
+
+        public NonServletSessionRequest(Request request, Response response, RequestedSession requestedSession)
         {
-            // find and set the session if one exists
-            RequestedSession requestedSession = resolveRequestedSessionId(req);
+            super(request);
+            _response = response;
+            _session = requestedSession;
+        }
 
-            servletApiRequest.setCoreSession(requestedSession.session());
-            servletApiRequest.setSessionManager(this);
-            servletApiRequest.setRequestedSessionId(requestedSession.sessionId());
-            servletApiRequest.setRequestedSessionIdFromCookie(requestedSession.sessionIdFromCookie());
+        @Override
+        public Session getSession(boolean create)
+        {
+            ManagedSession session = _session.session();
 
-            HttpCookie cookie = access(requestedSession.session(), req.getConnectionMetaData().isSecure());
+            if (session != null || !create)
+                return session;
 
-            // Handle changed ID or max-age refresh, but only if this is not a redispatched request
+            newSession(getWrapped(), _session.sessionId(), ms ->
+                _session = new RequestedSession(ms, _session.sessionId(), true));
+
+            session = _session.session();
+            if (session == null)
+                throw new IllegalStateException("Create session failed");
+
+            HttpCookie cookie = getSessionCookie(session, isSecure());
             if (cookie != null)
-            {
-                ServletContextResponse servletContextResponse = servletContextRequest.getResponse();
-                Response.replaceCookie(servletContextResponse, cookie);
-            }
+                Response.replaceCookie(_response, cookie);
+            return session;
+        }
 
-            processor.process(req, res, callback);
-        };
+        ManagedSession getManagedSession()
+        {
+            return _session.session();
+        }
     }
 }

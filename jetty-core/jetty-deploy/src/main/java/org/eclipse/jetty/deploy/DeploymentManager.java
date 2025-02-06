@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,6 +13,7 @@
 
 package org.eclipse.jetty.deploy;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -30,11 +31,11 @@ import org.eclipse.jetty.deploy.bindings.StandardStopper;
 import org.eclipse.jetty.deploy.bindings.StandardUndeployer;
 import org.eclipse.jetty.deploy.graph.Edge;
 import org.eclipse.jetty.deploy.graph.Node;
-import org.eclipse.jetty.deploy.graph.Path;
-import org.eclipse.jetty.ee.Deployable;
+import org.eclipse.jetty.deploy.graph.Route;
+import org.eclipse.jetty.server.Deployable;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.handler.ContextHandlerCollection;
-import org.eclipse.jetty.util.MultiException;
+import org.eclipse.jetty.util.ExceptionUtil;
 import org.eclipse.jetty.util.annotation.ManagedAttribute;
 import org.eclipse.jetty.util.annotation.ManagedObject;
 import org.eclipse.jetty.util.annotation.ManagedOperation;
@@ -119,8 +120,8 @@ public class DeploymentManager extends ContainerLifeCycle
     }
 
     private final AutoLock _lock = new AutoLock();
-    private MultiException _onStartupErrors;
-    private final List<AppProvider> _providers = new ArrayList<AppProvider>();
+    private Throwable _onStartupErrors;
+    private final List<AppProvider> _providers = new ArrayList<>();
     private final AppLifeCycle _lifecycle = new AppLifeCycle();
     private final Queue<AppEntry> _apps = new ConcurrentLinkedQueue<AppEntry>();
     private ContextHandlerCollection _contexts;
@@ -128,18 +129,15 @@ public class DeploymentManager extends ContainerLifeCycle
     private String _defaultLifeCycleGoal = AppLifeCycle.STARTED;
 
     /**
-     * Get the default {@link Environment} name for deployed applications.
-     * @return The name of environment known to the {@link AppProvider}s returned from
-     * {@link #getAppProviders()} that matches {@link Deployable#EE_ENVIRONMENT_NAME}.
-     * If multiple names match, then the maximal name, according to {@link Deployable#EE_ENVIRONMENT_COMPARATOR}
-     * is returned.
+     * Get the default {@link Environment} name for deployed applications, which is
+     * the maximal name when using the {@link Deployable#ENVIRONMENT_COMPARATOR}.
+     * @return The default {@link Environment} name or null.
      */
     public String getDefaultEnvironmentName()
     {
         return _providers.stream()
             .map(AppProvider::getEnvironmentName)
-            .filter(Deployable.EE_ENVIRONMENT_NAME)
-            .max(Deployable.EE_ENVIRONMENT_COMPARATOR)
+            .max(Deployable.ENVIRONMENT_COMPARATOR)
             .orElse(null);
     }
 
@@ -184,6 +182,12 @@ public class DeploymentManager extends ContainerLifeCycle
             if (_providers.add(provider))
                 addBean(provider, true);
         }
+    }
+
+    public boolean hasAppProviderFor(String environmentName)
+    {
+        return environmentName != null && getAppProviders().stream()
+            .map(AppProvider::getEnvironmentName).anyMatch(environmentName::equalsIgnoreCase);
     }
 
     public Collection<AppProvider> getAppProviders()
@@ -261,8 +265,7 @@ public class DeploymentManager extends ContainerLifeCycle
 
         try (AutoLock l = _lock.lock())
         {
-            if (_onStartupErrors != null)
-                _onStartupErrors.ifExceptionThrow();
+            ExceptionUtil.ifExceptionThrow(_onStartupErrors);
         }
 
         super.doStart();
@@ -286,16 +289,28 @@ public class DeploymentManager extends ContainerLifeCycle
         super.doStop();
     }
 
-    private AppEntry findAppByOriginId(String originId)
+    private AppEntry findApp(String appId)
     {
-        if (originId == null)
-        {
+        if (appId == null)
             return null;
-        }
 
         for (AppEntry entry : _apps)
         {
-            if (originId.equals(entry.app.getFilename()))
+            Path path = entry.app.getPath();
+            if (appId.equals(path.getName(path.getNameCount() - 1).toString()))
+                return entry;
+        }
+        return null;
+    }
+
+    private AppEntry findApp(Path path)
+    {
+        if (path == null)
+            return null;
+
+        for (AppEntry entry : _apps)
+        {
+            if (path.equals(entry.app.getPath()))
             {
                 return entry;
             }
@@ -303,13 +318,17 @@ public class DeploymentManager extends ContainerLifeCycle
         return null;
     }
 
-    public App getAppByOriginId(String originId)
+    public App getApp(String appId)
     {
-        AppEntry entry = findAppByOriginId(originId);
+        AppEntry entry = findApp(appId);
+        return entry == null ? null : entry.getApp();
+    }
+
+    public App getApp(Path path)
+    {
+        AppEntry entry = findApp(path);
         if (entry == null)
-        {
             return null;
-        }
         return entry.app;
     }
 
@@ -456,7 +475,7 @@ public class DeploymentManager extends ContainerLifeCycle
      */
     public void requestAppGoal(App app, String nodeName)
     {
-        AppEntry appentry = findAppByOriginId(app.getFilename());
+        AppEntry appentry = findApp(app.getPath());
         if (appentry == null)
         {
             throw new IllegalStateException("App not being tracked by Deployment Manager: " + app);
@@ -480,7 +499,7 @@ public class DeploymentManager extends ContainerLifeCycle
             throw new IllegalStateException("Node not present in Deployment Manager: " + nodeName);
         }
         // Compute lifecycle steps
-        Path path = _lifecycle.getPath(appentry.lifecyleNode, destinationNode);
+        Route path = _lifecycle.getPath(appentry.lifecyleNode, destinationNode);
         if (path.isEmpty())
         {
             // nothing to do. already there.
@@ -533,10 +552,7 @@ public class DeploymentManager extends ContainerLifeCycle
     {
         try (AutoLock l = _lock.lock())
         {
-            if (_onStartupErrors == null)
-                _onStartupErrors = new MultiException();
-            
-            _onStartupErrors.add(cause);
+            _onStartupErrors = ExceptionUtil.combine(_onStartupErrors, cause);
         }
     }
 
@@ -550,7 +566,7 @@ public class DeploymentManager extends ContainerLifeCycle
     @ManagedOperation(value = "request the app to be moved to the specified lifecycle node", impact = "ACTION")
     public void requestAppGoal(@Name("appId") String appId, @Name("nodeName") String nodeName)
     {
-        AppEntry appentry = findAppByOriginId(appId);
+        AppEntry appentry = findApp(appId);
         if (appentry == null)
         {
             throw new IllegalStateException("App not being tracked by Deployment Manager: " + appId);

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -22,6 +22,7 @@ import java.util.function.Function;
 
 import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.http.HttpTester;
+import org.eclipse.jetty.logging.StacklessLogging;
 import org.eclipse.jetty.toolchain.test.MavenTestingUtils;
 import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.ssl.SslContextFactory;
@@ -218,7 +219,8 @@ public class OptionalSslConnectionTest
         server.setHandler(new EmptyServerHandler());
         server.start();
 
-        try (Socket socket = new Socket(server.getURI().getHost(), server.getURI().getPort()))
+        try (Socket socket = new Socket(server.getURI().getHost(), server.getURI().getPort());
+             StacklessLogging ignored = new StacklessLogging(DetectorConnectionFactory.class))
         {
             OutputStream sslOutput = socket.getOutputStream();
             String request =
@@ -237,12 +239,13 @@ public class OptionalSslConnectionTest
         }
     }
 
-    private static class EmptyServerHandler extends Handler.Processor
+    private static class EmptyServerHandler extends Handler.Abstract
     {
         @Override
-        public void process(Request request, Response response, Callback callback) throws Exception
+        public boolean handle(Request request, Response response, Callback callback) throws Exception
         {
             callback.succeeded();
+            return true;
         }
     }
 }

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -16,7 +16,6 @@ package org.eclipse.jetty.ee10.proxy;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
-import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 
 import jakarta.servlet.AsyncContext;
@@ -24,12 +23,13 @@ import jakarta.servlet.ServletConfig;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import org.eclipse.jetty.client.api.Request;
-import org.eclipse.jetty.client.api.Response;
-import org.eclipse.jetty.client.api.Result;
-import org.eclipse.jetty.client.util.AsyncRequestContent;
-import org.eclipse.jetty.client.util.InputStreamRequestContent;
+import org.eclipse.jetty.client.AsyncRequestContent;
+import org.eclipse.jetty.client.InputStreamRequestContent;
+import org.eclipse.jetty.client.Request;
+import org.eclipse.jetty.client.Response;
+import org.eclipse.jetty.client.Result;
 import org.eclipse.jetty.io.Content;
+import org.eclipse.jetty.server.handler.ConnectHandler;
 import org.eclipse.jetty.util.Callback;
 
 /**
@@ -143,12 +143,11 @@ public class ProxyServlet extends AbstractProxyServlet
     }
 
     @Override
-    protected void onContinue(HttpServletRequest clientRequest, Request proxyRequest)
+    protected Runnable onContinue(HttpServletRequest clientRequest, Request proxyRequest)
     {
-        super.onContinue(clientRequest, proxyRequest);
-        Runnable action = (Runnable)proxyRequest.getAttributes().get(CONTINUE_ACTION_ATTRIBUTE);
-        Executor executor = getHttpClient().getExecutor();
-        executor.execute(action);
+        if (_log.isDebugEnabled())
+            _log.debug("{} handling 100 Continue", getRequestId(clientRequest));
+        return (Runnable)proxyRequest.getAttributes().get(CONTINUE_ACTION_ATTRIBUTE);
     }
 
     /**
@@ -174,7 +173,7 @@ public class ProxyServlet extends AbstractProxyServlet
         }
     }
 
-    protected class ProxyResponseListener extends Response.Listener.Adapter
+    protected class ProxyResponseListener implements Response.Listener
     {
         private final HttpServletRequest request;
         private final HttpServletResponse response;
@@ -198,8 +197,9 @@ public class ProxyServlet extends AbstractProxyServlet
         }
 
         @Override
-        public void onContent(Response proxyResponse, ByteBuffer content, Callback callback)
+        public void onContent(Response proxyResponse, Content.Chunk chunk, Runnable demander)
         {
+            ByteBuffer content = chunk.getByteBuffer();
             byte[] buffer;
             int offset;
             int length = content.remaining();
@@ -214,16 +214,9 @@ public class ProxyServlet extends AbstractProxyServlet
                 content.get(buffer);
                 offset = 0;
             }
-
-            onResponseContent(request, response, proxyResponse, buffer, offset, length, new Callback.Nested(callback)
-            {
-                @Override
-                public void failed(Throwable x)
-                {
-                    super.failed(x);
-                    proxyResponse.abort(x);
-                }
-            });
+            chunk.retain();
+            Callback callback = Callback.from(chunk::release, Callback.from(demander, proxyResponse::abort));
+            onResponseContent(request, response, proxyResponse, buffer, offset, length, callback);
         }
 
         @Override
@@ -262,9 +255,11 @@ public class ProxyServlet extends AbstractProxyServlet
         public Content.Chunk read()
         {
             Content.Chunk chunk = super.read();
-            if (chunk instanceof Content.Chunk.Error error)
+            if (Content.Chunk.isFailure(chunk))
             {
-                onClientRequestFailure(request, proxyRequest, response, error.getCause());
+                if (!chunk.isLast())
+                    fail(chunk.getFailure());
+                onClientRequestFailure(request, proxyRequest, response, chunk.getFailure());
             }
             else
             {

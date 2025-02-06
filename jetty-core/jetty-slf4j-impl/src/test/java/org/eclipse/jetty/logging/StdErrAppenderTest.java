@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -20,6 +20,27 @@ import org.slf4j.event.Level;
 
 public class StdErrAppenderTest
 {
+    @Test
+    public void testCircularThrowable()
+    {
+        JettyLoggerConfiguration config = new JettyLoggerConfiguration();
+        JettyLoggerFactory factory = new JettyLoggerFactory(config);
+        CapturedStream output = new CapturedStream();
+        StdErrAppender appender = (StdErrAppender)factory.getRootLogger().getAppender();
+        appender.setStream(output);
+        JettyLogger logger = factory.getJettyLogger("org.eclipse.jetty.logging.LogTest");
+
+        // Build an exception with circular refs.
+        IllegalArgumentException commonCause = new IllegalArgumentException();
+        Throwable thrown = new Throwable(commonCause);
+        RuntimeException suppressed = new RuntimeException(thrown);
+        thrown.addSuppressed(suppressed);
+
+        appender.emit(logger, Level.INFO, System.currentTimeMillis(), "tname", thrown, "the message");
+
+        output.assertContains("CIRCULAR REFERENCE");
+    }
+
     @Test
     public void testStdErrLogFormat()
     {

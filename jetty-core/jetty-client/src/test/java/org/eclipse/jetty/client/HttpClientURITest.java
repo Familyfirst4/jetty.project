@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -28,19 +28,17 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
-import org.eclipse.jetty.client.api.ContentResponse;
-import org.eclipse.jetty.client.api.Request;
 import org.eclipse.jetty.http.HttpField;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpMethod;
 import org.eclipse.jetty.http.HttpStatus;
+import org.eclipse.jetty.http.HttpURI;
 import org.eclipse.jetty.http.UriCompliance;
 import org.eclipse.jetty.server.HttpConfiguration;
 import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.toolchain.test.Net;
 import org.eclipse.jetty.util.Fields;
 import org.eclipse.jetty.util.StringUtil;
-import org.eclipse.jetty.util.URIUtil;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ArgumentsSource;
@@ -70,9 +68,8 @@ public class HttpClientURITest extends AbstractHttpClientServerTest
             .timeout(5, TimeUnit.SECONDS);
 
         assertEquals(host, request.getHost());
-        StringBuilder uri = new StringBuilder();
-        URIUtil.appendSchemeHostPort(uri, scenario.getScheme(), host, connector.getLocalPort());
-        assertEquals(uri.toString(), request.getURI().toString());
+        HttpURI httpURI = HttpURI.from(scenario.getScheme(), host, connector.getLocalPort(), null);
+        assertEquals(httpURI.asString(), request.getURI().toString());
 
         assertEquals(HttpStatus.OK_200, request.send().getStatus());
     }
@@ -203,7 +200,7 @@ public class HttpClientURITest extends AbstractHttpClientServerTest
             @Override
             protected void service(org.eclipse.jetty.server.Request request, Response response)
             {
-                assertEquals(path, request.getPathInContext());
+                assertEquals(path, org.eclipse.jetty.server.Request.getPathInContext(request));
             }
         });
 
@@ -236,7 +233,7 @@ public class HttpClientURITest extends AbstractHttpClientServerTest
             @Override
             protected void service(org.eclipse.jetty.server.Request request, Response response)
             {
-                assertEquals(path, request.getPathInContext());
+                assertEquals(path, org.eclipse.jetty.server.Request.getPathInContext(request));
                 assertEquals(query, request.getHttpURI().getQuery());
             }
         });
@@ -273,7 +270,7 @@ public class HttpClientURITest extends AbstractHttpClientServerTest
             @Override
             protected void service(org.eclipse.jetty.server.Request request, Response response)
             {
-                assertEquals(path, request.getPathInContext());
+                assertEquals(path, org.eclipse.jetty.server.Request.getPathInContext(request));
                 assertEquals(query, request.getHttpURI().getQuery());
             }
         });
@@ -312,7 +309,7 @@ public class HttpClientURITest extends AbstractHttpClientServerTest
             @Override
             protected void service(org.eclipse.jetty.server.Request request, Response response)
             {
-                assertEquals(path, request.getPathInContext());
+                assertEquals(path, org.eclipse.jetty.server.Request.getPathInContext(request));
                 assertEquals(query, request.getHttpURI().getQuery());
             }
         });
@@ -354,7 +351,7 @@ public class HttpClientURITest extends AbstractHttpClientServerTest
             @Override
             protected void service(org.eclipse.jetty.server.Request request, Response response)
             {
-                assertEquals(path, request.getPathInContext());
+                assertEquals(path, org.eclipse.jetty.server.Request.getPathInContext(request));
                 assertEquals(query, request.getHttpURI().getQuery());
                 Fields fields = org.eclipse.jetty.server.Request.extractQueryParameters(request);
                 assertEquals(value1, fields.getValue(name1));
@@ -393,7 +390,7 @@ public class HttpClientURITest extends AbstractHttpClientServerTest
             @Override
             protected void service(org.eclipse.jetty.server.Request request, Response response)
             {
-                assertEquals(path, request.getPathInContext());
+                assertEquals(path, org.eclipse.jetty.server.Request.getPathInContext(request));
                 assertEquals(query, request.getHttpURI().getQuery());
             }
         });
@@ -426,7 +423,7 @@ public class HttpClientURITest extends AbstractHttpClientServerTest
             @Override
             protected void service(org.eclipse.jetty.server.Request request, Response response)
             {
-                assertEquals(path, request.getPathInContext());
+                assertEquals(path, org.eclipse.jetty.server.Request.getPathInContext(request));
                 assertEquals(query, request.getHttpURI().getQuery());
             }
         });
@@ -607,7 +604,7 @@ public class HttpClientURITest extends AbstractHttpClientServerTest
             protected void service(org.eclipse.jetty.server.Request request, Response response)
             {
                 assertEquals("*", request.getHttpURI().getPath());
-                assertEquals("*", request.getPathInContext());
+                assertEquals("*", org.eclipse.jetty.server.Request.getPathInContext(request));
             }
         });
 

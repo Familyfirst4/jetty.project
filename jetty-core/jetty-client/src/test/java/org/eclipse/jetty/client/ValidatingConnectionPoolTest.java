@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,12 +13,11 @@
 
 package org.eclipse.jetty.client;
 
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-import org.eclipse.jetty.client.api.ContentResponse;
-import org.eclipse.jetty.client.api.Request;
-import org.eclipse.jetty.client.util.FutureResponseListener;
+import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpHeaderValue;
 import org.eclipse.jetty.http.HttpStatus;
@@ -37,7 +36,7 @@ public class ValidatingConnectionPoolTest extends AbstractHttpClientServerTest
     {
         long timeout = 1000;
         transport.setConnectionPoolFactory(destination ->
-            new ValidatingConnectionPool(destination, destination.getHttpClient().getMaxConnectionsPerDestination(), destination, destination.getHttpClient().getScheduler(), timeout));
+            new ValidatingConnectionPool(destination, destination.getHttpClient().getMaxConnectionsPerDestination(), destination.getHttpClient().getScheduler(), timeout));
 
         return super.newHttpClient(transport);
     }
@@ -73,10 +72,10 @@ public class ValidatingConnectionPoolTest extends AbstractHttpClientServerTest
             @Override
             protected void service(org.eclipse.jetty.server.Request request, Response response) throws Throwable
             {
-                if (request.getPathInContext().endsWith("/redirect"))
+                if (org.eclipse.jetty.server.Request.getPathInContext(request).endsWith("/redirect"))
                 {
                     response.setStatus(HttpStatus.TEMPORARY_REDIRECT_307);
-                    response.getHeaders().putLongField(HttpHeader.CONTENT_LENGTH, 0);
+                    response.getHeaders().put(HttpFields.CONTENT_LENGTH_0);
                     response.getHeaders().put(HttpHeader.LOCATION, scenario.getScheme() + "://localhost:" + connector.getLocalPort() + "/");
                     Content.Sink.write(response, false, null);
                     request.getConnectionMetaData().getConnection().getEndPoint().shutdownOutput();
@@ -84,7 +83,7 @@ public class ValidatingConnectionPoolTest extends AbstractHttpClientServerTest
                 else
                 {
                     response.setStatus(HttpStatus.OK_200);
-                    response.getHeaders().putLongField(HttpHeader.CONTENT_LENGTH, 0);
+                    response.getHeaders().put(HttpFields.CONTENT_LENGTH_0);
                     response.getHeaders().put(HttpHeader.CONNECTION, HttpHeaderValue.CLOSE.asString());
                 }
             }
@@ -108,7 +107,7 @@ public class ValidatingConnectionPoolTest extends AbstractHttpClientServerTest
             protected void service(org.eclipse.jetty.server.Request request, Response response)
             {
                 response.setStatus(HttpStatus.OK_200);
-                response.getHeaders().putLongField(HttpHeader.CONTENT_LENGTH, 0);
+                response.getHeaders().put(HttpFields.CONTENT_LENGTH_0);
                 response.getHeaders().put(HttpHeader.CONNECTION, HttpHeaderValue.CLOSE.asString());
             }
         });
@@ -124,7 +123,7 @@ public class ValidatingConnectionPoolTest extends AbstractHttpClientServerTest
             protected void service(org.eclipse.jetty.server.Request request, Response response) throws Throwable
             {
                 response.setStatus(HttpStatus.OK_200);
-                response.getHeaders().putLongField(HttpHeader.CONTENT_LENGTH, 0);
+                response.getHeaders().put(HttpFields.CONTENT_LENGTH_0);
                 Content.Sink.write(response, false, null);
                 request.getConnectionMetaData().getConnection().getEndPoint().shutdownOutput();
             }
@@ -151,23 +150,21 @@ public class ValidatingConnectionPoolTest extends AbstractHttpClientServerTest
                     r.abort(x);
                 }
             });
-        FutureResponseListener listener1 = new FutureResponseListener(request1);
-        request1.send(listener1);
+        CompletableFuture<ContentResponse> completable1 = new CompletableResponseListener(request1).send();
 
         Request request2 = client.newRequest("localhost", connector.getLocalPort())
             .scheme(scenario.getScheme())
             .path("/two");
-        FutureResponseListener listener2 = new FutureResponseListener(request2);
-        request2.send(listener2);
+        CompletableFuture<ContentResponse> completable2 = new CompletableResponseListener(request2).send();
 
         // Now we have one request about to be sent, and one queued.
 
         latch.countDown();
 
-        ContentResponse response1 = listener1.get(5, TimeUnit.SECONDS);
+        ContentResponse response1 = completable1.get(5, TimeUnit.SECONDS);
         assertEquals(200, response1.getStatus());
 
-        ContentResponse response2 = listener2.get(5, TimeUnit.SECONDS);
+        ContentResponse response2 = completable2.get(5, TimeUnit.SECONDS);
         assertEquals(200, response2.getStatus());
     }
 }

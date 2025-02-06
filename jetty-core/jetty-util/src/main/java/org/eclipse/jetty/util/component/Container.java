@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -130,15 +130,14 @@ public interface Container
 
     /**
      * @param clazz the class of the beans
-     * @param <T> the Bean type
-     * @return the list of beans of the given class from the entire Container hierarchy.
-     *         The order is by depth first and then the order beans were added.
+     * @param <T> the bean type
+     * @return the collection of beans of the given class from the {@code Container} hierarchy
      */
     <T> Collection<T> getContainedBeans(Class<T> clazz);
 
     /**
      * Get the beans added to the container that are EventListeners.
-     * This is essentially equivalent to <code>getBeans(EventListener.class);</code>,
+     * This is essentially equivalent to {@code getBeans(EventListener.class)},
      * except that: <ul>
      *     <li>The result may be precomputed, so it can be more efficient</li>
      *     <li>The result is ordered by the order added.</li>
@@ -177,6 +176,17 @@ public interface Container
         if (parent instanceof Container)
             return ((Container)parent).addBean(child, managed);
         return false;
+    }
+
+    /**
+     * A utility method to unmanage a bean from a container.
+     * @param parent the parent container
+     * @param child the child bean
+     */
+    static void unmanage(Object parent, Object child)
+    {
+        if (parent instanceof Container container)
+            container.unmanage(child);
     }
 
     /**

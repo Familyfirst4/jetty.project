@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -60,7 +60,7 @@ public class ConfigSources implements Iterable<ConfigSource>
         // look for --include-jetty-dir entries
         for (RawArgs.Entry arg : source.getArgs())
         {
-            if (arg.startsWith("--include-jetty-dir"))
+            if (arg.startsWith("--include-jetty-dir") || arg.startsWith("--add-config-dir"))
             {
                 String ref = getValue(arg.getLine());
                 String dirName = getProps().expand(ref);

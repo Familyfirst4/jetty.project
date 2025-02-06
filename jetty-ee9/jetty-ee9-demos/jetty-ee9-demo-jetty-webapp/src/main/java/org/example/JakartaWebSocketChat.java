@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -26,7 +26,7 @@ import jakarta.websocket.RemoteEndpoint;
 import jakarta.websocket.Session;
 import jakarta.websocket.server.ServerEndpoint;
 
-@ServerEndpoint(value = "/jakarta.websocket/", subprotocols = {"chat"})
+@ServerEndpoint(value = "/javax.websocket/", subprotocols = {"chat"})
 public class JakartaWebSocketChat
 {
     private static final List<JakartaWebSocketChat> members = new CopyOnWriteArrayList<>();

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -719,7 +719,7 @@ public class GCloudSessionDataStore extends AbstractSessionDataStore
      * @param timeLimit time since the epoch
      * 
      * @return set of ExpiryInfo representing the id,lastNode and expiry time
-     * @throws Exception
+     * @throws Exception if there is an unspecified problem
      */
     protected Set<ExpiryInfo> queryExpiryByEntity(long timeLimit) throws Exception
     {
@@ -773,7 +773,7 @@ public class GCloudSessionDataStore extends AbstractSessionDataStore
      * 
      * @param timeLimit the upper limit of expiry time to check
      * @return  id,lastnode and expiry time of sessions that have expired
-     * @throws Exception
+     * @throws Exception if there is an unspecified problem
      */
     protected Set<ExpiryInfo>  queryExpiryByIndex(long timeLimit) throws Exception
     {

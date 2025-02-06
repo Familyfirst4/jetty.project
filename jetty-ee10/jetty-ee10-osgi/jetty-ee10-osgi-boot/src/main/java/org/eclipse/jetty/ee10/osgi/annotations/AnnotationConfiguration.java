@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,19 +13,19 @@
 
 package org.eclipse.jetty.ee10.osgi.annotations;
 
-import java.io.IOException;
-import java.net.MalformedURLException;
 import java.util.HashSet;
 import java.util.Set;
 
 import jakarta.servlet.ServletContainerInitializer;
 import org.eclipse.jetty.ee10.annotations.AnnotationParser.Handler;
 import org.eclipse.jetty.ee10.osgi.boot.OSGiMetaInfConfiguration;
-import org.eclipse.jetty.ee10.osgi.boot.OSGiWebappConstants;
 import org.eclipse.jetty.ee10.webapp.Configuration;
 import org.eclipse.jetty.ee10.webapp.WebAppContext;
+import org.eclipse.jetty.osgi.OSGiWebappConstants;
+import org.eclipse.jetty.util.FileID;
 import org.eclipse.jetty.util.StringUtil;
 import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
 import org.eclipse.jetty.util.statistic.CounterStatistic;
 import org.osgi.framework.Bundle;
 import org.osgi.framework.Constants;
@@ -80,18 +80,18 @@ public class AnnotationConfiguration extends org.eclipse.jetty.ee10.annotations.
      * This parser scans the bundles using the OSGi APIs instead of assuming a jar.
      */
     @Override
-    protected org.eclipse.jetty.ee10.annotations.AnnotationParser createAnnotationParser(int javaTargetVersion)
+    protected org.eclipse.jetty.ee10.annotations.AnnotationParser createAnnotationParser(int platform)
     {
-        return new AnnotationParser(javaTargetVersion);
+        return new AnnotationParser(platform);
     }
 
     @Override
-    public Resource getJarFor(ServletContainerInitializer service) throws MalformedURLException, IOException
+    protected Resource getJarFor(WebAppContext context, ServletContainerInitializer service)
     {
-        Resource resource = super.getJarFor(service);
+        Resource resource = super.getJarFor(context, service);
         // TODO This is not correct, but implemented like this to be bug for bug compatible
         // with previous implementation that could only handle actual jars and not bundles.
-        if (resource != null && !resource.toString().endsWith(".jar"))
+        if (resource != null && !FileID.isJavaArchive(resource.getURI()))
             return null;
         return resource;
     }
@@ -107,14 +107,15 @@ public class AnnotationConfiguration extends org.eclipse.jetty.ee10.annotations.
      * </ol>
      */
     @Override
-    public void parseWebInfLib(WebAppContext context, org.eclipse.jetty.ee10.annotations.AnnotationParser parser)
+    public void parseWebInfLib(State state, org.eclipse.jetty.ee10.annotations.AnnotationParser parser)
         throws Exception
     {
         AnnotationParser oparser = (AnnotationParser)parser;
 
-        if (_webInfLibStats == null)
-            _webInfLibStats = new CounterStatistic();
+        if (state._webInfLibStats == null)
+            state._webInfLibStats = new CounterStatistic();
 
+        WebAppContext context = state._context;
         Bundle webbundle = (Bundle)context.getAttribute(OSGiWebappConstants.JETTY_OSGI_BUNDLE);
         @SuppressWarnings("unchecked")
         Set<Bundle> fragAndRequiredBundles = (Set<Bundle>)context.getAttribute(OSGiMetaInfConfiguration.FRAGMENT_AND_REQUIRED_BUNDLES);
@@ -127,7 +128,7 @@ public class AnnotationConfiguration extends org.eclipse.jetty.ee10.annotations.
                 if (bundle.getState() == Bundle.UNINSTALLED)
                     continue;
 
-                Resource bundleRes = oparser.indexBundle(bundle);
+                Resource bundleRes = oparser.indexBundle(ResourceFactory.of(context), bundle);
                 if (!context.getMetaData().getWebInfResources(false).contains(bundleRes))
                 {
                     context.getMetaData().addWebInfResource(bundleRes);
@@ -136,18 +137,18 @@ public class AnnotationConfiguration extends org.eclipse.jetty.ee10.annotations.
                 if (bundle.getHeaders().get(Constants.FRAGMENT_HOST) != null)
                 {
                     //a fragment indeed:
-                    parseFragmentBundle(context, oparser, webbundle, bundle);
-                    _webInfLibStats.increment();
+                    parseFragmentBundle(state, oparser, webbundle, bundle);
+                    state._webInfLibStats.increment();
                 }
             }
         }
         //scan ourselves
-        oparser.indexBundle(webbundle);
-        parseWebBundle(context, oparser, webbundle);
-        _webInfLibStats.increment();
+        oparser.indexBundle(ResourceFactory.of(context), webbundle);
+        parseWebBundle(state, oparser, webbundle);
+        state._webInfLibStats.increment();
 
         //scan the WEB-INF/lib
-        super.parseWebInfLib(context, parser);
+        super.parseWebInfLib(state, parser);
         if (fragAndRequiredBundles != null)
         {
             //scan the required bundles
@@ -160,8 +161,8 @@ public class AnnotationConfiguration extends org.eclipse.jetty.ee10.annotations.
                 if (requiredBundle.getHeaders().get(Constants.FRAGMENT_HOST) == null)
                 {
                     //a bundle indeed:
-                    parseRequiredBundle(context, oparser, webbundle, requiredBundle);
-                    _webInfLibStats.increment();
+                    parseRequiredBundle(state, oparser, webbundle, requiredBundle);
+                    state._webInfLibStats.increment();
                 }
             }
         }
@@ -170,73 +171,71 @@ public class AnnotationConfiguration extends org.eclipse.jetty.ee10.annotations.
     /**
      * Scan a fragment bundle for servlet annotations
      *
-     * @param context The webapp context
+     * @param state The webapp context state
      * @param parser The parser
      * @param webbundle The current webbundle
      * @param fragmentBundle The OSGi fragment bundle to scan
      * @throws Exception if unable to parse fragment bundle
      */
-    protected void parseFragmentBundle(WebAppContext context, AnnotationParser parser,
+    protected void parseFragmentBundle(State state, AnnotationParser parser,
                                        Bundle webbundle, Bundle fragmentBundle) throws Exception
     {
-        parseBundle(context, parser, webbundle, fragmentBundle);
+        parseBundle(state, parser, webbundle, fragmentBundle);
     }
 
     /**
      * Scan a bundle required by the webbundle for servlet annotations
      *
-     * @param context The webapp context
+     * @param state The webapp context state
      * @param parser The parser
      * @param webbundle The current webbundle
      * @throws Exception if unable to parse the web bundle
      */
-    protected void parseWebBundle(WebAppContext context, AnnotationParser parser, Bundle webbundle)
+    protected void parseWebBundle(State state, AnnotationParser parser, Bundle webbundle)
         throws Exception
     {
-        parseBundle(context, parser, webbundle, webbundle);
+        parseBundle(state, parser, webbundle, webbundle);
     }
 
     @Override
-    public void parseWebInfClasses(WebAppContext context, org.eclipse.jetty.ee10.annotations.AnnotationParser parser)
-        throws Exception
+    public void parseWebInfClasses(State state, org.eclipse.jetty.ee10.annotations.AnnotationParser parser)
     {
+        WebAppContext context = state._context;
         Bundle webbundle = (Bundle)context.getAttribute(OSGiWebappConstants.JETTY_OSGI_BUNDLE);
-        String bundleClasspath = (String)webbundle.getHeaders().get(Constants.BUNDLE_CLASSPATH);
+        String bundleClasspath = webbundle.getHeaders().get(Constants.BUNDLE_CLASSPATH);
         //only scan WEB-INF/classes if we didn't already scan it with parseWebBundle
         if (StringUtil.isBlank(bundleClasspath) || !bundleClasspath.contains("WEB-INF/classes"))
-            super.parseWebInfClasses(context, parser);
+            super.parseWebInfClasses(state, parser);
     }
 
     /**
      * Scan a bundle required by the webbundle for servlet annotations
      *
-     * @param context The webapp context
+     * @param state The webapp annotation parse state
      * @param parser The parser
      * @param webbundle The current webbundle
      * @param requiredBundle The OSGi required bundle to scan
      * @throws Exception if unable to parse the required bundle
      */
-    protected void parseRequiredBundle(WebAppContext context, AnnotationParser parser,
+    protected void parseRequiredBundle(State state, AnnotationParser parser,
                                        Bundle webbundle, Bundle requiredBundle) throws Exception
     {
-        parseBundle(context, parser, webbundle, requiredBundle);
+        parseBundle(state, parser, webbundle, requiredBundle);
     }
 
-    protected void parseBundle(WebAppContext context, AnnotationParser parser,
-                               Bundle webbundle, Bundle bundle) throws Exception
+    protected void parseBundle(State state, AnnotationParser parser, Bundle webbundle, Bundle bundle)
     {
 
         Resource bundleRes = parser.getResource(bundle);
-        Set<Handler> handlers = new HashSet<>();
-        handlers.addAll(_discoverableAnnotationHandlers);
-        if (_classInheritanceHandler != null)
-            handlers.add(_classInheritanceHandler);
-        handlers.addAll(_containerInitializerAnnotationHandlers);
+        Set<Handler> handlers = new HashSet<>(state._discoverableAnnotationHandlers);
+        if (state._classInheritanceHandler != null)
+            handlers.add(state._classInheritanceHandler);
+        handlers.addAll(state._containerInitializerAnnotationHandlers);
 
-        if (_parserTasks != null)
+        if (state._parserTasks != null)
         {
             BundleParserTask task = new BundleParserTask(parser, handlers, bundleRes);
-            _parserTasks.add(task);
+            state._parserTasks.add(task);
             if (LOG.isDebugEnabled())
                 task.setStatistic(new TimeStatistic());
         }

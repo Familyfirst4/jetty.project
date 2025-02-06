@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -30,9 +30,20 @@ import java.io.Writer;
 import java.nio.ByteBuffer;
 import java.nio.channels.GatheringByteChannel;
 import java.nio.charset.Charset;
+import java.nio.file.CopyOption;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
+import java.nio.file.OpenOption;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileAttribute;
+import java.util.Iterator;
+import java.util.Objects;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
+import java.util.stream.Stream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -53,57 +64,6 @@ public class IO
         CRLF_BYTES = {(byte)'\r', (byte)'\n'};
 
     public static final int bufferSize = 64 * 1024;
-
-    static class Job implements Runnable
-    {
-        InputStream in;
-        OutputStream out;
-        Reader read;
-        Writer write;
-
-        Job(InputStream in, OutputStream out)
-        {
-            this.in = in;
-            this.out = out;
-            this.read = null;
-            this.write = null;
-        }
-
-        Job(Reader read, Writer write)
-        {
-            this.in = null;
-            this.out = null;
-            this.read = read;
-            this.write = write;
-        }
-
-        @Override
-        public void run()
-        {
-            try
-            {
-                if (in != null)
-                    copy(in, out, -1);
-                else
-                    copy(read, write, -1);
-            }
-            catch (IOException e)
-            {
-                LOG.trace("IGNORED", e);
-                try
-                {
-                    if (out != null)
-                        out.close();
-                    if (write != null)
-                        write.close();
-                }
-                catch (IOException e2)
-                {
-                    LOG.trace("IGNORED", e2);
-                }
-            }
-        }
-    }
 
     /**
      * Copy Stream in to Stream out until EOF or exception.
@@ -145,7 +105,7 @@ public class IO
         throws IOException
     {
         byte[] buffer = new byte[bufferSize];
-        int len = bufferSize;
+        int len;
 
         if (byteCount >= 0)
         {
@@ -187,7 +147,7 @@ public class IO
         throws IOException
     {
         char[] buffer = new char[bufferSize];
-        int len = bufferSize;
+        int len;
 
         if (byteCount >= 0)
         {
@@ -205,9 +165,8 @@ public class IO
                 out.write(buffer, 0, len);
             }
         }
-        else if (out instanceof PrintWriter)
+        else if (out instanceof PrintWriter pout)
         {
-            PrintWriter pout = (PrintWriter)out;
             while (!pout.checkError())
             {
                 len = in.read(buffer, 0, bufferSize);
@@ -256,16 +215,208 @@ public class IO
         File[] files = from.listFiles();
         if (files != null)
         {
-            for (int i = 0; i < files.length; i++)
+            for (File file : files)
             {
-                String name = files[i].getName();
+                String name = file.getName();
                 if (".".equals(name) || "..".equals(name))
                     continue;
-                copy(files[i], new File(to, name));
+                copy(file, new File(to, name));
             }
         }
     }
 
+    /**
+     * Copy the contents of a source directory to destination directory.
+     *
+     * <p>
+     *     This version does not use the standard {@link Files#copy(Path, Path, CopyOption...)}
+     *     technique to copy files, as that technique might incur a "foreign target" behavior
+     *     when the {@link java.nio.file.FileSystem} types of the srcDir and destDir are
+     *     different.
+     *     Instead, this implementation uses the {@link #copyFile(Path, Path)} method instead.
+     * </p>
+     *
+     * @param srcDir the source directory
+     * @param destDir the destination directory
+     * @throws IOException if unable to copy the file
+     */
+    public static void copyDir(Path srcDir, Path destDir) throws IOException
+    {
+        if (!Files.isDirectory(Objects.requireNonNull(srcDir)))
+            throw new IllegalArgumentException("Source is not a directory: " + srcDir);
+        Objects.requireNonNull(destDir);
+        if (Files.exists(destDir) && !Files.isDirectory(destDir))
+            throw new IllegalArgumentException("Destination is not a directory: " + destDir);
+        else if (!Files.exists(destDir))
+            Files.createDirectory(destDir); // only attempt top create 1 level of directory (parent must exist)
+
+        try (Stream<Path> sourceStream = Files.walk(srcDir))
+        {
+            Iterator<Path> iterFiles = sourceStream
+                .filter(Files::isRegularFile)
+                .iterator();
+            while (iterFiles.hasNext())
+            {
+                Path sourceFile = iterFiles.next();
+                Path relative = srcDir.relativize(sourceFile);
+                Path destFile = resolvePath(destDir, relative);
+                if (!Files.exists(destFile.getParent()))
+                    Files.createDirectories(destFile.getParent());
+                copyFile(sourceFile, destFile);
+            }
+        }
+    }
+
+    /**
+     * Copy the contents of a source directory to destination directory.
+     *
+     * <p>
+     *     Copy the contents of srcDir to the destDir using
+     *     {@link Files#copy(Path, Path, CopyOption...)} to
+     *     copy individual files.
+     * </p>
+     *
+     * @param srcDir the source directory
+     * @param destDir the destination directory (must exist)
+     * @param copyOptions the options to use on the {@link Files#copy(Path, Path, CopyOption...)} commands.
+     * @throws IOException if unable to copy the file
+     * @deprecated use {@link #copyDir(Path, Path)} instead to avoid foreign target behavior across FileSystems.
+     */
+    @Deprecated(since = "12.0.8", forRemoval = true)
+    public static void copyDir(Path srcDir, Path destDir, CopyOption... copyOptions) throws IOException
+    {
+        if (!Files.isDirectory(Objects.requireNonNull(srcDir)))
+            throw new IllegalArgumentException("Source is not a directory: " + srcDir);
+        if (!Files.isDirectory(Objects.requireNonNull(destDir)))
+            throw new IllegalArgumentException("Dest is not a directory: " + destDir);
+
+        try (Stream<Path> sourceStream = Files.walk(srcDir))
+        {
+            Iterator<Path> iterFiles = sourceStream
+                .filter(Files::isRegularFile)
+                .iterator();
+            while (iterFiles.hasNext())
+            {
+                Path sourceFile = iterFiles.next();
+                Path relative = srcDir.relativize(sourceFile);
+                Path destFile = resolvePath(destDir, relative);
+                if (!Files.exists(destFile.getParent()))
+                    Files.createDirectories(destFile.getParent());
+                Files.copy(sourceFile, destFile, copyOptions);
+            }
+        }
+    }
+
+    /**
+     * Perform a resolve of a {@code basePath} {@link Path} against
+     * a {@code relative} {@link Path} in a way that ignores
+     * {@link java.nio.file.FileSystem} differences between
+     * the two {@link Path} parameters.
+     *
+     * <p>
+     *     This implementation is intended to be a replacement for
+     *     {@link Path#resolve(Path)} in cases where the the
+     *     {@link java.nio.file.FileSystem} might be different,
+     *     avoiding a {@link java.nio.file.ProviderMismatchException}
+     *     from occurring.
+     * </p>
+     *
+     * @param basePath the base Path
+     * @param relative the relative Path to resolve against base Path
+     * @return the new Path object relative to the base Path
+     */
+    public static Path resolvePath(Path basePath, Path relative)
+    {
+        if (relative.isAbsolute())
+            throw new IllegalArgumentException("Relative path cannot be absolute");
+
+        if (basePath.getFileSystem().equals(relative.getFileSystem()))
+        {
+            return basePath.resolve(relative);
+        }
+        else
+        {
+            for (Path segment : relative)
+                basePath = basePath.resolve(segment.toString());
+            return basePath;
+        }
+    }
+
+    /**
+     * Ensure that the given path exists, and is a directory.
+     *
+     * <p>
+     *     Uses {@link Files#createDirectories(Path, FileAttribute[])} when
+     *     the provided path needs to be created as directories.
+     * </p>
+     *
+     * @param dir the directory to check and/or create.
+     * @throws IOException if the {@code dir} exists, but isn't a directory, or if unable to create the directory.
+     */
+    public static void ensureDirExists(Path dir) throws IOException
+    {
+        if (Files.exists(dir))
+        {
+            if (!Files.isDirectory(dir))
+            {
+                throw new IOException("Conflict, unable to create directory where file exists: " + dir);
+            }
+            return;
+        }
+        Files.createDirectories(dir);
+    }
+
+    /**
+     * Copy the contents of a source file to destination file.
+     *
+     * <p>
+     *     Copy the contents of {@code srcFile} to the {@code destFile} using
+     *     {@link Files#copy(Path, OutputStream)}.
+     *     The {@code destFile} is opened with the {@link OpenOption} of
+     *     {@link StandardOpenOption#CREATE},{@link StandardOpenOption#WRITE},{@link StandardOpenOption#TRUNCATE_EXISTING}.
+     * </p>
+     *
+     * <p>
+     *     Unlike {@link Files#copy(Path, Path, CopyOption...)}, this implementation will
+     *     not perform a "foreign target" behavior (a special mode that kicks in
+     *     when the {@code srcFile} and {@code destFile} are on different {@link java.nio.file.FileSystem}s)
+     *     which will attempt to delete the destination file before creating a new
+     *     file and then copying the contents over.
+     * </p>
+     * <p>
+     *     In this implementation if the file exists, it will just be opened
+     *     and written to from the start of the file.
+     * </p>
+     *
+     * @param srcFile the source file (must exist)
+     * @param destFile the destination file
+     * @throws IOException if unable to copy the file
+     */
+    public static void copyFile(Path srcFile, Path destFile) throws IOException
+    {
+        if (!Files.isRegularFile(Objects.requireNonNull(srcFile)))
+            throw new IllegalArgumentException("Source is not a file: " + srcFile);
+        Objects.requireNonNull(destFile);
+
+        try (OutputStream out = Files.newOutputStream(destFile,
+            StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING))
+        {
+            Files.copy(srcFile, out);
+        }
+    }
+
+    /**
+     * Copy the contents of a source file to destination file.
+     *
+     * <p>
+     *     Copy the contents of {@code from} {@link File} to the {@code to} {@link File} using
+     *     standard {@link InputStream} / {@link OutputStream} behaviors.
+     * </p>
+     *
+     * @param from the source file (must exist)
+     * @param to the destination file
+     * @throws IOException if unable to copy the file
+     */
     public static void copyFile(File from, File to) throws IOException
     {
         try (InputStream in = new FileInputStream(from);
@@ -278,6 +429,8 @@ public class IO
     public static IOException rethrow(Throwable cause)
     {
         if (cause instanceof ExecutionException xx)
+            cause = xx.getCause();
+        if (cause instanceof CompletionException xx)
             cause = xx.getCause();
         if (cause instanceof IOException)
             return (IOException)cause;
@@ -391,6 +544,44 @@ public class IO
     }
 
     /**
+     * Delete the path, recursively.
+     *
+     * @param path the path to delete
+     * @return true if able to delete the path, false if unable to delete the path.
+     */
+    public static boolean delete(Path path)
+    {
+        if (path == null)
+            return false;
+        try
+        {
+            Files.walkFileTree(path, new SimpleFileVisitor<>()
+            {
+                @Override
+                public FileVisitResult postVisitDirectory(Path dir, IOException exc) throws IOException
+                {
+                    Files.delete(dir);
+                    return FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException
+                {
+                    Files.delete(file);
+                    return FileVisitResult.CONTINUE;
+                }
+            });
+            return true;
+        }
+        catch (IOException e)
+        {
+            if (LOG.isDebugEnabled())
+                LOG.debug("Unable to delete path: {}", path, e);
+            return false;
+        }
+    }
+
+    /**
      * Test if directory is empty.
      *
      * @param dir the directory
@@ -416,17 +607,27 @@ public class IO
      *
      * @param closeable the closeable to close
      */
-    public static void close(Closeable closeable)
+    public static void close(AutoCloseable closeable)
     {
         try
         {
             if (closeable != null)
                 closeable.close();
         }
-        catch (IOException ignore)
+        catch (Exception x)
         {
-            LOG.trace("IGNORED", ignore);
+            LOG.trace("IGNORED", x);
         }
+    }
+
+    /**
+     * Closes an arbitrary closable, and logs exceptions at ignore level
+     *
+     * @param closeable the closeable to close
+     */
+    public static void close(Closeable closeable)
+    {
+        close((AutoCloseable)closeable);
     }
 
     /**
@@ -436,7 +637,7 @@ public class IO
      */
     public static void close(InputStream is)
     {
-        close((Closeable)is);
+        close((AutoCloseable)is);
     }
 
     /**
@@ -446,7 +647,7 @@ public class IO
      */
     public static void close(OutputStream os)
     {
-        close((Closeable)os);
+        close((AutoCloseable)os);
     }
 
     /**
@@ -456,7 +657,7 @@ public class IO
      */
     public static void close(Reader reader)
     {
-        close((Closeable)reader);
+        close((AutoCloseable)reader);
     }
 
     /**
@@ -466,7 +667,7 @@ public class IO
      */
     public static void close(Writer writer)
     {
-        close((Closeable)writer);
+        close((AutoCloseable)writer);
     }
 
     public static byte[] readBytes(InputStream in)
@@ -525,118 +726,28 @@ public class IO
     }
 
     /**
-     * @return An outputstream to nowhere
+     * <p>Convert an object to a {@link File} if possible.</p>
+     * @param fileObject A File, String, Path or null to be converted into a File
+     * @return A File representation of the passed argument or null.
      */
-    public static OutputStream getNullStream()
+    public static File asFile(Object fileObject)
     {
-        return __nullStream;
+        if (fileObject == null)
+            return null;
+        if (fileObject instanceof File)
+            return (File)fileObject;
+        if (fileObject instanceof String)
+            return new File((String)fileObject);
+        if (fileObject instanceof Path)
+            return ((Path)fileObject).toFile();
+
+        return null;
     }
 
-    /**
-     * @return An outputstream to nowhere
-     */
-    public static InputStream getClosedStream()
+    private IO()
     {
-        return __closedStream;
+        // prevent instantiation
     }
-
-    private static class NullOS extends OutputStream
-    {
-        @Override
-        public void close()
-        {
-        }
-
-        @Override
-        public void flush()
-        {
-        }
-
-        @Override
-        public void write(byte[] b)
-        {
-        }
-
-        @Override
-        public void write(byte[] b, int i, int l)
-        {
-        }
-
-        @Override
-        public void write(int b)
-        {
-        }
-    }
-
-    private static NullOS __nullStream = new NullOS();
-
-    private static class ClosedIS extends InputStream
-    {
-        @Override
-        public int read() throws IOException
-        {
-            return -1;
-        }
-    }
-
-    private static ClosedIS __closedStream = new ClosedIS();
-
-    /**
-     * @return An writer to nowhere
-     */
-    public static Writer getNullWriter()
-    {
-        return __nullWriter;
-    }
-
-    /**
-     * @return An writer to nowhere
-     */
-    public static PrintWriter getNullPrintWriter()
-    {
-        return __nullPrintWriter;
-    }
-
-    private static class NullWrite extends Writer
-    {
-        @Override
-        public void close()
-        {
-        }
-
-        @Override
-        public void flush()
-        {
-        }
-
-        @Override
-        public void write(char[] b)
-        {
-        }
-
-        @Override
-        public void write(char[] b, int o, int l)
-        {
-        }
-
-        @Override
-        public void write(int b)
-        {
-        }
-
-        @Override
-        public void write(String s)
-        {
-        }
-
-        @Override
-        public void write(String s, int o, int l)
-        {
-        }
-    }
-
-    private static NullWrite __nullWriter = new NullWrite();
-    private static PrintWriter __nullPrintWriter = new PrintWriter(__nullWriter);
 }
 
 

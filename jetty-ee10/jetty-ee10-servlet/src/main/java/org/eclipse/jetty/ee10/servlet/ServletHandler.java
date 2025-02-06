@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -43,18 +43,23 @@ import jakarta.servlet.ServletSecurityElement;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import org.eclipse.jetty.ee10.servlet.security.IdentityService;
-import org.eclipse.jetty.ee10.servlet.security.SecurityHandler;
+import org.eclipse.jetty.http.UriCompliance;
 import org.eclipse.jetty.http.pathmap.MappedResource;
+import org.eclipse.jetty.http.pathmap.MatchedPath;
 import org.eclipse.jetty.http.pathmap.MatchedResource;
 import org.eclipse.jetty.http.pathmap.PathMappings;
 import org.eclipse.jetty.http.pathmap.PathSpec;
 import org.eclipse.jetty.http.pathmap.ServletPathSpec;
+import org.eclipse.jetty.security.IdentityService;
+import org.eclipse.jetty.security.SecurityHandler;
+import org.eclipse.jetty.server.Context;
 import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.Request;
+import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.server.handler.ContextHandler;
 import org.eclipse.jetty.util.ArrayUtil;
-import org.eclipse.jetty.util.MultiException;
+import org.eclipse.jetty.util.Callback;
+import org.eclipse.jetty.util.ExceptionUtil;
 import org.eclipse.jetty.util.MultiMap;
 import org.eclipse.jetty.util.annotation.ManagedAttribute;
 import org.eclipse.jetty.util.annotation.ManagedObject;
@@ -112,12 +117,32 @@ public class ServletHandler extends Handler.Wrapper
 
     @SuppressWarnings("unchecked")
     protected final ConcurrentMap<String, FilterChain>[] _chainCache = new ConcurrentMap[FilterMapping.ALL];
+    private boolean _decodeAmbiguousURIs = false;
 
     /**
      * Constructor.
      */
     public ServletHandler()
     {
+    }
+
+    @ManagedAttribute(value = "True if URIs with violations are decoded")
+    public boolean isDecodeAmbiguousURIs()
+    {
+        return _decodeAmbiguousURIs;
+    }
+
+    /**
+     * <p>Allow or disallow ambiguous URIs to be returned by {@link ServletApiRequest#getServletPath()}
+     * and {@link ServletApiRequest#getPathInfo()}.</p>
+     * <p>Note that the {@link org.eclipse.jetty.server.HttpConfiguration#setUriCompliance(UriCompliance)} 
+     * must also be set to allow ambiguous URIs to be accepted by the {@link org.eclipse.jetty.server.Connector}.</p>
+     *
+     * @param decodeAmbiguousURIs {@code True} if ambiguous URIs are decoded by all servlet API methods.
+     */
+    public void setDecodeAmbiguousURIs(boolean decodeAmbiguousURIs)
+    {
+        _decodeAmbiguousURIs = decodeAmbiguousURIs;
     }
 
     AutoLock lock()
@@ -155,11 +180,11 @@ public class ServletHandler extends Handler.Wrapper
     {
         try (AutoLock ignored = lock())
         {
-            ContextHandler.Context context = ContextHandler.getCurrentContext();
-            if (!(context instanceof ServletContextHandler.Context))
+            Context context = ContextHandler.getCurrentContext();
+            if (!(context instanceof ServletContextHandler.ServletScopedContext))
                 throw new IllegalStateException("Cannot use ServletHandler without ServletContextHandler");
-            _servletContext = ((ServletContextHandler.Context)context).getServletContext();
-            _servletContextHandler = ((ServletContextHandler.Context)context).getServletContextHandler();
+            _servletContext = ((ServletContextHandler.ServletScopedContext)context).getServletContext();
+            _servletContextHandler = ((ServletContextHandler.ServletScopedContext)context).getServletContextHandler();
 
             if (_servletContextHandler != null)
             {
@@ -430,37 +455,59 @@ public class ServletHandler extends Handler.Wrapper
     }
 
     @Override
-    public Request.Processor handle(Request request) throws Exception
+    public boolean handle(Request request, Response response, Callback callback) throws Exception
     {
-        // TODO avoid lambda creation
-        return (req, resp, cb) ->
+        // We have a ServletContextRequest only when an enclosing ServletContextHandler matched a Servlet
+        ServletChannel servletChannel = Request.get(request, ServletContextRequest.class, ServletContextRequest::getServletChannel);
+        if (servletChannel != null)
         {
-            // We will always have a ServletScopedRequest and MappedServlet otherwise we will not reach ServletHandler.
-            ServletContextRequest servletRequest = Request.as(request, ServletContextRequest.class);
-            servletRequest.getServletChannel().handle();
-        };
+            if (LOG.isDebugEnabled())
+                LOG.debug("handle {} {} {} {} {}", this, servletChannel, request, response, callback);
+
+            // But request, response and/or callback may have been wrapped after the ServletContextHandler, so update the channel.
+            servletChannel.associate(request, response, callback);
+            servletChannel.handle();
+            return true;
+        }
+
+        // Otherwise, there is no matching servlet so we pass to our next handler (if any)
+        return super.handle(request, response, callback);
     }
 
     /**
-     * Get MappedServlet for target.
+     * ServletHolder matching target path.
      *
      * @param target Path within _context or servlet name
-     * @return MappedServlet matched by path or name.  Named servlets have a null PathSpec
+     * @return MatchedResource, pointing to the {@link MappedResource} for the {@link ServletHolder}, and also the pathspec specific name/info sections for the match.
+     *      Named servlets have a null PathSpec and {@link MatchedResource}.
      */
-    public MappedServlet getMappedServlet(String target)
+    public MatchedResource<MappedServlet> getMatchedServlet(String target)
     {
-        if (target.startsWith("/"))
+        if (target.startsWith("/") || target.length() == 0)
         {
             if (_servletPathMap == null)
                 return null;
-
-            MatchedResource<MappedServlet> match = _servletPathMap.getMatched(target);
-            if (match == null)
-                return null;
-            return match.getResource();
+            return _servletPathMap.getMatched(target);
         }
 
-        return _servletNameMap.get(target);
+        MappedServlet holder = _servletNameMap.get(target);
+        if (holder == null)
+            return null;
+        return new MatchedResource<>(holder, null, MatchedPath.EMPTY);
+    }
+
+    /**
+     * ServletHolder matching path.
+     *
+     * @param target Path within _context or servlet name
+     * @return MappedResource to the ServletHolder.  Named servlets have a null PathSpec
+     */
+    public MappedServlet getMappedServlet(String target)
+    {
+        MatchedResource<MappedServlet> matchedResource = getMatchedServlet(target);
+        if (matchedResource == null) // named servlet
+            return null;
+        return matchedResource.getResource();
     }
 
     protected FilterChain getFilterChain(HttpServletRequest request, String pathInContext, ServletHolder servletHolder)
@@ -582,6 +629,7 @@ public class ServletHandler extends Handler.Wrapper
     }
 
     /**
+     * Set the allowDuplicateMappings to set.
      * @param allowDuplicateMappings the allowDuplicateMappings to set
      */
     public void setAllowDuplicateMappings(boolean allowDuplicateMappings)
@@ -605,22 +653,17 @@ public class ServletHandler extends Handler.Wrapper
     public void initialize()
         throws Exception
     {
-        MultiException mx = new MultiException();
+        ExceptionUtil.MultiException multiException = new ExceptionUtil.MultiException();
 
         Consumer<BaseHolder<?>> c = h ->
         {
-            try
+            if (!h.isStarted())
             {
-                if (!h.isStarted())
+                multiException.callAndCatch(() ->
                 {
                     h.start();
                     h.initialize();
-                }
-            }
-            catch (Throwable e)
-            {
-                LOG.debug("Unable to start {}", h, e);
-                mx.add(e);
+                });
             }
         };
         
@@ -641,7 +684,7 @@ public class ServletHandler extends Handler.Wrapper
             _servlets.stream().sorted())
             .forEach(c);
 
-        mx.ifExceptionThrow();
+        multiException.ifExceptionThrow();
     }
     
     /**
@@ -1038,7 +1081,7 @@ public class ServletHandler extends Handler.Wrapper
             if (_filterMappings.isEmpty())
             {
                 _filterMappings.add(mapping);
-                if (source == Source.JAVAX_API)
+                if (source == Source.JAKARTA_API)
                     _matchAfterIndex = 0;
             }
             else
@@ -1046,7 +1089,7 @@ public class ServletHandler extends Handler.Wrapper
                 //there are existing entries. If this is a programmatic filtermapping, it is added at the end of the list.
                 //If this is a normal filtermapping, it is inserted after all the other filtermappings (matchBefores and normals),
                 //but before the first matchAfter filtermapping.
-                if (Source.JAVAX_API == source)
+                if (Source.JAKARTA_API == source)
                 {
                     _filterMappings.add(mapping);
                     if (_matchAfterIndex < 0)
@@ -1084,12 +1127,12 @@ public class ServletHandler extends Handler.Wrapper
             if (_filterMappings.isEmpty())
             {
                 _filterMappings.add(mapping);
-                if (Source.JAVAX_API == source)
+                if (Source.JAKARTA_API == source)
                     _matchBeforeIndex = 0;
             }
             else
             {
-                if (Source.JAVAX_API == source)
+                if (Source.JAKARTA_API == source)
                 {
                     //programmatically defined filter mappings are prepended to mapping list in the order
                     //in which they were defined. In other words, insert this mapping at the tail of the 
@@ -1176,6 +1219,7 @@ public class ServletHandler extends Handler.Wrapper
 
     protected PathSpec asPathSpec(String pathSpec)
     {
+        // By default only allow servlet path specs
         return new ServletPathSpec(pathSpec);
     }
 
@@ -1351,6 +1395,8 @@ public class ServletHandler extends Handler.Wrapper
             if (isRunning())
                 updateMappings();
             invalidateChainsCache();
+            _matchBeforeIndex = -1;
+            _matchAfterIndex = -1;
         }
     }
 
@@ -1453,7 +1499,7 @@ public class ServletHandler extends Handler.Wrapper
                 switch (pathSpec.getGroup())
                 {
                     case EXACT:
-                        _servletPathMapping = new ServletPathMapping(_pathSpec, _servletHolder.getName(), _pathSpec.getPrefix());
+                        _servletPathMapping = new ServletPathMapping(_pathSpec, _servletHolder.getName(), _pathSpec.getDeclaration());
                         break;
                     case ROOT:
                         _servletPathMapping = new ServletPathMapping(_pathSpec, _servletHolder.getName(), "/");
@@ -1484,7 +1530,16 @@ public class ServletHandler extends Handler.Wrapper
             if (_servletPathMapping != null)
                 return _servletPathMapping;
             if (_pathSpec != null)
-                return new ServletPathMapping(_pathSpec, _servletHolder.getName(), pathInContext);
+                return new ServletPathMapping(_pathSpec, _servletHolder.getName(), pathInContext, null);
+            return null;
+        }
+
+        public ServletPathMapping getServletPathMapping(String pathInContext, MatchedPath matchedPath)
+        {
+            if (_servletPathMapping != null)
+                return _servletPathMapping;
+            if (_pathSpec != null)
+                return new ServletPathMapping(_pathSpec, _servletHolder.getName(), pathInContext, matchedPath);
             return null;
         }
 

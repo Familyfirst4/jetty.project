@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -56,7 +56,7 @@ public class DeclareRolesAnnotationHandler extends AbstractIntrospectableAnnotat
         {
             for (String r : roles)
             {
-                ((ConstraintSecurityHandler)_context.getSecurityHandler()).addRole(r);
+                ((ConstraintSecurityHandler)_context.getSecurityHandler()).addKnownRole(r);
                 _context.getMetaData().setOrigin("security-role." + r, declareRoles, clazz);
             }
         }

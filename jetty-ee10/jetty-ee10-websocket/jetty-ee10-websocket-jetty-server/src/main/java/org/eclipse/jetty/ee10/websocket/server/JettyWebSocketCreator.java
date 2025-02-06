@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -23,11 +23,16 @@ package org.eclipse.jetty.ee10.websocket.server;
 public interface JettyWebSocketCreator
 {
     /**
-     * Create a websocket from the incoming request.
+     * <p>Creates a websocket from the incoming request.</p>
+     *
+     * <p>If no websocket is to be created (return value of null), this {@code JettyWebSocketCreator}
+     * is responsible for sending a response with {@link JettyServerUpgradeResponse#sendError(int, String)},
+     * {@link JettyServerUpgradeResponse#sendForbidden(String)} or {@link JettyServerUpgradeResponse#setStatusCode(int)}.</p>
      *
      * @param req the request details
      * @param resp the response details
      * @return a websocket object to use, or null if no websocket should be created from this request.
+     * @throws Exception if the WebSocket creation throws
      */
-    Object createWebSocket(JettyServerUpgradeRequest req, JettyServerUpgradeResponse resp);
+    Object createWebSocket(JettyServerUpgradeRequest req, JettyServerUpgradeResponse resp) throws Exception;
 }

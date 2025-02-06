@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -92,12 +92,12 @@ public class GzipHandlerNoReCompressTest extends AbstractGzipTest
         LocalConnector localConnector = new LocalConnector(server);
         server.addConnector(localConnector);
 
-        Path contextDir = workDir.resolve("context");
+        Path contextDir = workDir.getEmptyPathDir().resolve("context");
         FS.ensureDirExists(contextDir);
 
         ServletContextHandler servletContextHandler = new ServletContextHandler();
         servletContextHandler.setContextPath("/context");
-        servletContextHandler.setBaseResource(contextDir);
+        servletContextHandler.setBaseResourceAsPath(contextDir);
         servletContextHandler.addServlet(TestStaticMimeTypeServlet.class, "/*");
         servletContextHandler.insertHandler(gzipHandler);
 

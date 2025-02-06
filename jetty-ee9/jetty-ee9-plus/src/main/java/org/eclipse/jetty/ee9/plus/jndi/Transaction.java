@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -20,7 +20,9 @@ import javax.naming.NameNotFoundException;
 import javax.naming.NamingException;
 
 import jakarta.transaction.UserTransaction;
-import org.eclipse.jetty.jndi.NamingUtil;
+import org.eclipse.jetty.plus.jndi.NamingEntry;
+import org.eclipse.jetty.plus.jndi.NamingEntryUtil;
+import org.eclipse.jetty.util.jndi.NamingUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -34,14 +36,14 @@ public class Transaction extends NamingEntry
     private static final Logger LOG = LoggerFactory.getLogger(Transaction.class);
     public static final String USER_TRANSACTION = "UserTransaction";
 
-    public static void bindToENC()
+    public static void bindTransactionToENC(String scope)
         throws NamingException
     {
-        Transaction txEntry = (Transaction)NamingEntryUtil.lookupNamingEntry(null, Transaction.USER_TRANSACTION);
+        NamingEntry txEntry = NamingEntryUtil.lookupNamingEntry(scope, Transaction.USER_TRANSACTION);
 
-        if (txEntry != null)
+        if (txEntry instanceof Transaction)
         {
-            txEntry.bindToComp();
+            ((Transaction)txEntry).bindToComp();
         }
         else
         {
@@ -49,11 +51,15 @@ public class Transaction extends NamingEntry
         }
     }
 
-    public Transaction(UserTransaction userTransaction)
+    /** 
+     * @param scope the environment in which to bind the UserTransaction
+     * @param userTransaction The {@link UserTransaction}
+     * @throws NamingException if there was a problem re
+     */
+    public Transaction(String scope, UserTransaction userTransaction)
         throws NamingException
     {
-        super(USER_TRANSACTION);
-        save(userTransaction);
+        super(scope, USER_TRANSACTION, userTransaction);
     }
 
     /**

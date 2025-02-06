@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -18,10 +18,10 @@ import java.nio.ByteBuffer;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-import org.eclipse.jetty.client.api.ContentResponse;
-import org.eclipse.jetty.client.http.HttpConnectionOverHTTP;
-import org.eclipse.jetty.client.util.AsyncRequestContent;
-import org.eclipse.jetty.client.util.StringRequestContent;
+import org.eclipse.jetty.client.transport.HttpDestination;
+import org.eclipse.jetty.client.transport.HttpResponse;
+import org.eclipse.jetty.client.transport.internal.HttpConnectionOverHTTP;
+import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpHeaderValue;
 import org.eclipse.jetty.http.HttpStatus;
@@ -29,9 +29,8 @@ import org.eclipse.jetty.io.Content;
 import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.Response;
-import org.eclipse.jetty.util.Blocking;
+import org.eclipse.jetty.util.Blocker;
 import org.eclipse.jetty.util.Callback;
-import org.eclipse.jetty.util.thread.Invocable.InvocationType;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ArgumentsSource;
 
@@ -47,14 +46,14 @@ public class ClientConnectionCloseTest extends AbstractHttpClientServerTest
     public void testClientConnectionCloseServerConnectionCloseClientClosesAfterExchange(Scenario scenario) throws Exception
     {
         byte[] data = new byte[128 * 1024];
-        start(scenario, new Handler.Processor(InvocationType.BLOCKING)
+        start(scenario, new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback) throws Exception
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
             {
                 Content.Source.consumeAll(request);
 
-                response.getHeaders().putLongField(HttpHeader.CONTENT_LENGTH, data.length);
+                response.getHeaders().put(HttpHeader.CONTENT_LENGTH, data.length);
                 response.write(true, ByteBuffer.wrap(data), callback);
 
                 try
@@ -66,6 +65,8 @@ public class ClientConnectionCloseTest extends AbstractHttpClientServerTest
                 {
                     throw new InterruptedIOException();
                 }
+
+                return true;
             }
         });
 
@@ -96,12 +97,13 @@ public class ClientConnectionCloseTest extends AbstractHttpClientServerTest
     @ArgumentsSource(ScenarioProvider.class)
     public void testClientConnectionCloseServerDoesNotRespondClientIdleTimeout(Scenario scenario) throws Exception
     {
-        start(scenario, new Handler.Processor()
+        start(scenario, new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 // Do not respond.
+                return true;
             }
         });
 
@@ -138,14 +140,14 @@ public class ClientConnectionCloseTest extends AbstractHttpClientServerTest
     public void testClientConnectionCloseServerPartialResponseClientIdleTimeout(Scenario scenario) throws Exception
     {
         long idleTimeout = 1000;
-        start(scenario, new Handler.Processor(InvocationType.BLOCKING)
+        start(scenario, new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback) throws Exception
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
             {
                 Content.Source.consumeAll(request);
 
-                try (Blocking.Callback block = Blocking.callback())
+                try (Blocker.Callback block = Blocker.callback())
                 {
                     Content.Sink.write(response, false, "Hello", block);
                     block.block();
@@ -161,6 +163,7 @@ public class ClientConnectionCloseTest extends AbstractHttpClientServerTest
                 }
 
                 callback.succeeded();
+                return true;
             }
         });
 
@@ -199,12 +202,12 @@ public class ClientConnectionCloseTest extends AbstractHttpClientServerTest
     @ArgumentsSource(ScenarioProvider.class)
     public void testClientConnectionCloseServerNoConnectionCloseClientCloses(Scenario scenario) throws Exception
     {
-        start(scenario, new Handler.Processor(InvocationType.BLOCKING)
+        start(scenario, new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback) throws Exception
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
             {
-                response.getHeaders().putLongField(HttpHeader.CONTENT_LENGTH, 0);
+                response.getHeaders().put(HttpFields.CONTENT_LENGTH_0);
                 Content.Sink.write(response, false, null);
 
                 try
@@ -217,6 +220,7 @@ public class ClientConnectionCloseTest extends AbstractHttpClientServerTest
                     throw new InterruptedIOException();
                 }
                 callback.succeeded();
+                return true;
             }
         });
 

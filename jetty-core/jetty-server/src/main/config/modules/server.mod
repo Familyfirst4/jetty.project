@@ -19,7 +19,6 @@ lib/jetty-server-${jetty.version}.jar
 lib/jetty-xml-${jetty.version}.jar
 lib/jetty-util-${jetty.version}.jar
 lib/jetty-io-${jetty.version}.jar
-lib/jetty-ee-${jetty.version}.jar
 
 [xml]
 etc/jetty.xml
@@ -38,6 +37,9 @@ etc/jetty.xml
 
 ## Max response content write length that is buffered (in bytes)
 # jetty.httpConfig.outputAggregationSize=8192
+
+## If HTTP/1.x persistent connections should be enabled
+# jetty.httpConfig.persistentConnectionsEnabled=true
 
 ## Max request headers size (in bytes)
 # jetty.httpConfig.requestHeaderSize=8192
@@ -61,7 +63,7 @@ etc/jetty.xml
 # jetty.httpConfig.maxErrorDispatches=10
 
 ## Relative Redirect Locations allowed
-# jetty.httpConfig.relativeRedirectAllowed=false
+# jetty.httpConfig.relativeRedirectAllowed=true
 
 ## Whether to use direct ByteBuffers for reading or writing
 # jetty.httpConfig.useInputDirectByteBuffers=true
@@ -75,7 +77,7 @@ etc/jetty.xml
 ## URI Compliance: DEFAULT, LEGACY, RFC3986, RFC3986_UNAMBIGUOUS, UNSAFE
 # jetty.httpConfig.uriCompliance=DEFAULT
 
-## Cookie compliance mode for parsing request Cookie headers: RFC2965, RFC6265
+## Cookie compliance mode for parsing request Cookie headers: RFC6265_STRICT, RFC6265, RFC6265_LEGACY, RFC2965, RFC2965_LEGACY
 # jetty.httpConfig.requestCookieCompliance=RFC6265
 
 ## Cookie compliance mode for generating response Set-Cookie: RFC2965, RFC6265
@@ -87,11 +89,11 @@ etc/jetty.xml
 ## Whether ctrl+c on the console gracefully stops the Jetty server
 # jetty.server.stopAtShutdown=true
 
-## Timeout in ms to apply when stopping the server gracefully
-# jetty.server.stopTimeout=5000
-
 ## Dump the state of the Jetty server, components, and webapps after startup
 # jetty.server.dumpAfterStart=false
+
+## The temporary directory used by the Jetty server and as a root for its contexts
+# jetty.server.tempDirectory=
 
 ## Dump the state of the Jetty server, components, and webapps before shutdown
 # jetty.server.dumpBeforeStop=false
@@ -108,3 +110,13 @@ etc/jetty.xml
 ## The number of server scheduler threads.
 # jetty.scheduler.threads=1
 # end::documentation-scheduler-config[]
+
+## Whether the handlers of the ContextHandlerCollection can be updated once the server is started
+## If set to false, then <env>-deploy module jetty.deploy.scanInterval should also be set to 0.
+# jetty.server.contexts.dynamic=true
+
+## Should the DefaultHandler serve the jetty favicon.ico from the root.
+# jetty.server.default.serveFavIcon=true
+
+## Should the DefaultHandler show a list of known contexts in a root 404 response.
+# jetty.server.default.showContexts=true

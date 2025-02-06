@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -16,6 +16,7 @@ package org.eclipse.jetty.session;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
@@ -26,7 +27,6 @@ import java.sql.Statement;
 import java.util.HashSet;
 import java.util.Set;
 
-import org.eclipse.jetty.util.ClassLoadingObjectInputStream;
 import org.eclipse.jetty.util.StringUtil;
 import org.eclipse.jetty.util.annotation.ManagedAttribute;
 import org.eclipse.jetty.util.annotation.ManagedObject;
@@ -39,7 +39,7 @@ import org.slf4j.LoggerFactory;
  * Session data stored in database
  */
 @ManagedObject
-public class JDBCSessionDataStore extends AbstractSessionDataStore
+public class JDBCSessionDataStore extends ObjectStreamSessionDataStore
 {
     private static final Logger LOG = LoggerFactory.getLogger(JDBCSessionDataStore.class);
 
@@ -268,7 +268,7 @@ public class JDBCSessionDataStore extends AbstractSessionDataStore
             String longType = _dbAdaptor.getLongType();
             String stringType = _dbAdaptor.getStringType();
 
-            return "create table " + _tableName + " (" + _idColumn + " " + stringType + "(120), " +
+            return "create table " + getSchemaTableName() + " (" + _idColumn + " " + stringType + "(120), " +
                 _contextPathColumn + " " + stringType + "(60), " + _virtualHostColumn + " " + stringType + "(60), " + _lastNodeColumn + " " + stringType + "(60), " + _accessTimeColumn + " " + longType + ", " +
                 _lastAccessTimeColumn + " " + longType + ", " + _createTimeColumn + " " + longType + ", " + _cookieTimeColumn + " " + longType + ", " +
                 _lastSavedTimeColumn + " " + longType + ", " + _expiryTimeColumn + " " + longType + ", " + _maxIntervalColumn + " " + longType + ", " +
@@ -662,10 +662,9 @@ public class JDBCSessionDataStore extends AbstractSessionDataStore
                 data.setContextPath(_context.getCanonicalContextPath());
                 data.setVhost(_context.getVhost());
 
-                try (InputStream is = _dbAdaptor.getBlobInputStream(result, _sessionTableSchema.getMapColumn());
-                     ClassLoadingObjectInputStream ois = new ClassLoadingObjectInputStream(is))
+                try (InputStream is = _dbAdaptor.getBlobInputStream(result, _sessionTableSchema.getMapColumn()))
                 {
-                    SessionData.deserializeAttributes(data, ois);
+                   deserializeAttributes(data, is);
                 }
                 catch (Exception e)
                 {
@@ -741,10 +740,10 @@ public class JDBCSessionDataStore extends AbstractSessionDataStore
                 statement.setLong(10, data.getExpiry());
                 statement.setLong(11, data.getMaxInactiveMs());
 
-                try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                     ObjectOutputStream oos = new ObjectOutputStream(baos))
+                try (ByteArrayOutputStream baos = new ByteArrayOutputStream();)
                 {
-                    SessionData.serializeAttributes(data, oos);
+                    serializeAttributes(data, baos);
+
                     byte[] bytes = baos.toByteArray();
                     ByteArrayInputStream bais = new ByteArrayInputStream(bytes);
                     statement.setBinaryStream(12, bais, bytes.length); //attribute map as blob
@@ -772,10 +771,10 @@ public class JDBCSessionDataStore extends AbstractSessionDataStore
                 statement.setLong(5, data.getExpiry());
                 statement.setLong(6, data.getMaxInactiveMs());
 
-                try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                     ObjectOutputStream oos = new ObjectOutputStream(baos))
+                try (ByteArrayOutputStream baos = new ByteArrayOutputStream();)
                 {
-                    SessionData.serializeAttributes(data, oos);
+                    serializeAttributes(data, baos);
+
                     byte[] bytes = baos.toByteArray();
                     try (ByteArrayInputStream bais = new ByteArrayInputStream(bytes))
                     {

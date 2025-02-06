@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -16,14 +16,13 @@ package org.eclipse.jetty.ee10.demos;
 import java.net.URI;
 import java.util.Map;
 
-import org.eclipse.jetty.client.api.ContentResponse;
+import org.eclipse.jetty.client.ContentResponse;
 import org.eclipse.jetty.http.HttpMethod;
 import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.util.component.LifeCycle;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -39,14 +38,13 @@ public class LikeJettyXmlTest extends AbstractEmbeddedTest
     @BeforeEach
     public void startServer() throws Exception
     {
-        //TODO fix me
-        //server = LikeJettyXml.createServer(0, 0, false);
+        server = LikeJettyXml.createServer(0, 0, false);
         server.start();
 
         Map<String, Integer> ports = ServerUtil.fixDynamicPortConfigurations(server);
 
         // Establish base URI's that use "localhost" to prevent tripping over
-        // the "REMOTE ACCESS" warnings in demo-base
+        // the "REMOTE ACCESS" warnings in webapps/ee#-demo-jetty.d/ee#-demo-jetty-override-web.xml
         serverPlainUri = URI.create("http://localhost:" + ports.get("plain") + "/");
         serverSslUri = URI.create("https://localhost:" + ports.get("secure") + "/");
     }
@@ -57,7 +55,6 @@ public class LikeJettyXmlTest extends AbstractEmbeddedTest
         LifeCycle.stop(server);
     }
 
-    @Disabled //TODO
     @Test
     public void testGetTest() throws Exception
     {
@@ -74,7 +71,6 @@ public class LikeJettyXmlTest extends AbstractEmbeddedTest
         assertThat("Response Content", responseBody, containsString("Hello"));
     }
 
-    @Disabled //TODO
     @Test
     public void testGetTestSsl() throws Exception
     {

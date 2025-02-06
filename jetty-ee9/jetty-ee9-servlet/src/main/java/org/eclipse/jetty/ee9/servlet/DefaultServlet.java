@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,6 +14,7 @@
 package org.eclipse.jetty.ee9.servlet;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -25,20 +26,27 @@ import jakarta.servlet.UnavailableException;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import org.eclipse.jetty.ee9.nested.CachedContentFactory;
 import org.eclipse.jetty.ee9.nested.ContextHandler;
-import org.eclipse.jetty.ee9.nested.ResourceContentFactory;
-import org.eclipse.jetty.ee9.nested.ResourceHandler;
 import org.eclipse.jetty.ee9.nested.ResourceService;
 import org.eclipse.jetty.ee9.nested.ResourceService.WelcomeFactory;
 import org.eclipse.jetty.http.CompressedContentFormat;
-import org.eclipse.jetty.http.HttpContent;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.MimeTypes;
 import org.eclipse.jetty.http.PreEncodedHttpField;
+import org.eclipse.jetty.http.content.CachingHttpContentFactory;
+import org.eclipse.jetty.http.content.FileMappingHttpContentFactory;
+import org.eclipse.jetty.http.content.HttpContent;
+import org.eclipse.jetty.http.content.PreCompressedHttpContentFactory;
+import org.eclipse.jetty.http.content.ResourceHttpContentFactory;
+import org.eclipse.jetty.http.content.ValidatingCachingHttpContentFactory;
+import org.eclipse.jetty.http.content.VirtualHttpContentFactory;
+import org.eclipse.jetty.io.ByteBufferPool;
+import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.util.IO;
 import org.eclipse.jetty.util.URIUtil;
 import org.eclipse.jetty.util.resource.Resource;
 import org.eclipse.jetty.util.resource.ResourceFactory;
+import org.eclipse.jetty.util.resource.Resources;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -82,17 +90,17 @@ import org.slf4j.LoggerFactory;
  *                    If set to a boolean True, then a default set of compressed formats
  *                    will be used, otherwise no precompressed formats.
  *
- *  resourceBase      Set to replace the context resource base
+ *  baseResource      Set to replace the context resource base
  *
  *  resourceCache     If set, this is a context attribute name, which the servlet
  *                    will use to look for a shared ResourceCache instance.
  *
- *  relativeResourceBase
+ *  relativeBaseResource
  *                    Set with a pathname relative to the base of the
  *                    servlet context root. Useful for only serving static content out
  *                    of only specific subdirectories.
  *
- *  pathInfoOnly      If true, only the path info will be applied to the resourceBase
+ *  pathInfoOnly      If true, only the path info will be applied to the baseResource
  *
  *  stylesheet        Set with the location of an optional stylesheet that will be used
  *                    to decorate the directory listing html.
@@ -120,7 +128,7 @@ import org.slf4j.LoggerFactory;
  *                    Max entries in a cache of ACCEPT-ENCODING headers.
  * </pre>
  */
-public class DefaultServlet extends HttpServlet implements ResourceFactory, WelcomeFactory
+public class DefaultServlet extends HttpServlet implements WelcomeFactory
 {
     public static final String CONTEXT_INIT = "org.eclipse.jetty.servlet.Default.";
 
@@ -134,15 +142,14 @@ public class DefaultServlet extends HttpServlet implements ResourceFactory, Welc
 
     private boolean _welcomeServlets = false;
     private boolean _welcomeExactServlets = false;
-
-    private Resource _resourceBase;
-    private CachedContentFactory _cache;
-
+    private Resource _baseResource;
+    private CachingHttpContentFactory _cachingContentFactory;
     private MimeTypes _mimeTypes;
     private String[] _welcomes;
-    private Resource _stylesheet;
+    private ResourceFactory.Closeable _resourceFactory;
+    private Resource _styleSheet;
     private boolean _useFileMappedBuffer = false;
-    private String _relativeResourceBase;
+    private String _relativeBaseResource;
     private ServletHandler _servletHandler;
 
     public DefaultServlet(ResourceService resourceService)
@@ -161,6 +168,7 @@ public class DefaultServlet extends HttpServlet implements ResourceFactory, Welc
     {
         _servletContext = getServletContext();
         _contextHandler = initContextHandler(_servletContext);
+        _resourceFactory = ResourceFactory.closeable();
 
         _mimeTypes = _contextHandler.getMimeTypes();
 
@@ -185,47 +193,51 @@ public class DefaultServlet extends HttpServlet implements ResourceFactory, Welc
 
         _useFileMappedBuffer = getInitBoolean("useFileMappedBuffer", _useFileMappedBuffer);
 
-        _relativeResourceBase = getInitParameter("relativeResourceBase");
+        _relativeBaseResource = getInitParameter("relativeBaseResource", "relativeResourceBase");
 
-        String rb = getInitParameter("resourceBase");
-        if (rb != null)
+        String br = getInitParameter("baseResource", "resourceBase");
+        if (br == null)
         {
-            if (_relativeResourceBase != null)
-                throw new UnavailableException("resourceBase & relativeResourceBase");
+            _baseResource = _contextHandler.getBaseResource();
+        }
+        else
+        {
+            if (_relativeBaseResource != null)
+                throw new UnavailableException("baseResource & relativeBaseResource");
             try
             {
-                _resourceBase = _contextHandler.newResource(rb);
+                _baseResource = _contextHandler.newResource(br);
             }
             catch (Exception e)
             {
-                LOG.warn("Unable to create resourceBase from {}", rb, e);
+                LOG.warn("Unable to create baseResource from {}", br, e);
                 throw new UnavailableException(e.toString());
             }
         }
 
-        String css = getInitParameter("stylesheet");
+        String stylesheet = getInitParameter("stylesheet");
         try
         {
-            if (css != null)
+            if (stylesheet != null)
             {
-                _stylesheet = Resource.newResource(css);
-                if (!_stylesheet.exists())
+                _styleSheet = _resourceFactory.newResource(stylesheet);
+                if (Resources.missing(_styleSheet))
                 {
-                    LOG.warn("!{}", css);
-                    _stylesheet = null;
+                    LOG.warn("Stylesheet {} does not exist", stylesheet);
+                    _styleSheet = null;
                 }
             }
-            if (_stylesheet == null)
+            if (_styleSheet == null)
             {
-                _stylesheet = ResourceHandler.getDefaultStylesheet();
+                _styleSheet = _contextHandler.getServer().getDefaultStyleSheet();
             }
         }
         catch (Exception e)
         {
             if (LOG.isDebugEnabled())
-                LOG.warn("Unable to use stylesheet: {}", css, e);
+                LOG.warn("Unable to use stylesheet: {}", stylesheet, e);
             else
-                LOG.warn("Unable to use stylesheet: {} - {}", css, e.toString());
+                LOG.warn("Unable to use stylesheet: {} - {}", stylesheet, e.toString());
         }
 
         int encodingHeaderCacheSize = getInitInt("encodingHeaderCacheSize", -1);
@@ -236,47 +248,46 @@ public class DefaultServlet extends HttpServlet implements ResourceFactory, Welc
         if (cc != null)
             _resourceService.setCacheControl(new PreEncodedHttpField(HttpHeader.CACHE_CONTROL, cc));
 
-        String resourceCache = getInitParameter("resourceCache");
-        int maxCacheSize = getInitInt("maxCacheSize", -2);
-        int maxCachedFileSize = getInitInt("maxCachedFileSize", -2);
-        int maxCachedFiles = getInitInt("maxCachedFiles", -2);
-        if (resourceCache != null)
+        // Create HttpContentFactory if none already set
+        if (_resourceService.getHttpContentFactory() == null)
         {
-            if (maxCacheSize != -1 || maxCachedFileSize != -2 || maxCachedFiles != -2)
-                LOG.debug("ignoring resource cache configuration, using resourceCache attribute");
-            if (_relativeResourceBase != null || _resourceBase != null)
-                throw new UnavailableException("resourceCache specified with resource bases");
-            _cache = (CachedContentFactory)_servletContext.getAttribute(resourceCache);
-        }
-
-        try
-        {
-            if (_cache == null && (maxCachedFiles != -2 || maxCacheSize != -2 || maxCachedFileSize != -2))
+            // Try to get factory from ServletContext attribute.
+            HttpContent.Factory contentFactory = (HttpContent.Factory)getServletContext().getAttribute(HttpContent.Factory.class.getName());
+            if (contentFactory == null)
             {
-                _cache = new CachedContentFactory(null, this, _mimeTypes, _useFileMappedBuffer, _resourceService.isEtags(), _resourceService.getPrecompressedFormats());
-                if (maxCacheSize >= 0)
-                    _cache.setMaxCacheSize(maxCacheSize);
-                if (maxCachedFileSize >= -1)
-                    _cache.setMaxCachedFileSize(maxCachedFileSize);
-                if (maxCachedFiles >= -1)
-                    _cache.setMaxCachedFiles(maxCachedFiles);
-                _servletContext.setAttribute(resourceCache == null ? "resourceCache" : resourceCache, _cache);
-            }
-        }
-        catch (Exception e)
-        {
-            LOG.warn("Unable to setup CachedContentFactory", e);
-            throw new UnavailableException(e.toString());
-        }
+                contentFactory = new ResourceHttpContentFactory(_baseResource, _mimeTypes)
+                {
+                    @Override
+                    protected Resource resolve(String pathInContext)
+                    {
+                        return DefaultServlet.this.resolve(pathInContext);
+                    }
+                };
+                if (_useFileMappedBuffer)
+                    contentFactory = new FileMappingHttpContentFactory(contentFactory);
+                contentFactory = new VirtualHttpContentFactory(contentFactory, _styleSheet, "text/css");
+                contentFactory = new PreCompressedHttpContentFactory(contentFactory, _resourceService.getPrecompressedFormats());
 
-        HttpContent.ContentFactory contentFactory = _cache;
-        if (contentFactory == null)
-        {
-            contentFactory = new ResourceContentFactory(this, _mimeTypes, _resourceService.getPrecompressedFormats());
-            if (resourceCache != null)
-                _servletContext.setAttribute(resourceCache, contentFactory);
+                int maxCacheSize = getInitInt("maxCacheSize", -2);
+                int maxCachedFileSize = getInitInt("maxCachedFileSize", -2);
+                int maxCachedFiles = getInitInt("maxCachedFiles", -2);
+                long cacheValidationTime = getInitParameter("cacheValidationTime") != null ? Long.parseLong(getInitParameter("cacheValidationTime")) : -2;
+                if (maxCachedFiles != -2 || maxCacheSize != -2 || maxCachedFileSize != -2 || cacheValidationTime != -2)
+                {
+                    ByteBufferPool bufferPool = getByteBufferPool(_contextHandler);
+                    _cachingContentFactory = new ValidatingCachingHttpContentFactory(contentFactory,
+                        (cacheValidationTime > -2) ? cacheValidationTime : Duration.ofSeconds(1).toMillis(), bufferPool);
+                    contentFactory = _cachingContentFactory;
+                    if (maxCacheSize >= 0)
+                        _cachingContentFactory.setMaxCacheSize(maxCacheSize);
+                    if (maxCachedFileSize >= -1)
+                        _cachingContentFactory.setMaxCachedFileSize(maxCachedFileSize);
+                    if (maxCachedFiles >= -1)
+                        _cachingContentFactory.setMaxCachedFiles(maxCachedFiles);
+                }
+            }
+            _resourceService.setHttpContentFactory(contentFactory);
         }
-        _resourceService.setContentFactory(contentFactory);
         _resourceService.setWelcomeFactory(this);
 
         List<String> gzipEquivalentFileExtensions = new ArrayList<>();
@@ -301,7 +312,36 @@ public class DefaultServlet extends HttpServlet implements ResourceFactory, Welc
         _servletHandler = _contextHandler.getChildHandlerByClass(ServletHandler.class);
 
         if (LOG.isDebugEnabled())
-            LOG.debug("resource base = {}", _resourceBase);
+            LOG.debug("resource base = {}", _baseResource);
+    }
+
+    private static ByteBufferPool getByteBufferPool(ContextHandler contextHandler)
+    {
+        if (contextHandler == null)
+            return ByteBufferPool.NON_POOLING;
+        Server server = contextHandler.getServer();
+        if (server == null)
+            return ByteBufferPool.NON_POOLING;
+        return server.getByteBufferPool();
+    }
+
+    private String getInitParameter(String name, String... deprecated)
+    {
+        String value = getInitParameter(name);
+        if (value != null)
+            return value;
+
+        for (String d : deprecated)
+        {
+            value = getInitParameter(d);
+            if (value != null)
+            {
+                LOG.warn("Deprecated {} used instead of {}", d, name);
+                return value;
+            }
+        }
+
+        return null;
     }
 
     private CompressedContentFormat[] parsePrecompressedFormats(String precompressed, Boolean gzip, CompressedContentFormat[] dft)
@@ -363,6 +403,20 @@ public class DefaultServlet extends HttpServlet implements ResourceFactory, Welc
             return ContextHandler.getCurrentContext().getContextHandler();
     }
 
+    /**
+     * <p>
+     *     Returns a {@code String} containing the value of the named initialization parameter, or null if the parameter does not exist.
+     * </p>
+     *
+     * <p>
+     *     Parameter lookup first checks the {@link ServletContext#getInitParameter(String)} for the
+     *     parameter prefixed with {@code org.eclipse.jetty.servlet.Default.}, then checks
+     *     {@link jakarta.servlet.ServletConfig#getInitParameter(String)} for the actual value
+     * </p>
+     *
+     * @param name a {@code String} specifying the name of the initialization parameter
+     * @return a {@code String} containing the value of the initialization parameter
+     */
     @Override
     public String getInitParameter(String name)
     {
@@ -405,27 +459,26 @@ public class DefaultServlet extends HttpServlet implements ResourceFactory, Welc
      * HttpContext.getResource but derived servlets may provide
      * their own mapping.
      *
-     * @param pathInContext The path to find a resource for.
+     * @param subUriPath The path to find a resource for.
      * @return The resource to serve.
      */
-    @Override
-    public Resource getResource(String pathInContext)
+    protected Resource resolve(String subUriPath)
     {
+        subUriPath = URIUtil.encodePath(subUriPath);
+
         Resource r = null;
-        if (_relativeResourceBase != null)
-            pathInContext = URIUtil.addPaths(_relativeResourceBase, pathInContext);
+        if (_relativeBaseResource != null)
+            subUriPath = URIUtil.addPaths(_relativeBaseResource, subUriPath);
 
         try
         {
-            if (_resourceBase != null)
+            if (_baseResource != null)
             {
-                r = _resourceBase.addPath(pathInContext);
-                if (!_contextHandler.checkAlias(pathInContext, r))
-                    r = null;
+                r = _baseResource.resolve(subUriPath);
             }
             else if (_servletContext instanceof ContextHandler.APIContext)
             {
-                r = _contextHandler.getResource(pathInContext);
+                r = _contextHandler.getResource(subUriPath);
             }
             else
             {
@@ -433,15 +486,15 @@ public class DefaultServlet extends HttpServlet implements ResourceFactory, Welc
             }
 
             if (LOG.isDebugEnabled())
-                LOG.debug("Resource {}={}", pathInContext, r);
+                LOG.debug("Resource {}={}", subUriPath, r);
         }
         catch (IOException e)
         {
             LOG.trace("IGNORED", e);
         }
 
-        if ((r == null || !r.exists()) && pathInContext.endsWith("/jetty-dir.css"))
-            r = _stylesheet;
+        if (Resources.missing(r) && subUriPath.endsWith("/jetty-dir.css"))
+            r = _styleSheet;
 
         return r;
     }
@@ -485,9 +538,10 @@ public class DefaultServlet extends HttpServlet implements ResourceFactory, Welc
     @Override
     public void destroy()
     {
-        if (_cache != null)
-            _cache.flushCache();
+        if (_cachingContentFactory != null)
+            _cachingContentFactory.flushCache();
         super.destroy();
+        IO.close(_resourceFactory);
     }
 
     @Override
@@ -500,7 +554,7 @@ public class DefaultServlet extends HttpServlet implements ResourceFactory, Welc
         for (String s : _welcomes)
         {
             String welcomeInContext = URIUtil.addPaths(pathInContext, s);
-            Resource welcome = getResource(welcomeInContext);
+            Resource welcome = resolve(welcomeInContext);
             if (welcome != null && welcome.exists())
                 return welcomeInContext;
 

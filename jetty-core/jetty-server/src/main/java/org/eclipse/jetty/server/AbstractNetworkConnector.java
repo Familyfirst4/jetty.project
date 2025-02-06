@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,6 +14,7 @@
 package org.eclipse.jetty.server;
 
 import java.io.IOException;
+import java.util.EventListener;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 
@@ -33,9 +34,9 @@ public abstract class AbstractNetworkConnector extends AbstractConnector impleme
     private volatile String _host;
     private volatile int _port = 0;
 
-    public AbstractNetworkConnector(Server server, Executor executor, Scheduler scheduler, ByteBufferPool pool, int acceptors, ConnectionFactory... factories)
+    public AbstractNetworkConnector(Server server, Executor executor, Scheduler scheduler, ByteBufferPool bufferPool, int acceptors, ConnectionFactory... factories)
     {
-        super(server, executor, scheduler, pool, acceptors, factories);
+        super(server, executor, scheduler, bufferPool, acceptors, factories);
     }
 
     public void setHost(String host)
@@ -85,11 +86,41 @@ public abstract class AbstractNetworkConnector extends AbstractConnector impleme
     @Override
     public void open() throws IOException
     {
+        for (EventListener l : getEventListeners())
+        {
+            if (l instanceof NetworkConnector.Listener listener)
+            {
+                try
+                {
+                    listener.onOpen(this);
+                }
+                catch (Throwable x)
+                {
+                    if (LOG.isDebugEnabled())
+                        LOG.debug("failure while notifying listener {}", listener, x);
+                }
+            }
+        }
     }
 
     @Override
     public void close()
     {
+        for (EventListener l : getEventListeners())
+        {
+            if (l instanceof NetworkConnector.Listener listener)
+            {
+                try
+                {
+                    listener.onClose(this);
+                }
+                catch (Throwable x)
+                {
+                    if (LOG.isDebugEnabled())
+                        LOG.debug("failure while notifying listener {}", listener, x);
+                }
+            }
+        }
     }
 
     @Override

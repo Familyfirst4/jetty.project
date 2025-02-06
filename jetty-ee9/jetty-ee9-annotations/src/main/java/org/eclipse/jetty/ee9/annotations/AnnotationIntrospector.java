@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,7 +13,6 @@
 
 package org.eclipse.jetty.ee9.annotations;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -167,18 +166,10 @@ public class AnnotationIntrospector
                 if (_context.getMetaData().isMetaDataComplete())
                     return false;
 
-                String descriptorLocation = holder.getSource().getResource();
+                Resource descriptorLocation = holder.getSource().getResource();
                 if (descriptorLocation == null)
                     return true; //no descriptor, can't be metadata-complete
-                try
-                {
-                    return !WebDescriptor.isMetaDataComplete(_context.getMetaData().getFragmentDescriptor(Resource.newResource(descriptorLocation)));
-                }
-                catch (IOException e)
-                {
-                    LOG.warn("Unable to get Resource for descriptor {}", descriptorLocation, e);
-                    return false; //something wrong with the descriptor
-                }
+                return !WebDescriptor.isMetaDataComplete(_context.getMetaData().getFragmentDescriptor(descriptorLocation));
             }
         }
     }

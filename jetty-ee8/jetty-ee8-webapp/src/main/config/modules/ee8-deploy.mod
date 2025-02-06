@@ -1,5 +1,7 @@
 [description]
-Enables web application deployment from the $JETTY_BASE/webapps/ directory.
+# tag::description[]
+This module enables webapp deployment from the `$JETTY_BASE/webapps` directory.
+# end::description[]
 
 [environment]
 ee8
@@ -8,26 +10,19 @@ ee8
 deploy
 ee8-webapp
 
-[lib]
-
-[files]
-webapps/
-
 [xml]
 etc/jetty-ee8-deploy.xml
 
 [ini-template]
+# tag::ini-template[]
 ## Monitored directory name (relative to $jetty.base)
 # jetty.deploy.monitoredDir=webapps
-## - OR -
-## Monitored directory path (fully qualified)
-# jetty.deploy.monitoredPath=/var/www/webapps
 
 ## Defaults Descriptor for all deployed webapps
-# jetty.deploy.defaultsDescriptor=${jetty.base}/etc/webdefault-ee8.xml
+# jetty.deploy.defaultsDescriptorPath=${jetty.base}/etc/webdefault-ee8.xml
 
 ## Monitored directory scan period (seconds)
-# jetty.deploy.scanInterval=1
+# jetty.deploy.scanInterval=0
 
 ## Whether to extract *.war files
 # jetty.deploy.extractWars=true
@@ -38,11 +33,8 @@ etc/jetty-ee8-deploy.xml
 ## Comma separated list of configuration classes to set.
 # jetty.deploy.configurationClasses=
 
-## Base temporary directory for deployed web applications.
-# jetty.deploy.tempDir=
-
 ## Pattern to select jars from the container classloader to be scanned (or null to scan no jars)
-# jetty.deploy.containerScanJarPattern=.*jakarta.servlet.jsp.jstl-.*\.jar$
+# jetty.deploy.containerScanJarPattern=.*/jetty-servlet-api-[^/]*\.jar$|.*/javax.servlet.jsp.jstl-.*\.jar$
 
 ## Pattern to select jars from the container classloader to be scanned (or null to scan all jars).
 # jetty.deploy.webInfScanJarPattern=
@@ -52,3 +44,4 @@ etc/jetty-ee8-deploy.xml
 
 ## Order of discovered ServletContainerInitializers
 # jetty.deploy.servletContainerInitializerOrder=
+# end::ini-template[]

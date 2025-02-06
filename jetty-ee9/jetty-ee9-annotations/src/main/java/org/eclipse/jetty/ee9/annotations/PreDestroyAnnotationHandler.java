@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -18,11 +18,11 @@ import java.lang.reflect.Modifier;
 
 import jakarta.annotation.PreDestroy;
 import org.eclipse.jetty.ee9.annotations.AnnotationIntrospector.AbstractIntrospectableAnnotationHandler;
-import org.eclipse.jetty.ee9.plus.annotation.LifeCycleCallbackCollection;
-import org.eclipse.jetty.ee9.plus.annotation.PreDestroyCallback;
 import org.eclipse.jetty.ee9.webapp.MetaData;
 import org.eclipse.jetty.ee9.webapp.Origin;
 import org.eclipse.jetty.ee9.webapp.WebAppContext;
+import org.eclipse.jetty.plus.annotation.LifeCycleCallbackCollection;
+import org.eclipse.jetty.plus.annotation.PreDestroyCallback;
 
 public class PreDestroyAnnotationHandler extends AbstractIntrospectableAnnotationHandler
 {

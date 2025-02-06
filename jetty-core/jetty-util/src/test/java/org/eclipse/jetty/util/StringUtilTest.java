@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,12 +13,11 @@
 
 package org.eclipse.jetty.util;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -26,9 +25,11 @@ import static org.hamcrest.Matchers.arrayContaining;
 import static org.hamcrest.Matchers.emptyArray;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.nullValue;
+import static org.hamcrest.Matchers.sameInstance;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -41,42 +42,52 @@ public class StringUtilTest
     {
         String lc = "\u0690bc def 1\u06903";
         assertEquals(StringUtil.asciiToLowerCase("\u0690Bc DeF 1\u06903"), lc);
-        assertTrue(StringUtil.asciiToLowerCase(lc) == lc);
+        assertSame(StringUtil.asciiToLowerCase(lc), lc);
     }
 
     @Test
-    public void testStartsWithIgnoreCase()
+    public void testAsciiEqualsIgnoreCase()
     {
+        assertTrue(StringUtil.asciiEqualsIgnoreCase(null, null));
+        assertTrue(StringUtil.asciiEqualsIgnoreCase("", ""));
+        assertTrue(StringUtil.asciiEqualsIgnoreCase("AbC", "aBc"));
 
-        assertTrue(StringUtil.startsWithIgnoreCase("\u0690b\u0690defg", "\u0690b\u0690"));
-        assertTrue(StringUtil.startsWithIgnoreCase("\u0690bcdefg", "\u0690bc"));
-        assertTrue(StringUtil.startsWithIgnoreCase("\u0690bcdefg", "\u0690Bc"));
-        assertTrue(StringUtil.startsWithIgnoreCase("\u0690Bcdefg", "\u0690bc"));
-        assertTrue(StringUtil.startsWithIgnoreCase("\u0690Bcdefg", "\u0690Bc"));
-        assertTrue(StringUtil.startsWithIgnoreCase("\u0690bcdefg", ""));
-        assertTrue(StringUtil.startsWithIgnoreCase("\u0690bcdefg", null));
-        assertTrue(StringUtil.startsWithIgnoreCase("\u0690bcdefg", "\u0690bcdefg"));
-
-        assertFalse(StringUtil.startsWithIgnoreCase(null, "xyz"));
-        assertFalse(StringUtil.startsWithIgnoreCase("\u0690bcdefg", "xyz"));
-        assertFalse(StringUtil.startsWithIgnoreCase("\u0690", "xyz"));
+        assertFalse(StringUtil.asciiEqualsIgnoreCase("AbC", "aBcd"));
+        assertFalse(StringUtil.asciiEqualsIgnoreCase("AbCd", "aBc"));
     }
 
     @Test
-    public void testEndsWithIgnoreCase()
+    public void testAsciiStartsWithIgnoreCase()
     {
-        assertTrue(StringUtil.endsWithIgnoreCase("\u0690bcd\u0690f\u0690", "\u0690f\u0690"));
-        assertTrue(StringUtil.endsWithIgnoreCase("\u0690bcdefg", "efg"));
-        assertTrue(StringUtil.endsWithIgnoreCase("\u0690bcdefg", "eFg"));
-        assertTrue(StringUtil.endsWithIgnoreCase("\u0690bcdeFg", "efg"));
-        assertTrue(StringUtil.endsWithIgnoreCase("\u0690bcdeFg", "eFg"));
-        assertTrue(StringUtil.endsWithIgnoreCase("\u0690bcdefg", ""));
-        assertTrue(StringUtil.endsWithIgnoreCase("\u0690bcdefg", null));
-        assertTrue(StringUtil.endsWithIgnoreCase("\u0690bcdefg", "\u0690bcdefg"));
+        assertTrue(StringUtil.asciiStartsWithIgnoreCase("\u0690b\u0690defg", "\u0690b\u0690"));
+        assertTrue(StringUtil.asciiStartsWithIgnoreCase("\u0690bcdefg", "\u0690bc"));
+        assertTrue(StringUtil.asciiStartsWithIgnoreCase("\u0690bcdefg", "\u0690Bc"));
+        assertTrue(StringUtil.asciiStartsWithIgnoreCase("\u0690Bcdefg", "\u0690bc"));
+        assertTrue(StringUtil.asciiStartsWithIgnoreCase("\u0690Bcdefg", "\u0690Bc"));
+        assertTrue(StringUtil.asciiStartsWithIgnoreCase("\u0690bcdefg", ""));
+        assertTrue(StringUtil.asciiStartsWithIgnoreCase("\u0690bcdefg", null));
+        assertTrue(StringUtil.asciiStartsWithIgnoreCase("\u0690bcdefg", "\u0690bcdefg"));
 
-        assertFalse(StringUtil.endsWithIgnoreCase(null, "xyz"));
-        assertFalse(StringUtil.endsWithIgnoreCase("\u0690bcdefg", "xyz"));
-        assertFalse(StringUtil.endsWithIgnoreCase("\u0690", "xyz"));
+        assertFalse(StringUtil.asciiStartsWithIgnoreCase(null, "xyz"));
+        assertFalse(StringUtil.asciiStartsWithIgnoreCase("\u0690bcdefg", "xyz"));
+        assertFalse(StringUtil.asciiStartsWithIgnoreCase("\u0690", "xyz"));
+    }
+
+    @Test
+    public void testAsciiEndsWithIgnoreCase()
+    {
+        assertTrue(StringUtil.asciiEndsWithIgnoreCase("\u0690bcd\u0690f\u0690", "\u0690f\u0690"));
+        assertTrue(StringUtil.asciiEndsWithIgnoreCase("\u0690bcdefg", "efg"));
+        assertTrue(StringUtil.asciiEndsWithIgnoreCase("\u0690bcdefg", "eFg"));
+        assertTrue(StringUtil.asciiEndsWithIgnoreCase("\u0690bcdeFg", "efg"));
+        assertTrue(StringUtil.asciiEndsWithIgnoreCase("\u0690bcdeFg", "eFg"));
+        assertTrue(StringUtil.asciiEndsWithIgnoreCase("\u0690bcdefg", ""));
+        assertTrue(StringUtil.asciiEndsWithIgnoreCase("\u0690bcdefg", null));
+        assertTrue(StringUtil.asciiEndsWithIgnoreCase("\u0690bcdefg", "\u0690bcdefg"));
+
+        assertFalse(StringUtil.asciiEndsWithIgnoreCase(null, "xyz"));
+        assertFalse(StringUtil.asciiEndsWithIgnoreCase("\u0690bcdefg", "xyz"));
+        assertFalse(StringUtil.asciiEndsWithIgnoreCase("\u0690", "xyz"));
     }
 
     @Test
@@ -100,28 +111,24 @@ public class StringUtilTest
         assertEquals(StringUtil.replace(s, "\u0690bc", "xyz"), " xyz ");
     }
 
-    public static Stream<String[]> replaceFirstArgs()
+    public static Stream<Arguments> replaceFirstArgs()
     {
-        List<String[]> data = new ArrayList<>();
+        return Stream.of(
+            // no match
+            Arguments.of("abc", "z", "foo", "abc"),
 
-        // [original, target, replacement, expected]
+            // matches at start of string
+            Arguments.of("abc", "a", "foo", "foobc"),
+            Arguments.of("abcabcabc", "a", "foo", "foobcabcabc"),
 
-        // no match
-        data.add(new String[]{"abc", "z", "foo", "abc"});
+            // matches in middle of string
+            Arguments.of("abc", "b", "foo", "afooc"),
+            Arguments.of("abcabcabc", "b", "foo", "afoocabcabc"),
+            Arguments.of("abcabcabc", "cab", "X", "abXcabc"),
 
-        // matches at start of string
-        data.add(new String[]{"abc", "a", "foo", "foobc"});
-        data.add(new String[]{"abcabcabc", "a", "foo", "foobcabcabc"});
-
-        // matches in middle of string
-        data.add(new String[]{"abc", "b", "foo", "afooc"});
-        data.add(new String[]{"abcabcabc", "b", "foo", "afoocabcabc"});
-        data.add(new String[]{"abcabcabc", "cab", "X", "abXcabc"});
-
-        // matches at end of string
-        data.add(new String[]{"abc", "c", "foo", "abfoo"});
-
-        return data.stream();
+            // matches at end of string
+            Arguments.of("abc", "c", "foo", "abfoo")
+        );
     }
 
     @ParameterizedTest
@@ -136,7 +143,7 @@ public class StringUtilTest
     public void testNonNull()
     {
         String nn = "non empty string";
-        assertTrue(nn == StringUtil.nonNull(nn));
+        assertThat(StringUtil.nonNull(nn), sameInstance(nn));
         assertEquals("", StringUtil.nonNull(null));
     }
 

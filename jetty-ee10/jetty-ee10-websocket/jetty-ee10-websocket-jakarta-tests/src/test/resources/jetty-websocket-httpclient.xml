@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE Configure PUBLIC "-//Jetty//Configure//EN" "https://www.eclipse.org/jetty/configure_10_0.dtd">
+<!DOCTYPE Configure PUBLIC "-//Jetty//Configure//EN" "https://jetty.org/configure_10_0.dtd">
 <Configure class="org.eclipse.jetty.client.HttpClient">
   <Call name="getAuthenticationStore">
     <Call name="addAuthentication">
       <Arg>
-        <New class="org.eclipse.jetty.client.util.BasicAuthentication">
+        <New class="org.eclipse.jetty.client.BasicAuthentication">
           <Arg>
             <New class="java.net.URI">
               <Arg>ws://localhost:<SystemProperty name="org.eclipse.jetty.websocket.port"/>/secured/socket</Arg>

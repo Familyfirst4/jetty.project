@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,23 +14,25 @@
 package org.eclipse.jetty.start;
 
 import java.io.ByteArrayOutputStream;
-import java.io.File;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 
-import org.eclipse.jetty.toolchain.test.MavenTestingUtils;
+import org.eclipse.jetty.toolchain.test.MavenPaths;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class MainTest
 {
@@ -54,16 +56,16 @@ public class MainTest
         StartArgs args = main.processCommandLine(cmdLineArgs.toArray(new String[0]));
 
         // assertEquals(0, args.getEnabledModules().size(), "--stop should not build module tree");
-        assertEquals("10000", args.getCoreEnvironment().getProperties().getString("STOP.PORT"), "--stop missing port");
-        assertEquals("foo", args.getCoreEnvironment().getProperties().getString("STOP.KEY"), "--stop missing key");
-        assertEquals("300", args.getCoreEnvironment().getProperties().getString("STOP.WAIT"), "--stop missing wait");
+        assertEquals("10000", args.getJettyEnvironment().getProperties().getString("STOP.PORT"), "--stop missing port");
+        assertEquals("foo", args.getJettyEnvironment().getProperties().getString("STOP.KEY"), "--stop missing key");
+        assertEquals("300", args.getJettyEnvironment().getProperties().getString("STOP.WAIT"), "--stop missing wait");
     }
 
     @Test
     public void testListConfig() throws Exception
     {
         List<String> cmdLineArgs = new ArrayList<>();
-        File testJettyHome = MavenTestingUtils.getTestResourceDir("dist-home");
+        Path testJettyHome = MavenPaths.findTestResourceDir("dist-home");
         cmdLineArgs.add("user.dir=" + testJettyHome);
         cmdLineArgs.add("-Duser.dir=foo"); // used to test "source" display on "Java Environment"
         cmdLineArgs.add("jetty.home=" + testJettyHome);
@@ -92,11 +94,62 @@ public class MainTest
     }
 
     @Test
-    @Disabled("Just a bit noisy for general testing")
-    public void testHelp() throws Exception
+    public void testUnknownDistroCommand() throws Exception
     {
-        Main main = new Main();
-        main.usage(false);
+        List<String> cmdLineArgs = new ArrayList<>();
+        Path testJettyHome = MavenPaths.findTestResourceDir("dist-home");
+        Path testJettyBase = MavenPaths.targetTestDir("base-example-unknown");
+        FS.ensureDirectoryExists(testJettyBase);
+        Path zedIni = testJettyBase.resolve("start.d/zed.ini");
+        FS.ensureDirectoryExists(zedIni.getParent());
+        Files.writeString(zedIni, "--zed-0-zed");
+        cmdLineArgs.add("jetty.home=" + testJettyHome);
+        cmdLineArgs.add("jetty.base=" + testJettyBase);
+        cmdLineArgs.add("main.class=" + PropertyDump.class.getName());
+        cmdLineArgs.add("--modules=base");
+        cmdLineArgs.add("--foople");
+        cmdLineArgs.add("-Dzed.key=0.value");
+
+        List<String> output;
+
+        try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
+             PrintStream out = new PrintStream(baos, true, StandardCharsets.UTF_8))
+        {
+            PrintStream originalStream = StartLog.setStream(new PrintStream(out));
+            try
+            {
+                Main main = new Main();
+                StartArgs args = main.processCommandLine(cmdLineArgs.toArray(new String[0]));
+                main.start(args);
+                out.flush();
+                output = List.of(baos.toString(StandardCharsets.UTF_8).split(System.lineSeparator()));
+            }
+            finally
+            {
+                StartLog.setStream(originalStream);
+            }
+        }
+
+        // Test a System Property that comes from JVM
+        List<String> warnings = output.stream().filter((line) -> line.startsWith("WARN")).toList();
+        // warnings.forEach(System.out::println);
+        Iterator<String> warningIter = warnings.iterator();
+
+        assertThat("Announcement", warningIter.next(), containsString("Unknown Arguments detected."));
+        assertThat("System Prop on command line detail", warningIter.next(), containsString("Argument: -Dzed.key=0.value (interpreted as a System property, from <command-line>"));
+        assertThat("JVM Arg in ini detail", warningIter.next(), containsString("Argument: --zed-0-zed (interpreted as a JVM argument, from " + zedIni));
+        assertThat("JVM Arg on command line detail", warningIter.next(), containsString("Argument: --foople (interpreted as a JVM argument, from <command-line>"));
+    }
+
+    /**
+     * A test to ensure that the usage text is still present and not accidentally deleted.
+     */
+    @Test
+    public void testUsageHelpStillThere() throws Exception
+    {
+        Path usageFile = MavenPaths.findMainResourceFile("org/eclipse/jetty/start/usage.txt");
+        assertTrue(Files.exists(usageFile));
+        assertTrue(Files.isRegularFile(usageFile));
     }
 
     @Test
@@ -104,7 +157,7 @@ public class MainTest
     {
         List<String> cmdLineArgs = new ArrayList<>();
 
-        Path homePath = MavenTestingUtils.getTestResourceDir("dist-home").toPath().toRealPath();
+        Path homePath = MavenPaths.findTestResourceDir("dist-home");
         cmdLineArgs.add("jetty.home=" + homePath);
         cmdLineArgs.add("user.dir=" + homePath);
 
@@ -123,10 +176,33 @@ public class MainTest
         assertThat("jetty.base", baseHome.getBase(), is(homePath.toString()));
 
         CommandLineBuilder commandLineBuilder = args.getMainArgs(StartArgs.ALL_PARTS);
-        String commandLine = commandLineBuilder.toString("\n");
+        String commandLine = commandLineBuilder.toString();
         String expectedExpansion = String.format("-Xloggc:%s/logs/gc-%s.log",
             baseHome.getBase(), System.getProperty("java.version")
         );
         assertThat(commandLine, containsString(expectedExpansion));
+    }
+
+    @Test
+    public void testModulesDeclaredTwice() throws Exception
+    {
+        List<String> cmdLineArgs = new ArrayList<>();
+
+        Path homePath = MavenPaths.findTestResourceDir("dist-home");
+        Path basePath = MavenPaths.findTestResourceDir("overdeclared-modules");
+        cmdLineArgs.add("jetty.home=" + homePath);
+        cmdLineArgs.add("user.dir=" + basePath);
+
+        Main main = new Main();
+
+        cmdLineArgs.add("--module=main");
+
+        // The "main" module is enabled in both ...
+        // 1) overdeclared-modules/start.d/config.ini
+        // 2) command-line
+        // This shouldn't result in an error
+        StartArgs args = main.processCommandLine(cmdLineArgs.toArray(new String[0]));
+
+        assertThat(args.getSelectedModules(), hasItem("main"));
     }
 }

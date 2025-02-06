@@ -52,15 +52,15 @@
   <!--
     UNCOMMENT TO ACTIVATE 
     <context-param> 
-      <param-name>org.eclipse.jetty.ee9.servlet.SessionDomain</param-name>
+      <param-name>org.eclipse.jetty.session.SessionDomain</param-name>
       <param-value>127.0.0.1</param-value> 
     </context-param> 
     <context-param>
-      <param-name>org.eclipse.jetty.ee9.servlet.SessionPath</param-name>
+      <param-name>org.eclipse.jetty.session.SessionPath</param-name>
       <param-value>/</param-value>
     </context-param>
     <context-param>
-      <param-name>org.eclipse.jetty.ee9.servlet.MaxAge</param-name>
+      <param-name>org.eclipse.jetty.session.MaxAge</param-name>
       <param-value>-1</param-value>
     </context-param>
   -->
@@ -94,17 +94,15 @@
  *                    gzip content encoded if a matching resource is
  *                    found ending with ".gz"
  *
- *  resourceBase      Set to replace the context resource base
+ *  baseResource      Set to replace the context resource base
  *
  *  resourceCache     If set, this is a context attribute name, which the servlet
  *                    will use to look for a shared ResourceCache instance.
  *
- *  relativeResourceBase
+ *  relativeBaseResource
  *                    Set with a pathname relative to the base of the
  *                    servlet context root. Useful for only serving static content out
  *                    of only specific subdirectories.
- *
- *  pathInfoOnly      If true, only the path info will be applied to the resourceBase
  *
  *  stylesheet        Set with the location of an optional stylesheet that will be used
  *                    to decorate the directory listing html.

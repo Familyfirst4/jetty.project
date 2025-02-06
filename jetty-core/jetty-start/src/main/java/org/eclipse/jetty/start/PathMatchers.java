@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,13 +13,13 @@
 
 package org.eclipse.jetty.start;
 
-import java.io.File;
 import java.io.IOException;
 import java.nio.file.FileSystem;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.PathMatcher;
+import java.nio.file.Paths;
 
 /**
  * Common PathMatcher implementations.
@@ -45,7 +45,7 @@ public class PathMatchers
 
     private static final char[] GLOB_CHARS = "*?".toCharArray();
     private static final char[] SYNTAXED_GLOB_CHARS = "{}[]|:".toCharArray();
-    private static final Path EMPTY_PATH = new File(".").toPath();
+    private static final Path EMPTY_PATH = Paths.get(".");
 
     /**
      * Convert a pattern to a Path object.
@@ -64,7 +64,7 @@ public class PathMatchers
         {
             test = test.substring("regex:".length());
         }
-        return new File(test).toPath();
+        return Paths.get(test);
     }
 
     public static PathMatcher getMatcher(final String rawpattern)
@@ -84,7 +84,7 @@ public class PathMatchers
         // use FileSystem default pattern behavior
         if (pattern.startsWith("glob:") || pattern.startsWith("regex:"))
         {
-            StartLog.debug("Using Standard " + fs.getClass().getName() + " pattern: " + pattern);
+            StartLog.debug("Using Standard %s pattern: %s", fs.getClass().getName(), pattern);
             return fs.getPathMatcher(pattern);
         }
 
@@ -93,14 +93,14 @@ public class PathMatchers
         if (isAbsolute(pattern))
         {
             String pat = "glob:" + pattern;
-            StartLog.debug("Using absolute path pattern: " + pat);
+            StartLog.debug("Using absolute path pattern: %s", pat);
             return fs.getPathMatcher(pat);
         }
 
         // Doesn't start with filesystem root, then assume the pattern
         // is a relative file path pattern.
         String pat = "glob:**/" + pattern;
-        StartLog.debug("Using relative path pattern: " + pat);
+        StartLog.debug("Using relative path pattern: %s", pat);
         return fs.getPathMatcher(pat);
     }
 
@@ -221,7 +221,7 @@ public class PathMatchers
     /**
      * Determine if part is a glob pattern.
      *
-     * @param part the string to check
+     * @param c the char to check
      * @param syntaxed true if overall pattern is syntaxed with <code>"glob:"</code> or <code>"regex:"</code>
      * @return true if part has glob characters
      */

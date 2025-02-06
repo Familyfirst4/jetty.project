@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<!DOCTYPE Configure PUBLIC "-//Jetty//Configure//EN" "https://www.eclipse.org/jetty/configure_9_3.dtd">
+<!DOCTYPE Configure PUBLIC "-//Jetty//Configure//EN" "https://jetty.org/configure_9_3.dtd">
 
 <Configure id="Server" class="org.eclipse.jetty.server.Server">
   <!-- =========================================================== -->
@@ -9,11 +9,18 @@
   <!-- configuration (see $(jetty.home)/webapps/test.xml for an    -->
   <!-- example).                                                   -->
   <!-- =========================================================== -->
+    <Call id="ResourceFactory" class="org.eclipse.jetty.util.resource.ResourceFactory" name="of">
+    <Arg><Ref refid="Server" /></Arg>
+    <Call id="realmResource" name="newResource">
+      <Arg><Property name="login.realm" default="src/test/resources/realm.properties"/></Arg>
+    </Call>
+  </Call>
+  
   <Call name="addBean">
     <Arg>
       <New class="org.eclipse.jetty.security.HashLoginService">
         <Set name="name">Test Realm</Set>
-        <Set name="config"><Property name="login.realm" default="src/test/resources/realm.properties"/></Set>
+        <Set name="config"><Ref refid="realmResource"/></Set>
         <Set name="hotReload">false</Set>
       </New>
     </Arg>

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -15,15 +15,21 @@ package org.eclipse.jetty.ee10.servlet;
 
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.EventListener;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Queue;
 import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -50,6 +56,7 @@ import jakarta.servlet.ServletRequestEvent;
 import jakarta.servlet.ServletRequestListener;
 import jakarta.servlet.ServletResponse;
 import jakarta.servlet.SessionTrackingMode;
+import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -60,15 +67,19 @@ import jakarta.servlet.http.HttpSessionEvent;
 import jakarta.servlet.http.HttpSessionIdListener;
 import jakarta.servlet.http.HttpSessionListener;
 import org.eclipse.jetty.ee10.servlet.security.ConstraintSecurityHandler;
-import org.eclipse.jetty.ee10.servlet.security.RoleInfo;
-import org.eclipse.jetty.ee10.servlet.security.SecurityHandler;
-import org.eclipse.jetty.ee10.servlet.security.UserIdentity;
+import org.eclipse.jetty.http.HttpCookie;
+import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpTester;
+import org.eclipse.jetty.http.pathmap.MatchedResource;
+import org.eclipse.jetty.io.Content;
 import org.eclipse.jetty.logging.StacklessLogging;
+import org.eclipse.jetty.security.Constraint;
+import org.eclipse.jetty.security.SecurityHandler;
 import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.LocalConnector;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.Response;
+import org.eclipse.jetty.server.ResponseUtils;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.handler.ContextHandler;
 import org.eclipse.jetty.server.handler.ContextHandlerCollection;
@@ -76,7 +87,9 @@ import org.eclipse.jetty.server.handler.ResourceHandler;
 import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.DecoratedObjectFactory;
 import org.eclipse.jetty.util.Decorator;
+import org.eclipse.jetty.util.Jetty;
 import org.eclipse.jetty.util.component.AbstractLifeCycle;
+import org.eclipse.jetty.util.resource.ResourceFactory;
 import org.hamcrest.Matchers;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -87,10 +100,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.contains;
+import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.instanceOf;
+import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
+import static org.hamcrest.Matchers.sameInstance;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -251,9 +268,9 @@ public class ServletContextHandlerTest
     public static class MySCIStarter extends AbstractLifeCycle implements ServletContextHandler.ServletContainerInitializerCaller
     {
         ServletContainerInitializer _sci;
-        ServletContextHandler.Context _ctx;
+        ServletContextHandler.ServletScopedContext _ctx;
 
-        MySCIStarter(ServletContextHandler.Context ctx, ServletContainerInitializer sci)
+        MySCIStarter(ServletContextHandler.ServletScopedContext ctx, ServletContainerInitializer sci)
         {
             _ctx = ctx;
             _sci = sci;
@@ -290,29 +307,41 @@ public class ServletContextHandlerTest
         {
             assertNull(sce.getServletContext().getAttribute("MyContextListener.contextInitialized"));
             sce.getServletContext().setAttribute("MyContextListener.contextInitialized", Boolean.TRUE);
+            
+            assertNull(sce.getServletContext().getAttribute("MyContextListener.declareRoles"));
+            try
+            {
+                sce.getServletContext().declareRoles("foo", "bar");
+                sce.getServletContext().setAttribute("MyContextListener.declareRoles", Boolean.FALSE);
+            }
+            catch (UnsupportedOperationException e)
+            {
+                //Should NOT be able to call declareRoles from programmatic SCL
+                sce.getServletContext().setAttribute("MyContextListener.declareRoles", Boolean.TRUE);
+            }
 
             assertNull(sce.getServletContext().getAttribute("MyContextListener.defaultSessionTrackingModes"));
             try
             {
                 sce.getServletContext().getDefaultSessionTrackingModes();
-                sce.getServletContext().setAttribute("MyContextListener.defaultSessionTrackingModes", Boolean.FALSE);
+                sce.getServletContext().setAttribute("MyContextListener.defaultSessionTrackingModes", Boolean.TRUE);
             }
             catch (UnsupportedOperationException e)
             {
-                //Should NOT be able to call getDefaultSessionTrackingModes from programmatic SCL
-                sce.getServletContext().setAttribute("MyContextListener.defaultSessionTrackingModes", Boolean.TRUE);
+                //Servlet 6, should be able to call getDefaultSessionTrackingModes from programmatic SCL
+                sce.getServletContext().setAttribute("MyContextListener.defaultSessionTrackingModes", Boolean.FALSE);
             }
 
             assertNull(sce.getServletContext().getAttribute("MyContextListener.effectiveSessionTrackingModes"));
             try
             {
                 sce.getServletContext().getEffectiveSessionTrackingModes();
-                sce.getServletContext().setAttribute("MyContextListener.effectiveSessionTrackingModes", Boolean.FALSE);
+                sce.getServletContext().setAttribute("MyContextListener.effectiveSessionTrackingModes", Boolean.TRUE);
             }
             catch (UnsupportedOperationException e)
             {
-                //Should NOT be able to call getEffectiveSessionTrackingModes from programmatic SCL
-                sce.getServletContext().setAttribute("MyContextListener.effectiveSessionTrackingModes", Boolean.TRUE);
+                //Servlet 6,, should be able to call getEffectiveSessionTrackingModes from programmatic SCL
+                sce.getServletContext().setAttribute("MyContextListener.effectiveSessionTrackingModes", Boolean.FALSE);
             }
 
             assertNull(sce.getServletContext().getAttribute("MyContextListener.setSessionTrackingModes"));
@@ -343,12 +372,12 @@ public class ServletContextHandlerTest
                 try
                 {
                     sce.getServletContext().getSessionTimeout();
-                    sce.getServletContext().setAttribute("MyContextListener.getSessionTimeout", Boolean.FALSE);
+                    sce.getServletContext().setAttribute("MyContextListener.getSessionTimeout", Boolean.TRUE);
                 }
                 catch (UnsupportedOperationException e)
                 {
-                    //Should NOT be able to call getSessionTimeout from this SCL
-                    sce.getServletContext().setAttribute("MyContextListener.getSessionTimeout", Boolean.TRUE);
+                    //Servlet 6 should be able to call getSessionTimeout from this SCL
+                    sce.getServletContext().setAttribute("MyContextListener.getSessionTimeout", Boolean.FALSE);
                 }
             }
         }
@@ -666,10 +695,35 @@ public class ServletContextHandlerTest
     }
 
     @Test
+    public void testEnsureNotPersistent() throws Exception
+    {
+        ServletContextHandler root = new ServletContextHandler("/", ServletContextHandler.SESSIONS);
+        root.setContextPath("/");
+        root.addServlet(new ServletHolder(new HttpServlet()
+        {
+            @Override
+            protected void doGet(HttpServletRequest req, HttpServletResponse resp)
+            {
+                Request request = ((ServletApiRequest)req).getRequest();
+                Response response = ((ServletApiResponse)resp).getResponse();
+
+                ResponseUtils.ensureNotPersistent(request, response);
+            }
+        }), "/ensureNotPersistent");
+        _server.setHandler(root);
+
+        _server.start();
+
+        String rawResponse = _connector.getResponse("GET /ensureNotPersistent HTTP/1.0\r\n\r\n");
+        HttpTester.Response response = HttpTester.parseResponse(rawResponse);
+        assertThat(response.getStatus(), is(200));
+    }
+
+    @Test
     public void testInitParams() throws Exception
     {
         //Test get/setInitParam with null throws NPE
-        ServletContextHandler root = new ServletContextHandler(_server, "/", ServletContextHandler.SESSIONS);
+        ServletContextHandler root = new ServletContextHandler("/", ServletContextHandler.SESSIONS);
         _server.setHandler(root);
         ListenerHolder initialListener = new ListenerHolder();
         initialListener.setListener(new ServletContextListener()
@@ -762,7 +816,9 @@ public class ServletContextHandlerTest
 
         int startMin = 7;
         Integer timeout = Integer.valueOf(100);
-        ServletContextHandler root = new ServletContextHandler(contexts, "/", ServletContextHandler.SESSIONS);
+        ServletContextHandler root = new ServletContextHandler("/", ServletContextHandler.SESSIONS);
+        root.addServlet(new ServletHolder(TestSessionTimeoutServlet.class), "/");
+        contexts.addHandler(root);
         root.getSessionHandler().setMaxInactiveInterval((int)TimeUnit.MINUTES.toSeconds(startMin));
         root.addBean(new MySCIStarter(root.getContext(), new MySCI(true, timeout.intValue())), true);
         _server.start();
@@ -778,6 +834,17 @@ public class ServletContextHandlerTest
         assertTrue((Boolean)root.getServletContext().getAttribute("MyContextListener.getSessionTimeout"));
         //test can't set session timeout from ContextListener that is not from annotation or web.xml
         assertTrue((Boolean)root.getServletContext().getAttribute("MyContextListener.setSessionTimeout"));
+
+        //test accessing timeout from a servlet
+        StringBuilder rawRequest = new StringBuilder();
+        rawRequest.append("GET / HTTP/1.1\r\n");
+        rawRequest.append("Host: local\r\n");
+        rawRequest.append("Connection: close\r\n");
+        rawRequest.append("\r\n");
+        String rawResponse = _connector.getResponse(rawRequest.toString());
+        HttpTester.Response response = HttpTester.parseResponse(rawResponse);
+        assertEquals(200, response.getStatus(), "response status");
+        assertEquals("SessionTimeout = " + timeout, response.getContent(), "response content");
     }
 
     @Test
@@ -786,7 +853,8 @@ public class ServletContextHandlerTest
         ContextHandlerCollection contexts = new ContextHandlerCollection();
         _server.setHandler(contexts);
 
-        ServletContextHandler root = new ServletContextHandler(contexts, "/", ServletContextHandler.SESSIONS);
+        ServletContextHandler root = new ServletContextHandler("/", ServletContextHandler.SESSIONS);
+        contexts.addHandler(root);
         ListenerHolder listenerHolder = new ListenerHolder();
         StopTestListener stopTestListener = new StopTestListener();
         listenerHolder.setListener(stopTestListener);
@@ -817,7 +885,8 @@ public class ServletContextHandlerTest
         ContextHandlerCollection contexts = new ContextHandlerCollection();
         _server.setHandler(contexts);
 
-        ServletContextHandler root = new ServletContextHandler(contexts, "/", ServletContextHandler.SESSIONS);
+        ServletContextHandler root = new ServletContextHandler("/", ServletContextHandler.SESSIONS);
+        contexts.addHandler(root);
 
         MySessionHandler sessions = new MySessionHandler();
         root.setSessionHandler(sessions);
@@ -835,7 +904,8 @@ public class ServletContextHandlerTest
         ContextHandlerCollection contexts = new ContextHandlerCollection();
         _server.setHandler(contexts);
 
-        ServletContextHandler root = new ServletContextHandler(contexts, "/");
+        ServletContextHandler root = new ServletContextHandler("/");
+        contexts.addHandler(root);
         root.addBean(new MySCIStarter(root.getContext(), new MySCI()), true);
         _server.start();
         assertTrue((Boolean)root.getServletContext().getAttribute("MySCI.startup"));
@@ -843,6 +913,7 @@ public class ServletContextHandlerTest
         assertTrue((Boolean)root.getServletContext().getAttribute("MySCI.effectiveSessionTrackingModes"));
         assertTrue((Boolean)root.getServletContext().getAttribute("MySCI.setSessionTrackingModes"));
         assertTrue((Boolean)root.getServletContext().getAttribute("MyContextListener.contextInitialized"));
+        assertTrue((Boolean)root.getServletContext().getAttribute("MyContextListener.declareRoles"));
         assertTrue((Boolean)root.getServletContext().getAttribute("MyContextListener.defaultSessionTrackingModes"));
         assertTrue((Boolean)root.getServletContext().getAttribute("MyContextListener.effectiveSessionTrackingModes"));
         assertTrue((Boolean)root.getServletContext().getAttribute("MyContextListener.setSessionTrackingModes"));
@@ -855,7 +926,8 @@ public class ServletContextHandlerTest
         ContextHandlerCollection contexts = new ContextHandlerCollection();
         server.setHandler(contexts);
 
-        ServletContextHandler root = new ServletContextHandler(contexts, "/");
+        ServletContextHandler root = new ServletContextHandler("/");
+        contexts.addHandler(root);
         class TestServletContextListener implements ServletContextListener
         {
             public int initialized = 0;
@@ -889,7 +961,9 @@ public class ServletContextHandlerTest
         ContextHandlerCollection contexts = new ContextHandlerCollection();
         _server.setHandler(contexts);
 
-        ServletContextHandler root = new ServletContextHandler(contexts, "/", ServletContextHandler.SESSIONS);
+        ServletContextHandler root = new ServletContextHandler("/", ServletContextHandler.SESSIONS);
+        contexts.addHandler(root);
+        root.getSessionHandler().setSessionDomain("testing");
         ListenerHolder initialListener = new ListenerHolder();
         initialListener.setListener(new InitialListener());
         root.getServletHandler().addListener(initialListener);
@@ -932,6 +1006,7 @@ public class ServletContextHandlerTest
 
         //test HttpSessionAttributeListener
         response = _connector.getResponse("GET /test?session=create HTTP/1.0\r\n\r\n");
+        assertThat(response, containsString("JSESSIONID"));
         String sessionid = response.substring(response.indexOf("JSESSIONID"), response.indexOf(";"));
         assertThat(response, Matchers.containsString("200 OK"));
         assertEquals(1, MySListener.creates);
@@ -999,7 +1074,8 @@ public class ServletContextHandlerTest
         ContextHandlerCollection contexts = new ContextHandlerCollection();
         _server.setHandler(contexts);
 
-        ServletContextHandler root = new ServletContextHandler(contexts, "/", ServletContextHandler.SESSIONS);
+        ServletContextHandler root = new ServletContextHandler("/", ServletContextHandler.SESSIONS);
+        contexts.addHandler(root);
 
         SessionHandler session = root.getSessionHandler();
         ServletHandler servlet = root.getServletHandler();
@@ -1084,7 +1160,8 @@ public class ServletContextHandlerTest
         ContextHandlerCollection contexts = new ContextHandlerCollection();
         _server.setHandler(contexts);
 
-        ServletContextHandler root = new ServletContextHandler(contexts, "/");
+        ServletContextHandler root = new ServletContextHandler("/");
+        contexts.addHandler(root);
         class FilterCreatingSCI implements ServletContainerInitializer
         {
             @Override
@@ -1130,7 +1207,8 @@ public class ServletContextHandlerTest
         ContextHandlerCollection contexts = new ContextHandlerCollection();
         _server.setHandler(contexts);
 
-        ServletContextHandler root = new ServletContextHandler(contexts, "/");
+        ServletContextHandler root = new ServletContextHandler("/");
+        contexts.addHandler(root);
         class ListenerCreatingSCI implements ServletContainerInitializer
         {
             @Override
@@ -1322,7 +1400,8 @@ public class ServletContextHandlerTest
         ContextHandlerCollection contexts = new ContextHandlerCollection();
         _server.setHandler(contexts);
 
-        ServletContextHandler root = new ServletContextHandler(contexts, "/");
+        ServletContextHandler root = new ServletContextHandler("/");
+        contexts.addHandler(root);
         class ServletAddingSCI implements ServletContainerInitializer
         {
             @Override
@@ -1355,7 +1434,8 @@ public class ServletContextHandlerTest
         ContextHandlerCollection contexts = new ContextHandlerCollection();
         _server.setHandler(contexts);
 
-        ServletContextHandler root = new ServletContextHandler(contexts, "/");
+        ServletContextHandler root = new ServletContextHandler("/");
+        contexts.addHandler(root);
         ServletHolder jspServlet = new ServletHolder();
         jspServlet.setName("jsp");
         jspServlet.setHeldClass(FakeJspServlet.class);
@@ -1393,7 +1473,8 @@ public class ServletContextHandlerTest
         ContextHandlerCollection contexts = new ContextHandlerCollection();
         _server.setHandler(contexts);
 
-        ServletContextHandler root = new ServletContextHandler(contexts, "/");
+        ServletContextHandler root = new ServletContextHandler("/");
+        contexts.addHandler(root);
         ServletHolder jspServlet = new ServletHolder();
         jspServlet.setName("jsp");
         jspServlet.setHeldClass(FakeJspServlet.class);
@@ -1430,7 +1511,8 @@ public class ServletContextHandlerTest
         ContextHandlerCollection contexts = new ContextHandlerCollection();
         _server.setHandler(contexts);
 
-        ServletContextHandler root = new ServletContextHandler(contexts, "/");
+        ServletContextHandler root = new ServletContextHandler("/");
+        contexts.addHandler(root);
         ServletHolder jspServlet = new ServletHolder();
         jspServlet.setName("jsp");
         jspServlet.setHeldClass(FakeJspServlet.class);
@@ -1489,6 +1571,18 @@ public class ServletContextHandlerTest
 
         response = _connector.getResponse(request.toString());
         assertThat("Response", response, containsString("Hello World"));
+    }
+    
+    @Test
+    public void testDeclareRoles() throws Exception
+    {
+        ServletContextHandler context = new ServletContextHandler();
+        context.setSecurityHandler(new ConstraintSecurityHandler());
+        context.addEventListener(new RolesListener());
+        context.setContextPath("/");
+        _server.setHandler(context);
+        _server.start();
+        assertThat(((ConstraintSecurityHandler)context.getSecurityHandler()).getKnownRoles(), containsInAnyOrder("tom", "dick", "harry"));
     }
 
     @Test
@@ -1692,7 +1786,7 @@ public class ServletContextHandlerTest
     {
         ServletContextHandler context = new ServletContextHandler(ServletContextHandler.SESSIONS);
 
-        Handler.Wrapper extra = new Handler.Wrapper();
+        Handler.Singleton extra = new Handler.Wrapper();
 
         context.getSessionHandler().insertHandler(extra);
 
@@ -1710,6 +1804,91 @@ public class ServletContextHandlerTest
         assertThat("Response", response, containsString("Test"));
 
         assertEquals(extra, context.getSessionHandler().getHandler());
+    }
+
+    @Test
+    public void testAfterRecycleBeforeReuse() throws Exception
+    {
+        ServletContextHandler context = new ServletContextHandler(ServletContextHandler.SESSIONS);
+        Queue<String> history = new ConcurrentLinkedQueue<>();
+        CountDownLatch complete = new CountDownLatch(2);
+
+        Handler.Singleton extra = new Handler.Wrapper()
+        {
+            @Override
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
+            {
+                if (request instanceof ServletContextRequest servletContextRequest)
+                {
+                    ServletApiRequest httpServletRequest = servletContextRequest.getServletApiRequest();
+                    Request.addCompletionListener(request, x -> onStreamCompleting(httpServletRequest));
+                    return super.handle(request, response, Callback.from(() -> onCallbackCompleting(httpServletRequest), callback));
+                }
+                return false;
+            }
+
+            private void onCallbackCompleting(ServletApiRequest httpServletRequest)
+            {
+                history.add("onCallbackCompleting");
+                onCompleting(httpServletRequest);
+            }
+
+            private void onStreamCompleting(ServletApiRequest httpServletRequest)
+            {
+                history.add("onStreamCompleting");
+                onCompleting(httpServletRequest);
+            }
+
+            private void onCompleting(ServletApiRequest httpServletRequest)
+            {
+                history.add(httpServletRequest.getRequestURI());
+                history.add(httpServletRequest.getHeader("Test"));
+                history.add(httpServletRequest.getParameter("param"));
+                history.add(String.valueOf(httpServletRequest.getUserPrincipal()));
+                HttpServletResponse httpServletResponse = httpServletRequest.getServletRequestInfo().getServletChannel().getServletContextResponse().getServletApiResponse();
+                history.add(String.valueOf(httpServletResponse.getStatus()));
+                history.add(String.valueOf(httpServletResponse.getContentType()));
+                history.add(String.valueOf(httpServletResponse.getHeader("Server")));
+                complete.countDown();
+            }
+        };
+
+        context.getSessionHandler().insertHandler(extra);
+
+        context.addServlet(TestServlet.class, "/test");
+        context.setContextPath("/");
+        _server.setHandler(context);
+        _server.start();
+
+        String request = """
+            GET /test?param=query HTTP/1.0
+            Host: localhost
+            Test: header
+
+            """;
+
+        String response = _connector.getResponse(request);
+        assertThat("Response", response, containsString("Test"));
+
+        assertTrue(complete.await(10, TimeUnit.SECONDS));
+        assertThat(history, contains(
+            "onCallbackCompleting",
+            "/test",
+            "header",
+            "query",
+            "null",
+            "200",
+            "null",
+            "Jetty(" + Jetty.VERSION + ")",
+            "onStreamCompleting",
+            "/test",
+            "header",
+            "query",
+            "null",
+            "200",
+            "null",
+            "Jetty(" + Jetty.VERSION + ")"
+        ));
     }
 
     @Test
@@ -1754,39 +1933,19 @@ public class ServletContextHandlerTest
         SecurityHandler securityHandler = context.getSecurityHandler();
 
         //check the handler linking order
-        Handler.Nested h = (Handler.Nested)context.getHandler();
+        Handler.Singleton h = (Handler.Singleton)context.getHandler();
         assertSame(h, sessionHandler);
 
-        h = (Handler.Nested)h.getHandler();
+        h = (Handler.Singleton)h.getHandler();
         assertSame(h, securityHandler);
 
         //replace the security handler
         SecurityHandler myHandler = new SecurityHandler()
         {
             @Override
-            protected RoleInfo prepareConstraintInfo(String pathInContext, HttpServletRequest request)
+            protected Constraint getConstraint(String pathInContext, Request request)
             {
                 return null;
-            }
-
-            @Override
-            protected boolean checkUserDataPermissions(String pathInContext, Request request, Response response,
-                                                       Callback callback, RoleInfo constraintInfo)
-            {
-                return false;
-            }
-
-            @Override
-            protected boolean isAuthMandatory(Request baseRequest, Response baseResponse, Object constraintInfo)
-            {
-                return false;
-            }
-
-            @Override
-            protected boolean checkWebResourcePermissions(String pathInContext, Request request, Response response,
-                                                          Object constraintInfo, UserIdentity userIdentity)
-            {
-                return false;
             }
         };
 
@@ -1794,10 +1953,10 @@ public class ServletContextHandlerTest
         context.setSecurityHandler(myHandler);
         assertSame(myHandler, context.getSecurityHandler());
 
-        h = (Handler.Nested)context.getHandler();
+        h = (Handler.Singleton)context.getHandler();
         assertSame(h, sessionHandler);
 
-        h = (Handler.Nested)h.getHandler();
+        h = (Handler.Singleton)h.getHandler();
         assertSame(h, myHandler);
     }
 
@@ -1835,9 +1994,9 @@ public class ServletContextHandlerTest
     }
 
     @Test
-    public void testReplaceHandler() throws Exception
+    public void testInsertHandler() throws Exception
     {
-        ServletContextHandler servletContextHandler = new ServletContextHandler();
+        ServletContextHandler servletContextHandler = new ServletContextHandler(ServletContextHandler.SESSIONS | ServletContextHandler.SECURITY);
         ServletHolder sh = new ServletHolder(new TestServlet());
         servletContextHandler.addServlet(sh, "/foo");
         final AtomicBoolean contextInit = new AtomicBoolean(false);
@@ -1845,7 +2004,6 @@ public class ServletContextHandlerTest
 
         servletContextHandler.addEventListener(new ServletContextListener()
         {
-
             @Override
             public void contextInitialized(ServletContextEvent sce)
             {
@@ -1860,14 +2018,26 @@ public class ServletContextHandlerTest
                     contextDestroy.set(true);
             }
         });
-        ServletHandler shandler = servletContextHandler.getServletHandler();
-
         ResourceHandler rh = new ResourceHandler();
-
+        rh.setBaseResource(ResourceFactory.of(rh).newResource(Paths.get(".")));
         servletContextHandler.insertHandler(rh);
-        assertEquals(shandler, servletContextHandler.getServletHandler());
-        assertEquals(rh, servletContextHandler.getHandler());
-        assertEquals(rh.getHandler(), shandler);
+
+        Handler last = new Handler.Abstract()
+        {
+            @Override
+            public boolean handle(Request request, Response response, Callback callback)
+            {
+                return false;
+            }
+        };
+        servletContextHandler.getServletHandler().setHandler(last);
+
+        assertThat(servletContextHandler.getHandler(), sameInstance(rh));
+        assertThat(rh.getHandler(), instanceOf(SessionHandler.class));
+        assertThat(servletContextHandler.getSessionHandler().getHandler(), instanceOf(SecurityHandler.class));
+        assertThat(servletContextHandler.getSecurityHandler().getHandler(), instanceOf(ServletHandler.class));
+        assertThat(servletContextHandler.getServletHandler().getHandler(), sameInstance(last));
+
         _server.setHandler(servletContextHandler);
         _server.start();
         assertTrue(contextInit.get());
@@ -1876,23 +2046,25 @@ public class ServletContextHandlerTest
     }
 
     @Test
-    public void testFallThrough() throws Exception
+    public void testFallThroughContextHandler() throws Exception
     {
-        Handler.Collection list = new Handler.Collection();
+        Handler.Sequence list = new Handler.Sequence();
         _server.setHandler(list);
 
-        ServletContextHandler root = new ServletContextHandler(list, "/", ServletContextHandler.SESSIONS);
+        ServletContextHandler root = new ServletContextHandler("/", ServletContextHandler.SESSIONS);
+        list.addHandler(root);
 
         ServletHandler servlet = root.getServletHandler();
         servlet.setEnsureDefaultServlet(false);
         servlet.addServletWithMapping(HelloServlet.class, "/hello/*");
 
-        list.addHandler(new Handler.Processor()
+        list.addHandler(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback) throws Exception
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
             {
                 Response.writeError(request, response, callback, 404, "Fell Through");
+                return true;
             }
         });
 
@@ -1903,6 +2075,37 @@ public class ServletContextHandlerTest
 
         response = _connector.getResponse("GET /other HTTP/1.0\r\n\r\n");
         assertThat(response, Matchers.containsString("404 Fell Through"));
+    }
+
+    @Test
+    public void testFallThroughServletHandler() throws Exception
+    {
+        ServletContextHandler root = new ServletContextHandler("/", ServletContextHandler.SESSIONS | ServletContextHandler.SECURITY);
+        _server.setHandler(root);
+
+        ServletHandler servlet = root.getServletHandler();
+        servlet.setEnsureDefaultServlet(false);
+        servlet.addServletWithMapping(HelloServlet.class, "/hello/*");
+
+        servlet.setHandler(new Handler.Abstract()
+        {
+            @Override
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
+            {
+                Content.Sink.write(response, true, "Fell Through Handler: " + request.getSession(true).getId(), callback);
+                return true;
+            }
+        });
+
+        _server.start();
+
+        String response = _connector.getResponse("GET /hello HTTP/1.0\r\n\r\n");
+        assertThat(response, Matchers.containsString("200 OK"));
+
+        response = _connector.getResponse("GET /other HTTP/1.0\r\n\r\n");
+        assertThat(response, Matchers.containsString("200 OK"));
+        assertThat(response, Matchers.containsString("Set-Cookie: JSESSIONID="));
+        assertThat(response, Matchers.containsString("Fell Through Handler"));
     }
 
     /**
@@ -1931,6 +2134,22 @@ public class ServletContextHandlerTest
 
         expected = String.format("decorator[] = %s", DummyUtilDecorator.class.getName());
         assertThat("Specific Legacy Decorator", response, containsString(expected));
+    }
+    
+    public static class RolesListener implements ServletContextListener
+    {
+        @Override
+        public void contextInitialized(ServletContextEvent sce)
+        {
+            sce.getServletContext().declareRoles("tom", "dick", "harry");
+            ServletContextListener.super.contextInitialized(sce);
+        }
+
+        @Override
+        public void contextDestroyed(ServletContextEvent sce)
+        {
+            ServletContextListener.super.contextDestroyed(sce);
+        }
     }
 
     public static class HelloServlet extends HttpServlet
@@ -2163,6 +2382,20 @@ public class ServletContextHandlerTest
         }
     }
 
+    public static class TestSessionTimeoutServlet extends HttpServlet
+    {
+        private static final long serialVersionUID = 1L;
+
+        protected void doGet(HttpServletRequest req, HttpServletResponse resp)
+            throws ServletException, IOException
+        {
+            int t = req.getServletContext().getSessionTimeout();
+            resp.setStatus(HttpServletResponse.SC_OK);
+            PrintWriter writer = resp.getWriter();
+            writer.write("SessionTimeout = " + t);
+        }
+    }
+
     @Test
     public void testProgrammaticListener() throws Exception
     {
@@ -2321,5 +2554,112 @@ public class ServletContextHandlerTest
         response = _connector.getResponse(request);
         assertThat(response, containsString("200 OK"));
         assertThat(response, containsString("/three"));
+    }
+
+    static class CookieTweakResponseApi extends ServletApiResponse
+    {
+        CookieTweakResponseApi(ServletContextResponse response)
+        {
+            super(response);
+        }
+
+        @Override
+        public void addCookie(Cookie cookie)
+        {
+            addCookie(new HttpCookieFacade(cookie));
+        }
+
+        @Override
+        public void addCookie(HttpCookie cookie)
+        {
+            // Let's force SameSite to STRICT
+            Map<String, String> attrs = new HashMap<>(cookie.getAttributes());
+            attrs.put(HttpCookie.SAME_SITE_ATTRIBUTE, HttpCookie.SameSite.STRICT.getAttributeValue());
+            super.addCookie(HttpCookie.from(cookie.getName(), cookie.getValue(), attrs));
+        }
+    }
+
+    @Test
+    public void testCustomServletResponseWrapping() throws Exception
+    {
+        ServletContextHandler context = new ServletContextHandler()
+        {
+            @Override
+            protected ServletContextRequest newServletContextRequest(ServletChannel servletChannel, Request request, Response response, String decodedPathInContext, MatchedResource<ServletHandler.MappedServlet> matchedResource)
+            {
+                return new ServletContextRequest(getContext().getServletContext(), servletChannel, request, response, decodedPathInContext, matchedResource, getSessionHandler())
+                {
+                    @Override
+                    protected ServletContextResponse newServletContextResponse(Response response)
+                    {
+                        return new ServletContextResponse(servletChannel, this, response)
+                        {
+                            @Override
+                            protected ServletApiResponse newServletApiResponse()
+                            {
+                                return new CookieTweakResponseApi(this);
+                            }
+                        };
+                    }
+                };
+            }
+        };
+
+        ServletHolder holder = new ServletHolder(new HttpServlet()
+        {
+            @Override
+            protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException
+            {
+                Cookie cookie = new Cookie("example", "bogus");
+                resp.addCookie(cookie);
+                super.doGet(req, resp);
+            }
+        });
+        context.addServlet(holder, "/cookies/*");
+        _server.setHandler(context);
+        _server.start();
+
+        String rawRequest = """
+            GET /cookies/ HTTP/1.1\r
+            Host: localhost\r
+            Connection: close\r
+            \r
+            """;
+
+        String rawResponse = _connector.getResponse(rawRequest);
+        HttpTester.Response response = HttpTester.parseResponse(rawResponse);
+        String setCookieValue = response.get(HttpHeader.SET_COOKIE);
+        assertThat(setCookieValue, containsString("example=bogus; SameSite=Strict"));
+    }
+
+    @Test
+    public void testEmptyPathInfo() throws Exception
+    {
+        ServletContextHandler context = new ServletContextHandler("/c1", ServletContextHandler.NO_SESSIONS);
+        context.setAllowNullPathInContext(true);
+        context.addServlet(new ServletHolder("default-servlet", new HttpServlet()
+        {
+            @Override
+            protected void service(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException
+            {
+                resp.setContentType("text/plain");
+                resp.setCharacterEncoding("UTF-8");
+                resp.getWriter().write("OK2\n");
+                resp.getWriter().close();
+            }
+        }), "/");
+
+        _server.setHandler(context);
+        _server.start();
+        String rawRequest = """
+            GET /c1 HTTP/1.1\r
+            Host: localhost\r
+            Connection: close\r
+            \r
+            """;
+
+        String rawResponse = _connector.getResponse(rawRequest);
+        HttpTester.Response response = HttpTester.parseResponse(rawResponse);
+        assertThat(response.getContent(), containsString("OK2"));
     }
 }

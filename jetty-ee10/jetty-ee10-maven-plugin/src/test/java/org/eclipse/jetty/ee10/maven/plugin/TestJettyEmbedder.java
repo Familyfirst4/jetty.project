@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,10 +14,13 @@
 package org.eclipse.jetty.ee10.maven.plugin;
 
 import java.nio.file.Path;
-import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
+import org.eclipse.jetty.ee10.servlet.ListenerHolder;
+import org.eclipse.jetty.maven.MavenServerConnector;
+import org.eclipse.jetty.maven.ServerSupport;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.handler.ContextHandler;
 import org.eclipse.jetty.server.handler.ContextHandlerCollection;
@@ -27,21 +30,22 @@ import org.eclipse.jetty.toolchain.test.jupiter.WorkDirExtension;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.is;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 @ExtendWith(WorkDirExtension.class)
 public class TestJettyEmbedder
 {
-    public WorkDir workDir;
-
     @Test
-    public void testJettyEmbedderFromDefaults() throws Exception
+    public void testJettyEmbedderFromDefaults(WorkDir workDir) throws Exception
     {
-        Path baseResource = workDir.getEmptyPathDir();
+        Path basePath = workDir.getEmptyPathDir();
         MavenWebAppContext webApp = new MavenWebAppContext();
-        webApp.setBaseResource(baseResource);
+        webApp.setBaseResourceAsPath(basePath);
         MavenServerConnector connector = new MavenServerConnector();
         connector.setPort(0);
 
@@ -74,19 +78,19 @@ public class TestJettyEmbedder
     }
 
     @Test
-    public void testJettyEmbedder()
+    public void testJettyEmbedder(WorkDir workDir)
         throws Exception
     {
+        Path basePath = workDir.getPath();
         MavenWebAppContext webApp = new MavenWebAppContext();
-        Path baseResource = workDir.getEmptyPathDir();
-        webApp.setBaseResource(baseResource);
+        webApp.setBaseResourceAsPath(basePath);
         Server server = new Server();
         Map<String, String> jettyProperties = new HashMap<>();
         jettyProperties.put("jetty.server.dumpAfterStart", "false");
 
         ContextHandler otherHandler = new ContextHandler();
         otherHandler.setContextPath("/other");
-        otherHandler.setBaseResource(MavenTestingUtils.getTestResourceDir("root").toPath());
+        otherHandler.setBaseResourceAsPath(MavenTestingUtils.getTestResourcePathDir("root"));
 
         MavenServerConnector connector = new MavenServerConnector();
         connector.setPort(0);
@@ -95,9 +99,9 @@ public class TestJettyEmbedder
         jetty.setHttpConnector(connector);
         jetty.setExitVm(false);
         jetty.setServer(server);
-        jetty.setContextHandlers(Arrays.asList(otherHandler));
+        jetty.setContextHandlers(List.of(otherHandler));
         jetty.setRequestLog(null);
-        jetty.setJettyXmlFiles(Arrays.asList(MavenTestingUtils.getTestResourceFile("embedder-jetty.xml")));
+        jetty.setJettyXmlFiles(List.of(MavenTestingUtils.getTestResourceFile("embedder-jetty.xml")));
         jetty.setJettyProperties(jettyProperties);
         jetty.setLoginServices(null);
         jetty.setContextXml(MavenTestingUtils.getTestResourceFile("embedder-context.xml").getAbsolutePath());
@@ -115,6 +119,37 @@ public class TestJettyEmbedder
             assertNotNull(contexts);
             assertTrue(contexts.contains(otherHandler));
             assertTrue(contexts.contains(webApp));
+
+            //stop the webapp and check durable listener retained
+            jetty.stopWebApp();
+            boolean someListener = false;
+            for (ListenerHolder h : webApp.getServletHandler().getListeners())
+            {
+                if (h.getHeldClass() != null && "org.eclipse.jetty.ee10.maven.plugin.SomeListener".equalsIgnoreCase(h.getHeldClass().getName()))
+                {
+                    if (someListener)
+                        fail("Duplicate listeners");
+                    else
+                        someListener = true;
+                }
+            }
+
+
+            //restart the webapp
+            jetty.redeployWebApp();
+            someListener = false;
+
+            //ensure still only 1 listener
+            for (ListenerHolder h : webApp.getServletHandler().getListeners())
+            {
+                if (h.getHeldClass() != null && "org.eclipse.jetty.ee10.maven.plugin.SomeListener".equalsIgnoreCase(h.getHeldClass().getName()))
+                {
+                    if (someListener)
+                        fail("Duplicate listeners");
+                    else
+                        someListener = true;
+                }
+            }
         }
         finally
         {

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -102,6 +102,7 @@ public class MemcachedSessionDataMap extends AbstractLifeCycle implements Sessio
     }
 
     /**
+     * Get the builder.
      * @return the builder
      */
     public XMemcachedClientBuilder getBuilder()
@@ -110,6 +111,7 @@ public class MemcachedSessionDataMap extends AbstractLifeCycle implements Sessio
     }
 
     /**
+     * Set the expiry to use in seconds.
      * @param sec the expiry to use in seconds
      */
     public void setExpirySec(int sec)

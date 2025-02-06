@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -23,8 +23,8 @@ import jakarta.servlet.ServletContext;
 import org.eclipse.jetty.ee9.security.Authenticator;
 import org.eclipse.jetty.ee9.security.Authenticator.AuthConfiguration;
 import org.eclipse.jetty.ee9.security.DefaultAuthenticatorFactory;
-import org.eclipse.jetty.ee9.security.IdentityService;
-import org.eclipse.jetty.ee9.security.LoginService;
+import org.eclipse.jetty.security.IdentityService;
+import org.eclipse.jetty.security.LoginService;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.util.StringUtil;
 import org.slf4j.Logger;
@@ -54,6 +54,7 @@ public class JaspiAuthenticatorFactory extends DefaultAuthenticatorFactory
     private String _serverName;
 
     /**
+     * Get the serviceSubject.
      * @return the serviceSubject
      */
     public Subject getServiceSubject()
@@ -62,6 +63,7 @@ public class JaspiAuthenticatorFactory extends DefaultAuthenticatorFactory
     }
 
     /**
+     * Set the serviceSubject to set.
      * @param serviceSubject the serviceSubject to set
      */
     public void setServiceSubject(Subject serviceSubject)
@@ -70,6 +72,7 @@ public class JaspiAuthenticatorFactory extends DefaultAuthenticatorFactory
     }
 
     /**
+     * Get the serverName.
      * @return the serverName
      */
     public String getServerName()
@@ -78,6 +81,7 @@ public class JaspiAuthenticatorFactory extends DefaultAuthenticatorFactory
     }
 
     /**
+     * Set the serverName to set.
      * @param serverName the serverName to set
      */
     public void setServerName(String serverName)

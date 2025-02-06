@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -20,7 +20,11 @@ import javax.naming.Name;
 import javax.naming.NameNotFoundException;
 import javax.naming.NamingException;
 
+import org.eclipse.jetty.ee10.webapp.WebAppContext;
+import org.eclipse.jetty.plus.jndi.NamingEntry;
+import org.eclipse.jetty.plus.jndi.NamingEntryUtil;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.Isolated;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsInAnyOrder;
@@ -31,6 +35,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.fail;
 
+@Isolated("jndi entries")
 public class TestNamingEntryUtil
 {
     public class MyNamingEntry extends NamingEntry
@@ -38,8 +43,7 @@ public class TestNamingEntryUtil
         public MyNamingEntry(Object scope, String name, Object value)
             throws NamingException
         {
-            super(scope, name);
-            save(value);
+            super(scope, name, value);
         }
     }
 
@@ -88,6 +92,22 @@ public class TestNamingEntryUtil
         {
             fail(e.getMessage());
         }
+    }
+
+    @Test
+    public void testDestroySubcontext() throws Exception
+    {
+        //create some NamingEntry in scope of a webapp
+        WebAppContext wac = new WebAppContext();
+        MyNamingEntry namingEntry1 = new MyNamingEntry(wac, "xxx", "111");
+        MyNamingEntry namingEntry2 = new MyNamingEntry(wac, "yyy", "222");
+
+        assertNotNull(NamingEntryUtil.lookupNamingEntry(wac, "xxx"));
+        assertNotNull(NamingEntryUtil.lookupNamingEntry(wac, "yyy"));
+
+        NamingEntryUtil.destroyContextForScope(wac);
+        assertNull(NamingEntryUtil.lookupNamingEntry(wac, "xxx"));
+        assertNull(NamingEntryUtil.lookupNamingEntry(wac, "yyy"));
     }
 
     @Test

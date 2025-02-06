@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -25,5 +25,10 @@ public final class LoggingUtil
         // Wire up java.util.logging (used by javax.xml.soap others) to slf4j.
         org.slf4j.bridge.SLF4JBridgeHandler.removeHandlersForRootLogger();
         org.slf4j.bridge.SLF4JBridgeHandler.install();
+    }
+
+    public static void end()
+    {
+        org.slf4j.bridge.SLF4JBridgeHandler.uninstall();
     }
 }

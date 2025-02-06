@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -19,9 +19,10 @@ import javax.security.auth.Subject;
 import jakarta.security.auth.message.MessageInfo;
 import jakarta.security.auth.message.config.ServerAuthConfig;
 import jakarta.security.auth.message.config.ServerAuthContext;
+import org.eclipse.jetty.ee10.security.jaspi.provider.JaspiAuthConfigProvider;
 
 /**
- * @deprecated use {@link org.eclipse.jetty.security.jaspi.provider.JaspiAuthConfigProvider}.
+ * @deprecated use {@link JaspiAuthConfigProvider}.
  */
 @Deprecated
 public class SimpleAuthConfig implements ServerAuthConfig

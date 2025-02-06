@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,122 +13,66 @@
 
 package org.eclipse.jetty.server.handler;
 
+import java.util.concurrent.TimeoutException;
+import java.util.function.Consumer;
 import java.util.function.Predicate;
-import java.util.function.Supplier;
 
-import org.eclipse.jetty.http.BadMessageException;
-import org.eclipse.jetty.io.QuietException;
+import org.eclipse.jetty.server.Context;
 import org.eclipse.jetty.server.Request;
-import org.eclipse.jetty.server.Response;
-import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.thread.Invocable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class ContextRequest extends Request.WrapperProcessor implements Invocable, Supplier<Request.Processor>, Runnable
+public class ContextRequest extends Request.Wrapper implements Invocable
 {
     private static final Logger LOG = LoggerFactory.getLogger(ContextRequest.class);
-    private final String _pathInContext;
-    private final ContextHandler _contextHandler;
-    private final ContextHandler.Context _context;
-    private Response _response;
-    private Callback _callback;
+    private final ContextHandler.ScopedContext _context;
 
-    protected ContextRequest(ContextHandler contextHandler, ContextHandler.Context context, Request wrapped, String pathInContext)
+    protected ContextRequest(ContextHandler.ScopedContext context, Request request)
     {
-        super(wrapped);
-        _pathInContext = pathInContext;
-        _contextHandler = contextHandler;
+        super(request);
         _context = context;
-    }
-
-    @Override
-    public Processor get()
-    {
-        try
-        {
-            return _contextHandler.getHandler().handle(this);
-        }
-        catch (Throwable t)
-        {
-            // Let's be less verbose with BadMessageExceptions & QuietExceptions
-            if (!LOG.isDebugEnabled() && (t instanceof BadMessageException || t instanceof QuietException))
-                LOG.warn("context bad message {}", t.getMessage());
-            else
-                LOG.warn("context handle failed {}", this, t);
-        }
-        return null;
-    }
-
-    @Override
-    public void process(Request request, Response response, Callback callback) throws Exception
-    {
-        _response = response;
-        _callback = callback;
-        _context.run(this, this);
-    }
-
-    public Callback getCallback()
-    {
-        return _callback;
-    }
-
-    protected ContextResponse newContextResponse(Request request, Response response)
-    {
-        return new ContextResponse(_context, request, response);
-    }
-
-    @Override
-    public void run()
-    {
-        try
-        {
-            super.process(this, newContextResponse(this, _response), _callback);
-        }
-        catch (Throwable t)
-        {
-            Response.writeError(this, _response, _callback, t);
-        }
     }
 
     @Override
     public void demand(Runnable demandCallback)
     {
-        super.demand(() -> _context.run(demandCallback, this));
+        // Inner class used instead of lambda for clarity in stack traces.
+        super.demand(new DemandTask(demandCallback));
     }
 
     @Override
-    public boolean addErrorListener(Predicate<Throwable> onError)
+    public void addIdleTimeoutListener(Predicate<TimeoutException> onIdleTimeout)
     {
-        return super.addErrorListener(t ->
-        {
-            // TODO: implement the line below
-            // return _context.apply(onError::test, t, ContextRequest.this);
-            _context.accept(onError::test, t, ContextRequest.this);
-            return true;
-        });
+        super.addIdleTimeoutListener(t -> _context.test(onIdleTimeout, t, ContextRequest.this));
     }
 
     @Override
-    public org.eclipse.jetty.server.Context getContext()
+    public void addFailureListener(Consumer<Throwable> onFailure)
+    {
+        super.addFailureListener(t -> _context.accept(onFailure, t, ContextRequest.this));
+    }
+
+    @Override
+    public Context getContext()
     {
         return _context;
     }
 
-    public String getPathInContext()
+    private class DemandTask extends Task.Abstract
     {
-        return _pathInContext;
-    }
+        private final Runnable _demandCallback;
 
-    @Override
-    public Object getAttribute(String name)
-    {
-        // return some hidden attributes for requestLog
-        return switch (name)
+        public DemandTask(Runnable demandCallback)
         {
-            case "o.e.j.s.h.ScopedRequest.contextPath" -> _context.getContextPath();
-            case "o.e.j.s.h.ScopedRequest.pathInContext" -> _pathInContext;
-            default -> super.getAttribute(name);
-        };
+            super(Invocable.getInvocationType(demandCallback));
+            _demandCallback = demandCallback;
+        }
+
+        @Override
+        public void run()
+        {
+            _context.run(_demandCallback, ContextRequest.this);
+        }
     }
 }

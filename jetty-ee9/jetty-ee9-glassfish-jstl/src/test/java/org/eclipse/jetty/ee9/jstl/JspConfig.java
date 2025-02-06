@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -16,6 +16,7 @@ package org.eclipse.jetty.ee9.jstl;
 import java.io.File;
 import java.net.URI;
 
+import jakarta.servlet.ServletContext;
 import org.eclipse.jetty.ee9.webapp.WebAppContext;
 
 /**
@@ -26,9 +27,9 @@ public class JspConfig
 {
     public static void init(WebAppContext context, URI baseUri, File scratchDir)
     {
-        context.setAttribute("jakarta.servlet.context.tempdir", scratchDir);
+        context.setAttribute(ServletContext.TEMPDIR, scratchDir);
         context.setAttribute("org.eclipse.jetty.server.webapp.ContainerIncludeJarPattern",
-            ".*/jetty-jakarta-servlet-api-[^/]*\\.jar$|.*jakarta.servlet.jsp.jstl-[^/]*\\.jar|.*taglibs-standard.*\\.jar");
+            System.getProperty("org.eclipse.jetty.server.webapp.ContainerIncludeJarPattern"));
         context.setWar(baseUri.toASCIIString());
         context.setResourceBase(baseUri.toASCIIString());
     }

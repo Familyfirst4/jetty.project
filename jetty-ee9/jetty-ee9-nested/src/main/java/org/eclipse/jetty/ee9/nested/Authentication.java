@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,10 +13,14 @@
 
 package org.eclipse.jetty.ee9.nested;
 
+import java.security.Principal;
+
 import jakarta.servlet.ServletRequest;
 import jakarta.servlet.ServletResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.eclipse.jetty.security.UserIdentity;
+import org.eclipse.jetty.server.Request;
 
 /**
  * The Authentication state of a request.
@@ -26,10 +30,9 @@ import jakarta.servlet.http.HttpServletResponse;
  * cycles. Authentication might not yet be checked or it might be checked
  * and failed, checked and deferred or succeeded.
  */
-public interface Authentication
+public interface Authentication extends Request.AuthenticationState
 {
-
-    public static class Failed extends QuietServletException
+    class Failed extends QuietServletException
     {
         public Failed(String message)
         {
@@ -40,20 +43,27 @@ public interface Authentication
     /**
      * A successful Authentication with User information.
      */
-    public interface User extends LogoutAuthentication
+    interface User extends LogoutAuthentication
     {
         String getAuthMethod();
 
         UserIdentity getUserIdentity();
 
-        boolean isUserInRole(UserIdentity.Scope scope, String role);
+        boolean isUserInRole(UserIdentityScope scope, String role);
+
+        @Override
+        default Principal getUserPrincipal()
+        {
+            UserIdentity user = getUserIdentity();
+            return user == null ? null : user.getUserPrincipal();
+        }
     }
 
     /**
      * A wrapped authentication with methods provide the
      * wrapped request/response for use by the application
      */
-    public interface Wrapped extends Authentication
+    interface Wrapped extends Authentication
     {
         HttpServletRequest getHttpServletRequest();
 
@@ -64,7 +74,7 @@ public interface Authentication
      * An authentication that is capable of performing a programmatic login
      * operation.
      */
-    public interface LoginAuthentication extends Authentication
+    interface LoginAuthentication extends Authentication
     {
 
         /**
@@ -82,7 +92,7 @@ public interface Authentication
      * An authentication that is capable of performing a programmatic
      * logout operation.
      */
-    public interface LogoutAuthentication extends Authentication
+    interface LogoutAuthentication extends Authentication
     {
 
         /**
@@ -99,7 +109,7 @@ public interface Authentication
      * A deferred authentication with methods to progress
      * the authentication process.
      */
-    public interface Deferred extends LoginAuthentication, LogoutAuthentication
+    interface Deferred extends LoginAuthentication, LogoutAuthentication
     {
 
         /**
@@ -130,25 +140,25 @@ public interface Authentication
      * authentication challenge or on successful authentication in
      * order to redirect the user to the original URL.
      */
-    public interface ResponseSent extends Authentication
+    interface ResponseSent extends Authentication
     {
     }
 
     /**
      * An Authentication Challenge has been sent.
      */
-    public interface Challenge extends ResponseSent
+    interface Challenge extends ResponseSent
     {
     }
 
     /**
      * An Authentication Failure has been sent.
      */
-    public interface Failure extends ResponseSent
+    interface Failure extends ResponseSent
     {
     }
 
-    public interface SendSuccess extends ResponseSent
+    interface SendSuccess extends ResponseSent
     {
     }
 
@@ -156,7 +166,7 @@ public interface Authentication
      * After a logout, the authentication reverts to a state
      * where it is possible to programmatically log in again.
      */
-    public interface NonAuthenticated extends LoginAuthentication
+    interface NonAuthenticated extends LoginAuthentication
     {
     }
 
@@ -166,7 +176,7 @@ public interface Authentication
      * This convenience instance is for non mandatory authentication where credentials
      * have been presented and checked, but failed authentication.
      */
-    public static final Authentication UNAUTHENTICATED =
+    Authentication UNAUTHENTICATED =
         new Authentication()
         {
             @Override
@@ -182,7 +192,7 @@ public interface Authentication
      * This convenience instance us for non mandatory authentication when no
      * credentials are present to be checked.
      */
-    public static final Authentication NOT_CHECKED = new Authentication()
+    Authentication NOT_CHECKED = new Authentication()
     {
         @Override
         public String toString()
@@ -196,7 +206,7 @@ public interface Authentication
      * <p>
      * This convenience instance is for when an authentication challenge has been sent.
      */
-    public static final Authentication SEND_CONTINUE = new Authentication.Challenge()
+    Authentication SEND_CONTINUE = new Authentication.Challenge()
     {
         @Override
         public String toString()
@@ -210,7 +220,7 @@ public interface Authentication
      * <p>
      * This convenience instance is for when an authentication failure has been sent.
      */
-    public static final Authentication SEND_FAILURE = new Authentication.Failure()
+    Authentication SEND_FAILURE = new Authentication.Failure()
     {
         @Override
         public String toString()
@@ -218,7 +228,7 @@ public interface Authentication
             return "FAILURE";
         }
     };
-    public static final Authentication SEND_SUCCESS = new SendSuccess()
+    Authentication SEND_SUCCESS = new SendSuccess()
     {
         @Override
         public String toString()

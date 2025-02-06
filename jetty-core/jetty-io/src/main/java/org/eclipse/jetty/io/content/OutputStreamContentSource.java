@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,6 +13,7 @@
 
 package org.eclipse.jetty.io.content;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
@@ -21,7 +22,15 @@ import org.eclipse.jetty.io.Content;
 import org.eclipse.jetty.util.FutureCallback;
 import org.eclipse.jetty.util.IO;
 
-public class OutputStreamContentSource implements Content.Source
+/**
+ * <p>A {@link Content.Source} that provides content asynchronously through an {@link OutputStream}.</p>
+ * <p>Bytes written to the {@link OutputStream} returned by {@link #getOutputStream()}
+ * are converted to a {@link Content.Chunk} and returned from {@link #read()}.</p>
+ * <p>The {@code OutputStream} must be closed to signal that all the content has been written.</p>
+ *
+ * @see AsyncContent
+ */
+public class OutputStreamContentSource implements Content.Source, Closeable
 {
     private final AsyncContent async = new AsyncContent();
     private final AsyncOutputStream output = new AsyncOutputStream();
@@ -53,6 +62,12 @@ public class OutputStreamContentSource implements Content.Source
     public void fail(Throwable failure)
     {
         async.fail(failure);
+    }
+
+    @Override
+    public void close()
+    {
+        output.close();
     }
 
     private class AsyncOutputStream extends OutputStream

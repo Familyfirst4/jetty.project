@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -16,7 +16,7 @@ package org.eclipse.jetty.ee9.demos;
 import java.net.URI;
 import java.util.Base64;
 
-import org.eclipse.jetty.client.api.ContentResponse;
+import org.eclipse.jetty.client.ContentResponse;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpMethod;
 import org.eclipse.jetty.http.HttpStatus;
@@ -75,6 +75,6 @@ public class SecuredHelloHandlerTest extends AbstractEmbeddedTest
 
         // test response content
         String responseBody = response.getContentAsString();
-        assertThat("Response Content", responseBody, containsString("<h1>Hello World</h1>"));
+        assertThat("Response Content", responseBody, containsString("<h1>Hello World from HelloServlet</h1>"));
     }
 }

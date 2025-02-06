@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -28,12 +28,12 @@ import java.util.stream.Stream;
 import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpHeaderValue;
+import org.eclipse.jetty.http.HttpTester;
 import org.eclipse.jetty.http.HttpURI;
 import org.eclipse.jetty.http.HttpVersion;
 import org.eclipse.jetty.http.MetaData;
 import org.eclipse.jetty.http.MimeTypes;
 import org.eclipse.jetty.http.Trailers;
-import org.eclipse.jetty.io.Connection;
 import org.eclipse.jetty.io.Content;
 import org.eclipse.jetty.io.QuietException;
 import org.eclipse.jetty.logging.StacklessLogging;
@@ -44,10 +44,11 @@ import org.eclipse.jetty.server.internal.HttpChannelState;
 import org.eclipse.jetty.util.BufferUtil;
 import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.FutureCallback;
-import org.eclipse.jetty.util.FuturePromise;
+import org.eclipse.jetty.util.component.LifeCycle;
 import org.eclipse.jetty.util.thread.Invocable;
 import org.eclipse.jetty.util.thread.SerializedInvoker;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -58,13 +59,14 @@ import static org.hamcrest.Matchers.allOf;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThan;
+import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
 import static org.hamcrest.Matchers.sameInstance;
 import static org.hamcrest.Matchers.startsWith;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -82,8 +84,7 @@ public class HttpChannelTest
     @AfterEach
     public void afterEach() throws Exception
     {
-        if (_server != null)
-            _server.stop();
+        LifeCycle.stop(_server);
     }
 
     @Test
@@ -149,10 +150,10 @@ public class HttpChannelTest
     @Test
     public void testRecursiveGET() throws Exception
     {
-        _server.setHandler(new Handler.Processor()
+        _server.setHandler(new Handler.Abstract.NonBlocking()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 response.setStatus(200);
                 response.getHeaders().put(HttpHeader.CONTENT_TYPE, MimeTypes.Type.TEXT_PLAIN_UTF_8.asString());
@@ -175,6 +176,7 @@ public class HttpChannelTest
                     }
                 };
                 writer.succeeded();
+                return true;
             }
         });
         _server.start();
@@ -249,10 +251,21 @@ public class HttpChannelTest
         assertThat(content, containsString("<pre>0123456789</pre>"));
     }
 
-    @Test
-    public void testEchoPOST() throws Exception
+    public static Stream<EchoHandler> echoHandlers()
     {
-        EchoHandler echoHandler = new EchoHandler();
+        return Stream.of(
+            new EchoHandler(),
+            new EchoHandler.Reactive(),
+            new EchoHandler.Stream(),
+            new EchoHandler.Buffered(),
+            new EchoHandler.BufferedAsync()
+        );
+    }
+
+    @ParameterizedTest
+    @MethodSource("echoHandlers")
+    public void testEchoPOST(EchoHandler echoHandler) throws Exception
+    {
         _server.setHandler(echoHandler);
         _server.start();
 
@@ -264,7 +277,7 @@ public class HttpChannelTest
         ByteBuffer body = BufferUtil.toBuffer(message);
         HttpFields fields = HttpFields.build()
             .add(HttpHeader.HOST, "localhost")
-            .putLongField(HttpHeader.CONTENT_LENGTH, body.remaining())
+            .put(HttpHeader.CONTENT_LENGTH, body.remaining())
             .add(HttpHeader.CONTENT_TYPE, MimeTypes.Type.TEXT_PLAIN_8859_1.asString())
             .asImmutable();
         stream.addContent(body, true);
@@ -281,10 +294,10 @@ public class HttpChannelTest
         assertThat(BufferUtil.toString(stream.getResponseContent()), equalTo(message));
     }
 
-    @Test
-    public void testMultiEchoPOST() throws Exception
+    @ParameterizedTest
+    @MethodSource("echoHandlers")
+    public void testMultiEchoPOST(EchoHandler echoHandler) throws Exception
     {
-        EchoHandler echoHandler = new EchoHandler();
         _server.setHandler(echoHandler);
         _server.start();
 
@@ -308,7 +321,7 @@ public class HttpChannelTest
         ByteBuffer body = BufferUtil.toBuffer(message);
         HttpFields fields = HttpFields.build()
             .add(HttpHeader.HOST, "localhost")
-            .putLongField(HttpHeader.CONTENT_LENGTH, body.remaining())
+            .put(HttpHeader.CONTENT_LENGTH, body.remaining())
             .add(HttpHeader.CONTENT_TYPE, MimeTypes.Type.TEXT_PLAIN_8859_1.asString())
             .asImmutable();
         MetaData.Request request = new MetaData.Request("POST", HttpURI.from("http://localhost/"), HttpVersion.HTTP_1_1, fields, 0);
@@ -324,10 +337,11 @@ public class HttpChannelTest
         assertThat(BufferUtil.toString(stream.getResponseContent()), equalTo(message));
     }
 
-    @Test
-    public void testAsyncEchoPOST() throws Exception
+    @ParameterizedTest
+    @MethodSource("echoHandlers")
+    public void testAsyncEchoPOST(EchoHandler echoHandler) throws Exception
     {
-        EchoHandler echoHandler = new EchoHandler();
+        Assumptions.assumeTrue(echoHandler.getInvocationType() == Invocable.InvocationType.NON_BLOCKING);
         _server.setHandler(echoHandler);
         _server.start();
 
@@ -349,44 +363,35 @@ public class HttpChannelTest
         ByteBuffer body = BufferUtil.toBuffer(message);
         HttpFields fields = HttpFields.build()
             .add(HttpHeader.HOST, "localhost")
-            .putLongField(HttpHeader.CONTENT_LENGTH, body.remaining())
+            .put(HttpHeader.CONTENT_LENGTH, body.remaining())
             .add(HttpHeader.CONTENT_TYPE, MimeTypes.Type.TEXT_PLAIN_8859_1.asString())
             .asImmutable();
         MetaData.Request request = new MetaData.Request("POST", HttpURI.from("http://localhost/"), HttpVersion.HTTP_1_1, fields, 0);
 
         Runnable task = channel.onRequest(request);
-        assertThat(stream.isComplete(), is(false));
-        assertThat(stream.isDemanding(), is(false));
-        assertThat(sendCB.get(), nullValue());
-
-        task.run();
-        assertThat(stream.isComplete(), is(false));
-        assertThat(stream.isDemanding(), is(true));
-        assertThat(sendCB.get(), nullValue());
+        if (task != null)
+            task.run();
+        Callback callback = sendCB.getAndSet(null);
+        if (callback != null)
+            callback.succeeded();
 
         for (int i = 0; i < parts.length; i++)
         {
             String part = parts[i];
             boolean last = i == (parts.length - 1);
             task = stream.addContent(BufferUtil.toBuffer(part), last);
-            assertThat(task, notNullValue());
+            if (task != null)
+                task.run();
 
-            assertThat(stream.isComplete(), is(false));
-            assertThat(stream.isDemanding(), is(false));
-
-            task.run();
-            assertThat(stream.isComplete(), is(false));
-            assertThat(stream.isDemanding(), is(false));
-
-            Callback callback = sendCB.getAndSet(null);
-            assertThat(callback, notNullValue());
-
-            callback.succeeded();
-            assertThat(stream.isComplete(), is(last));
-            assertThat(stream.isDemanding(), is(!last));
+            callback = sendCB.getAndSet(null);
+            if (callback != null)
+                callback.succeeded();
         }
 
+        assertTrue(stream.waitForComplete(5, TimeUnit.SECONDS));
         assertThat(stream.isComplete(), is(true));
+        if (stream.getFailure() != null)
+            stream.getFailure().printStackTrace();
         assertThat(stream.getFailure(), nullValue());
         assertThat(stream.getResponse(), notNullValue());
         assertThat(stream.getResponse().getStatus(), equalTo(200));
@@ -400,9 +405,9 @@ public class HttpChannelTest
         Handler handler = new Handler.Abstract()
         {
             @Override
-            public Request.Processor handle(Request request)
+            public boolean handle(Request request, Response response, Callback callback)
             {
-                return null;
+                return false;
             }
         };
         _server.setHandler(handler);
@@ -431,7 +436,7 @@ public class HttpChannelTest
         Handler handler = new Handler.Abstract()
         {
             @Override
-            public Request.Processor handle(Request request)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 throw new UnsupportedOperationException("testing");
             }
@@ -462,16 +467,17 @@ public class HttpChannelTest
     @Test
     public void testCompleteThenThrow() throws Exception
     {
-        Handler handler = new Handler.Processor()
+        Handler handler = new Handler.Abstract.NonBlocking()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 response.setStatus(200);
                 Content.Sink.write(response, true, "Before throw", Callback.from(callback, () ->
                 {
                     throw new Error("testing");
                 }));
+                return true;
             }
         };
         _server.setHandler(handler);
@@ -499,17 +505,20 @@ public class HttpChannelTest
     @Test
     public void testCommitThenThrowFromCallback() throws Exception
     {
-        Handler handler = new Handler.Processor()
+        Handler handler = new Handler.Abstract.NonBlocking()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
+                request.addFailureListener(callback::failed);
+
                 response.setStatus(200);
-                response.getHeaders().putLongField(HttpHeader.CONTENT_LENGTH, 10);
+                response.getHeaders().put(HttpHeader.CONTENT_LENGTH, 10);
                 response.write(false, null, Callback.from(() ->
                 {
                     throw new Error("testing");
                 }));
+                return true;
             }
         };
         _server.setHandler(handler);
@@ -536,12 +545,13 @@ public class HttpChannelTest
     @Test
     public void testAutoContentLength() throws Exception
     {
-        Handler handler = new Handler.Processor()
+        Handler handler = new Handler.Abstract.NonBlocking()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 response.write(true, BufferUtil.toBuffer("12345"), callback);
+                return true;
             }
         };
         _server.setHandler(handler);
@@ -567,50 +577,57 @@ public class HttpChannelTest
     @Test
     public void testInsufficientContentWritten1() throws Exception
     {
-        Handler handler = new Handler.Processor()
+        Handler handler = new Handler.Abstract.NonBlocking()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
-                response.getHeaders().putLongField(HttpHeader.CONTENT_LENGTH, 10);
-                response.write(true, BufferUtil.toBuffer("12345"), callback);
+                request.addHttpStreamWrapper(HttpStreamCaptureFailure::asWrapper);
+                response.getHeaders().put(HttpHeader.CONTENT_LENGTH, 10);
+                try (StacklessLogging ignore = new StacklessLogging(Response.class))
+                {
+                    response.write(true, BufferUtil.toBuffer("12345"), callback);
+                }
+                return true;
             }
         };
         _server.setHandler(handler);
+
+        LocalConnector localConnector = new LocalConnector(_server);
+        _server.addConnector(localConnector);
         _server.start();
 
-        ConnectionMetaData connectionMetaData = new MockConnectionMetaData(new MockConnector(_server));
-        HttpChannel channel = new HttpChannelState(connectionMetaData);
-        MockHttpStream stream = new MockHttpStream(channel);
+        String rawRequest = """
+            GET / HTTP/1.1
+            Host: local
+            Connection: close
+            
+            """;
 
-        HttpFields fields = HttpFields.build().add(HttpHeader.HOST, "localhost").asImmutable();
-        MetaData.Request request = new MetaData.Request("GET", HttpURI.from("http://localhost/"), HttpVersion.HTTP_1_1, fields, 0);
-        Runnable onRequest = channel.onRequest(request);
-        try (StacklessLogging ignored = new StacklessLogging(Response.class))
-        {
-            onRequest.run();
-        }
+        HttpTester.Response response = HttpTester.parseResponse(localConnector.getResponse(rawRequest));
+        assertEquals(500, response.getStatus());
+        assertThat(response.getContent(), containsString("5 &lt; 10"));
 
-        assertThat(stream.isComplete(), is(true));
-        assertThat(stream.getFailure(), notNullValue());
-        assertThat(stream.getFailure().getMessage(), containsString("5 < 10"));
-        assertThat(stream.getResponse(), notNullValue());
-        assertThat(stream.getResponse().getStatus(), is(500));
-        assertThat(stream.getResponseContentAsString(), containsString("5 &lt; 10"));
+        HttpStreamCaptureFailure capture = HttpStreamCaptureFailure.captureRef.get();
+        assertTrue(capture.failLatch.await(5, TimeUnit.SECONDS));
+        Throwable failure = capture.failRef.get();
+        assertThat(failure, notNullValue());
+        assertThat(failure.getMessage(), containsString("5 < 10"));
     }
 
     @Test
     public void testInsufficientContentWritten2() throws Exception
     {
-        Handler handler = new Handler.Processor()
+        Handler handler = new Handler.Abstract.NonBlocking()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
-                response.getHeaders().putLongField(HttpHeader.CONTENT_LENGTH, 10);
+                response.getHeaders().put(HttpHeader.CONTENT_LENGTH, 10);
                 response.write(false,
                     BufferUtil.toBuffer("12345"), Callback.from(() ->
                         response.write(true, null, callback)));
+                return true;
             }
         };
         _server.setHandler(handler);
@@ -635,13 +652,14 @@ public class HttpChannelTest
     @Test
     public void testExcessContentWritten1() throws Exception
     {
-        Handler handler = new Handler.Processor()
+        Handler handler = new Handler.Abstract.NonBlocking()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
-                response.getHeaders().putLongField(HttpHeader.CONTENT_LENGTH, 5);
+                response.getHeaders().put(HttpHeader.CONTENT_LENGTH, 5);
                 response.write(true, BufferUtil.toBuffer("1234567890"), callback);
+                return true;
             }
         };
         _server.setHandler(handler);
@@ -670,31 +688,45 @@ public class HttpChannelTest
     @Test
     public void testExcessContentWritten2() throws Exception
     {
-        Handler handler = new Handler.Processor()
+        Handler handler = new Handler.Abstract.NonBlocking()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
-                response.getHeaders().putLongField(HttpHeader.CONTENT_LENGTH, 5);
-                response.write(false, BufferUtil.toBuffer("1234"), Callback.from(() -> response.write(true, BufferUtil.toBuffer("567890"), callback)));
+                request.addHttpStreamWrapper(HttpStreamCaptureFailure::asWrapper);
+                response.getHeaders().put(HttpHeader.CONTENT_LENGTH, 5);
+                try (StacklessLogging ignore = new StacklessLogging(Response.class))
+                {
+                    response.write(false, BufferUtil.toBuffer("1234"),
+                        Callback.from(() ->
+                            response.write(true, BufferUtil.toBuffer("567890"),
+                                callback)));
+                }
+                return true;
             }
         };
         _server.setHandler(handler);
+
+        LocalConnector localConnector = new LocalConnector(_server);
+        _server.addConnector(localConnector);
         _server.start();
 
-        ConnectionMetaData connectionMetaData = new MockConnectionMetaData(new MockConnector(_server));
-        HttpChannel channel = new HttpChannelState(connectionMetaData);
-        MockHttpStream stream = new MockHttpStream(channel);
+        String rawRequest = """
+            GET / HTTP/1.1
+            Host: local
+            Connection: close
+            
+            """;
 
-        HttpFields fields = HttpFields.build().add(HttpHeader.HOST, "localhost").asImmutable();
-        MetaData.Request request = new MetaData.Request("GET", HttpURI.from("http://localhost/"), HttpVersion.HTTP_1_1, fields, 0);
-        Runnable task = channel.onRequest(request);
-        task.run();
+        String rawResponse = localConnector.getResponse(rawRequest);
+        assertThat(rawResponse, startsWith("HTTP/1.1 200 OK"));
 
-        assertThat(stream.isComplete(), is(true));
-        assertThat(stream.getFailure(), notNullValue());
-        assertThat(stream.getFailure().getMessage(), containsString("10 > 5"));
-        assertThat(stream.getResponse(), notNullValue());
+        HttpStreamCaptureFailure capture = HttpStreamCaptureFailure.captureRef.get();
+        assertTrue(capture.failLatch.await(5, TimeUnit.SECONDS));
+        Throwable failure = capture.failRef.get();
+        assertThat(failure, notNullValue());
+        assertThat(failure, instanceOf(IOException.class)); // the stream detected the error
+        assertThat(failure.getMessage(), containsString("10 > 5"));
     }
 
     @Test
@@ -712,7 +744,7 @@ public class HttpChannelTest
         ByteBuffer body = BufferUtil.toBuffer(message);
         HttpFields fields = HttpFields.build()
             .add(HttpHeader.HOST, "localhost")
-            .putLongField(HttpHeader.CONTENT_LENGTH, body.remaining())
+            .put(HttpHeader.CONTENT_LENGTH, body.remaining())
             .add(HttpHeader.CONTENT_TYPE, MimeTypes.Type.TEXT_PLAIN_8859_1.asString())
             .asImmutable();
         MetaData.Request request = new MetaData.Request("POST", HttpURI.from("http://localhost/"), HttpVersion.HTTP_1_1, fields, 0);
@@ -735,15 +767,16 @@ public class HttpChannelTest
     @Test
     public void testUnconsumedContentUnavailable() throws Exception
     {
-        Handler handler = new Handler.Processor()
+        Handler handler = new Handler.Abstract.NonBlocking()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 response.setStatus(200);
                 response.getHeaders().put(HttpHeader.CONTENT_TYPE, MimeTypes.Type.TEXT_PLAIN_UTF_8.asString());
-                response.getHeaders().putLongField(HttpHeader.CONTENT_LENGTH, 5);
+                response.getHeaders().put(HttpHeader.CONTENT_LENGTH, 5);
                 response.write(false, null, Callback.from(() -> response.write(true, BufferUtil.toBuffer("12345"), callback)));
+                return true;
             }
         };
         _server.setHandler(handler);
@@ -755,7 +788,7 @@ public class HttpChannelTest
 
         HttpFields fields = HttpFields.build()
             .add(HttpHeader.HOST, "localhost")
-            .putLongField(HttpHeader.CONTENT_LENGTH, 10)
+            .put(HttpHeader.CONTENT_LENGTH, 10)
             .asImmutable();
         MetaData.Request request = new MetaData.Request("POST", HttpURI.from("http://localhost/"), HttpVersion.HTTP_1_1, fields, 0);
 
@@ -764,7 +797,7 @@ public class HttpChannelTest
 
         assertThat(stream.isComplete(), is(true));
         assertThat(stream.getFailure(), notNullValue());
-        assertThat(stream.getFailure().getMessage(), containsString("Content not consumed"));
+        assertThat(stream.getFailure().getMessage(), containsString("Unconsumed request content"));
         assertThat(stream.getResponse(), notNullValue());
         assertThat(stream.getResponse().getStatus(), equalTo(200));
         assertThat(stream.getResponseHeaders().get(HttpHeader.CONTENT_TYPE), equalTo(MimeTypes.Type.TEXT_PLAIN_UTF_8.asString()));
@@ -777,16 +810,17 @@ public class HttpChannelTest
     @Test
     public void testUnconsumedContentUnavailableClosed() throws Exception
     {
-        Handler handler = new Handler.Processor()
+        Handler handler = new Handler.Abstract.NonBlocking()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 response.setStatus(200);
                 response.getHeaders().add(HttpHeader.CONNECTION, HttpHeaderValue.CLOSE.asString());
                 response.getHeaders().put(HttpHeader.CONTENT_TYPE, MimeTypes.Type.TEXT_PLAIN_UTF_8.asString());
-                response.getHeaders().putLongField(HttpHeader.CONTENT_LENGTH, 5);
+                response.getHeaders().put(HttpHeader.CONTENT_LENGTH, 5);
                 response.write(false, null, Callback.from(() -> response.write(true, BufferUtil.toBuffer("12345"), callback)));
+                return true;
             }
         };
         _server.setHandler(handler);
@@ -798,7 +832,7 @@ public class HttpChannelTest
 
         HttpFields fields = HttpFields.build()
             .add(HttpHeader.HOST, "localhost")
-            .putLongField(HttpHeader.CONTENT_LENGTH, 10)
+            .put(HttpHeader.CONTENT_LENGTH, 10)
             .asImmutable();
         MetaData.Request request = new MetaData.Request("POST", HttpURI.from("http://localhost/"), HttpVersion.HTTP_1_1, fields, 0);
 
@@ -831,7 +865,7 @@ public class HttpChannelTest
         ByteBuffer body = BufferUtil.toBuffer(message);
         HttpFields fields = HttpFields.build()
             .add(HttpHeader.HOST, "localhost")
-            .putLongField(HttpHeader.CONTENT_LENGTH, body.remaining())
+            .put(HttpHeader.CONTENT_LENGTH, body.remaining())
             .add(HttpHeader.CONTENT_TYPE, MimeTypes.Type.TEXT_PLAIN_8859_1.asString())
             .asImmutable();
         MetaData.Request request = new MetaData.Request("POST", HttpURI.from("http://localhost/"), HttpVersion.HTTP_1_1, fields, 0);
@@ -894,7 +928,7 @@ public class HttpChannelTest
         ByteBuffer body = BufferUtil.toBuffer(message);
         HttpFields fields = HttpFields.build()
             .add(HttpHeader.HOST, "localhost")
-            .putLongField(HttpHeader.CONTENT_LENGTH, body.remaining())
+            .put(HttpHeader.CONTENT_LENGTH, body.remaining())
             .add(HttpHeader.CONTENT_TYPE, MimeTypes.Type.TEXT_PLAIN_8859_1.asString())
             .asImmutable();
         MetaData.Request request = new MetaData.Request("POST", HttpURI.from("http://localhost/"), HttpVersion.HTTP_1_1, fields, 0);
@@ -933,17 +967,10 @@ public class HttpChannelTest
                 }
 
                 @Override
-                public void push(MetaData.Request request)
+                public void push(MetaData.Request resource)
                 {
                     history.add("push");
-                    super.push(request);
-                }
-
-                @Override
-                public Connection upgrade()
-                {
-                    history.add("upgrade");
-                    return super.upgrade();
+                    super.push(resource);
                 }
 
                 @Override
@@ -1042,7 +1069,7 @@ public class HttpChannelTest
         ByteBuffer body = BufferUtil.toBuffer(message);
         HttpFields fields = HttpFields.build()
             .add(HttpHeader.HOST, "localhost")
-            .putLongField(HttpHeader.CONTENT_LENGTH, body.remaining())
+            .put(HttpHeader.CONTENT_LENGTH, body.remaining())
             .put(HttpHeader.TRAILER, "Some")
             .add(HttpHeader.CONTENT_TYPE, MimeTypes.Type.TEXT_PLAIN_8859_1.asString())
             .asImmutable();
@@ -1066,10 +1093,10 @@ public class HttpChannelTest
     @Test
     public void testDemandRecursion() throws Exception
     {
-        _server.setHandler(new Handler.Processor(Invocable.InvocationType.BLOCKING)
+        _server.setHandler(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback) throws Exception
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
             {
                 LongAdder contentSize = new LongAdder();
                 CountDownLatch latch = new CountDownLatch(1);
@@ -1097,6 +1124,7 @@ public class HttpChannelTest
                 {
                     callback.failed(new IOException());
                 }
+                return true;
             }
         });
         _server.start();
@@ -1129,7 +1157,7 @@ public class HttpChannelTest
         HttpFields fields = HttpFields.build()
             .add(HttpHeader.HOST, "localhost")
             .asImmutable();
-        MetaData.Request request = new MetaData.Request("POST", HttpURI.from("http://localhost/"), HttpVersion.HTTP_1_1, fields, -1);
+        MetaData.Request request = new MetaData.Request("POST", HttpURI.from("http://localhost/"), HttpVersion.HTTP_1_1, fields);
 
         Runnable task = channel.onRequest(request);
         task.run();
@@ -1142,23 +1170,21 @@ public class HttpChannelTest
     }
 
     @Test
-    public void testOnError() throws Exception
+    public void testOnFailure() throws Exception
     {
         AtomicReference<Response> handling = new AtomicReference<>();
         AtomicReference<Throwable> error = new AtomicReference<>();
-        Handler handler = new Handler.Processor()
+        Handler handler = new Handler.Abstract.NonBlocking()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 handling.set(response);
-                request.addErrorListener(t -> false);
-                request.addErrorListener(t -> !error.compareAndSet(null, t));
-                request.addErrorListener(t ->
-                {
-                    callback.failed(t);
-                    return true;
-                });
+                request.addFailureListener(t -> error.set(null));
+                request.addFailureListener(t -> error.compareAndSet(null, t));
+                request.addFailureListener(t -> error.compareAndSet(null, new Throwable("WRONG")));
+                request.addFailureListener(callback::failed);
+                return true;
             }
         };
         _server.setHandler(handler);
@@ -1173,55 +1199,54 @@ public class HttpChannelTest
         Runnable onRequest = channel.onRequest(request);
         onRequest.run();
 
-        // check we are handling
+        // Check we are handling.
         assertNotNull(handling.get());
         assertThat(stream.isComplete(), is(false));
         assertThat(stream.getFailure(), nullValue());
         assertThat(stream.getResponse(), nullValue());
 
-        // failure happens
+        // Failure happens.
         IOException failure = new IOException("Testing");
-        Runnable onError = channel.onFailure(failure);
-        assertNotNull(onError);
+        Runnable onFailure = channel.onFailure(failure);
+        assertNotNull(onFailure);
 
-        // onError not yet called
+        // Failure listeners not yet called.
         assertThat(error.get(), nullValue());
 
-        // request still handling
+        // Request still handling.
         assertFalse(stream.isComplete());
 
-        // but now we cannot read, demand nor write
+        // Can read the failure.
         Request rq = handling.get().getRequest();
         Content.Chunk chunk = rq.read();
         assertTrue(chunk.isLast());
-        assertInstanceOf(Content.Chunk.Error.class, chunk);
-        assertThat(((Content.Chunk.Error)chunk).getCause(), sameInstance(failure));
+        assertTrue(Content.Chunk.isFailure(chunk, true));
+        assertThat(chunk.getFailure(), sameInstance(failure));
 
         CountDownLatch demand = new CountDownLatch(1);
-        // Callback serialized until after onError task
+        // Demand callback is serialized after the onFailure task runs.
         rq.demand(demand::countDown);
         assertThat(demand.getCount(), is(1L));
 
-        FuturePromise<Throwable> callback = new FuturePromise<>();
-        // Callback serialized until after onError task
-        handling.get().write(false, null, Callback.from(() ->
-        {}, callback::succeeded));
-        assertFalse(callback.isDone());
+        Callback.Completable callback = new Callback.Completable();
 
-        // process error callback
+        // Writes are possible, unless a pending write is failed.
+        handling.get().write(false, null, callback);
+        assertTrue(callback.isDone());
+        assertFalse(callback.isCompletedExceptionally());
+
+        // Run the onFailure task.
         try (StacklessLogging ignore = new StacklessLogging(Response.class))
         {
-            onError.run();
+            onFailure.run();
         }
 
-        // onError was called
+        // onFailure listeners were called.
         assertThat(error.get(), sameInstance(failure));
-        // demand callback was called
+        // Demand callback was called.
         assertTrue(demand.await(5, TimeUnit.SECONDS));
-        // write callback was failed
-        assertThat(callback.get(5, TimeUnit.SECONDS), sameInstance(failure));
 
-        // request completed handling
+        // Request handling was completed.
         assertTrue(stream.isComplete());
     }
 
@@ -1233,7 +1258,7 @@ public class HttpChannelTest
         EchoHandler echoHandler = new EchoHandler()
         {
             @Override
-            public Request.Processor handle(Request request) throws Exception
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 request.addHttpStreamWrapper(s -> new HttpStream.Wrapper(s)
                 {
@@ -1244,7 +1269,7 @@ public class HttpChannelTest
                         super.succeeded();
                     }
                 });
-                return super.handle(request);
+                return super.handle(request, response, callback);
             }
         };
         _server.setHandler(echoHandler);
@@ -1265,9 +1290,9 @@ public class HttpChannelTest
         HttpFields fields = HttpFields.build()
             .add(HttpHeader.HOST, "localhost")
             .add(HttpHeader.CONTENT_TYPE, MimeTypes.Type.TEXT_PLAIN_8859_1.asString())
-            .add(HttpHeader.CONTENT_LENGTH, "12")
+            .add(HttpHeader.CONTENT_LENGTH, 12)
             .asImmutable();
-        MetaData.Request request = new MetaData.Request("POST", HttpURI.from("http://localhost/"), HttpVersion.HTTP_1_1, fields, -1);
+        MetaData.Request request = new MetaData.Request("POST", HttpURI.from("http://localhost/"), HttpVersion.HTTP_1_1, fields);
 
         Runnable todo = channel.onRequest(request);
         todo.run();
@@ -1326,31 +1351,39 @@ public class HttpChannelTest
 
     @ParameterizedTest
     @MethodSource("completionEvents")
-    public void testCompletionNoWriteErrorProcessor(List<CompletionTestEvent> events) throws Exception
+    public void testCompletionNoWriteErrorHandler(List<CompletionTestEvent> events) throws Exception
     {
-        Request.Processor errorProcessor = (request, response, callback) -> callback.succeeded();
-        testCompletion(events, errorProcessor, true);
+        Request.Handler errorHandler = (request, response, callback) ->
+        {
+            callback.succeeded();
+            return true;
+        };
+        testCompletion(events, errorHandler, true);
     }
 
     @ParameterizedTest
     @MethodSource("completionEvents")
-    public void testCompletionFailedErrorProcessor(List<CompletionTestEvent> events) throws Exception
+    public void testCompletionFailedErrorHandler(List<CompletionTestEvent> events) throws Exception
     {
-        Request.Processor errorProcessor = (request, response, callback) -> callback.failed(new QuietException.Exception("Error processor failed"));
-        testCompletion(events, errorProcessor, false);
+        Request.Handler errorHandler = (request, response, callback) ->
+        {
+            callback.failed(new QuietException.Exception("Error handler failed"));
+            return true;
+        };
+        testCompletion(events, errorHandler, false);
     }
 
-    private void testCompletion(List<CompletionTestEvent> events, Request.Processor errorProcessor, boolean expectErrorResponse) throws Exception
+    private void testCompletion(List<CompletionTestEvent> events, Request.Handler errorHandler, boolean expectErrorResponse) throws Exception
     {
         CountDownLatch processing = new CountDownLatch(1);
         CountDownLatch processed = new CountDownLatch(1);
         AtomicReference<Response> responseRef = new AtomicReference<>();
         AtomicReference<Callback> callbackRef = new AtomicReference<>();
 
-        Handler handler = new Handler.Processor()
+        Handler handler = new Handler.Abstract.NonBlocking()
         {
             @Override
-            public void process(Request request, Response response, Callback callback) throws Exception
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
             {
                 response.setStatus(200);
                 response.getHeaders().put("Test", "Value");
@@ -1358,12 +1391,13 @@ public class HttpChannelTest
                 callbackRef.set(callback);
                 processing.countDown();
                 processed.await();
+                return true;
             }
         };
 
         _server.setHandler(handler);
-        if (errorProcessor != null)
-            _server.setErrorProcessor(errorProcessor);
+        if (errorHandler != null)
+            _server.setErrorHandler(errorHandler);
         _server.start();
 
         ConnectionMetaData connectionMetaData = new MockConnectionMetaData(new MockConnector(_server));
@@ -1442,6 +1476,33 @@ public class HttpChannelTest
         else
         {
             assertThat(stream.getResponse(), nullValue());
+        }
+    }
+
+    private static class HttpStreamCaptureFailure extends HttpStream.Wrapper
+    {
+        public static AtomicReference<HttpStreamCaptureFailure> captureRef = new AtomicReference<>();
+        public AtomicReference<Throwable> failRef = new AtomicReference<>();
+        public CountDownLatch failLatch = new CountDownLatch(1);
+
+        private HttpStreamCaptureFailure(HttpStream httpStream)
+        {
+            super(httpStream);
+        }
+
+        public static HttpStream asWrapper(HttpStream httpStream)
+        {
+            HttpStreamCaptureFailure capture = new HttpStreamCaptureFailure(httpStream);
+            captureRef.set(capture);
+            return capture;
+        }
+
+        @Override
+        public void failed(Throwable x)
+        {
+            super.failed(x);
+            failRef.set(x);
+            failLatch.countDown();
         }
     }
 }

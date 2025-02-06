@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,11 +13,13 @@
 
 package org.eclipse.jetty.http;
 
+import java.io.Serial;
+import java.io.Serializable;
 import java.net.URI;
-import java.net.URISyntaxException;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.EnumSet;
+import java.util.Set;
 
 import org.eclipse.jetty.http.UriCompliance.Violation;
 import org.eclipse.jetty.util.HostPort;
@@ -25,7 +27,6 @@ import org.eclipse.jetty.util.Index;
 import org.eclipse.jetty.util.StringUtil;
 import org.eclipse.jetty.util.TypeUtil;
 import org.eclipse.jetty.util.URIUtil;
-import org.eclipse.jetty.util.UrlEncoded;
 
 /**
  * Http URI.
@@ -34,15 +35,15 @@ import org.eclipse.jetty.util.UrlEncoded;
  * via the static methods such as {@link #build()} and {@link #from(String)}.
  *
  * A URI such as
- * {@code http://user@host:port/path;param1/%2e/f%6fo%2fbar;param2?query#fragment}
+ * {@code http://user@host:port/path;param1/%2e/f%6fo%2fbar%20bob;param2?query#fragment}
  * is split into the following optional elements:<ul>
  * <li>{@link #getScheme()} - http:</li>
  * <li>{@link #getAuthority()} - //name@host:port</li>
  * <li>{@link #getHost()} - host</li>
  * <li>{@link #getPort()} - port</li>
- * <li>{@link #getPath()} - /path;param1/%2e/f%6fo%2fbar;param2</li>
- * <li>{@link #getCanonicalPath()} - /path/foo%2Fbar</li>
- * <li>{@link #getDecodedPath()} - /path/foo/bar</li>
+ * <li>{@link #getPath()} - /path;param1/%2e/f%6fo%2fbar%20bob;param2</li>
+ * <li>{@link #getCanonicalPath()} - /path/foo%2Fbar%20bob</li>
+ * <li>{@link #getDecodedPath()} - /path/foo/bar bob</li>
  * <li>{@link #getParam()} - param2</li>
  * <li>{@link #getQuery()} - query</li>
  * <li>{@link #getFragment()} - fragment</li>
@@ -63,12 +64,15 @@ import org.eclipse.jetty.util.UrlEncoded;
  * Thus this class avoid and/or detects such ambiguities. Furthermore, by decoding characters and
  * removing parameters before relative path normalization, ambiguous paths will be resolved in such
  * a way to be non-standard-but-non-ambiguous to down stream interpretation of the decoded path string.
- * The violations are recorded and available by API such as {@link #hasAmbiguousSegment()} so that requests
- * containing them may be rejected in case the non-standard-but-non-ambiguous interpretations
- * are not satisfactory for a given compliance configuration.
  * </p>
  * <p>
- * Implementations that wish to process ambiguous URI paths must configure the compliance modes
+ * This class collates any {@link UriCompliance.Violation violations} against the specification
+ * and/or best practises in the {@link #getViolations()}.  Users of this class should check against a
+ * configured {@link UriCompliance} mode if the {@code HttpURI} is suitable for use
+ * (see {@link UriCompliance#checkUriCompliance(UriCompliance, HttpURI, ComplianceViolation.Listener)}).
+ * </p>
+ * <p>
+ * For example, implementations that wish to process ambiguous URI paths must configure the compliance modes
  * to accept them and then perform their own decoding of {@link #getPath()}.
  * </p>
  * <p>
@@ -146,6 +150,11 @@ public interface HttpURI
     static Immutable from(String scheme, String host, int port, String pathQuery)
     {
         return new Mutable(scheme, host, port, pathQuery).asImmutable();
+    }
+
+    static Immutable from(String scheme, String host, int port, String path, String query, String fragment)
+    {
+        return new Immutable(scheme, host, port, path, query, fragment);
     }
 
     Immutable asImmutable();
@@ -255,19 +264,14 @@ public interface HttpURI
 
     default URI toURI()
     {
-        try
-        {
-            String query = getQuery();
-            return new URI(getScheme(), null, getHost(), getPort(), getPath(), query == null ? null : UrlEncoded.decodeString(query), null);
-        }
-        catch (URISyntaxException x)
-        {
-            throw new RuntimeException(x);
-        }
+        return URI.create(toString());
     }
 
-    class Immutable implements HttpURI
+    class Immutable implements HttpURI, Serializable
     {
+        @Serial
+        private static final long serialVersionUID = 2245620284548399386L;
+
         private final String _scheme;
         private final String _user;
         private final String _host;
@@ -278,7 +282,7 @@ public interface HttpURI
         private final String _fragment;
         private String _uri;
         private String _canonicalPath;
-        private final EnumSet<Violation> _violations = EnumSet.noneOf(Violation.class);
+        private Set<Violation> _violations;
 
         private Immutable(Mutable builder)
         {
@@ -292,21 +296,23 @@ public interface HttpURI
             _fragment = builder._fragment;
             _uri = builder._uri;
             _canonicalPath = builder._canonicalPath;
-            _violations.addAll(builder._violations);
+            if (builder._violations != null)
+                _violations = Collections.unmodifiableSet(EnumSet.copyOf(builder._violations));
         }
 
-        private Immutable(String uri)
+        private Immutable(String scheme, String host, int port, String path, String query, String fragment)
         {
-            _scheme = null;
+            _uri = null;
+
+            _scheme = URIUtil.normalizeScheme(scheme);
             _user = null;
-            _host = null;
-            _port = -1;
-            _path = uri;
+            _host = host;
+            _port = (port > 0) ? port : URIUtil.UNDEFINED_PORT;
+            _path = path;
+            _canonicalPath = _path == null ? null : URIUtil.canonicalPath(_path);
             _param = null;
-            _query = null;
-            _fragment = null;
-            _uri = uri;
-            _canonicalPath = null;
+            _query = query;
+            _fragment = fragment;
         }
 
         @Override
@@ -333,19 +339,26 @@ public interface HttpURI
                     out.append(_host);
                 }
 
-                if (_port > 0)
-                    out.append(':').append(_port);
+                int normalizedPort = URIUtil.normalizePortForScheme(_scheme, _port);
+                if (normalizedPort > 0)
+                    out.append(':').append(normalizedPort);
+
+                // we output even if the input is an empty string (to match java URI / URL behaviors)
+                boolean hasQuery = _query != null;
+                boolean hasFragment = _fragment != null;
 
                 if (_path != null)
                     out.append(_path);
+                else if (hasQuery || hasFragment)
+                    out.append('/');
 
-                if (_query != null)
+                if (hasQuery)
                     out.append('?').append(_query);
 
-                if (_fragment != null)
+                if (hasFragment)
                     out.append('#').append(_fragment);
 
-                if (out.length() > 0)
+                if (!out.isEmpty())
                     _uri = out.toString();
                 else
                     _uri = "";
@@ -381,7 +394,7 @@ public interface HttpURI
         public String getCanonicalPath()
         {
             if (_canonicalPath == null && _path != null)
-                _canonicalPath = URIUtil.canonicalPath(URIUtil.normalizePath(_path));
+                _canonicalPath = URIUtil.canonicalPath(_path);
             return _canonicalPath;
         }
 
@@ -465,44 +478,31 @@ public interface HttpURI
         @Override
         public boolean isAmbiguous()
         {
-            return !_violations.isEmpty() && !(_violations.size() == 1 && _violations.contains(Violation.UTF16_ENCODINGS));
+            return _violations != null && UriCompliance.isAmbiguous(_violations);
         }
 
         @Override
         public boolean hasViolations()
         {
-            return !_violations.isEmpty();
+            return _violations != null && !_violations.isEmpty();
         }
 
         @Override
         public boolean hasViolation(Violation violation)
         {
-            return _violations.contains(violation);
+            return _violations != null && _violations.contains(violation);
         }
 
         @Override
         public Collection<Violation> getViolations()
         {
-            return Collections.unmodifiableCollection(_violations);
+            return _violations == null ? Collections.emptySet() : _violations;
         }
 
         @Override
         public String toString()
         {
             return asString();
-        }
-
-        @Override
-        public URI toURI()
-        {
-            try
-            {
-                return new URI(_scheme, null, _host, _port, _path, _query == null ? null : UrlEncoded.decodeString(_query), _fragment);
-            }
-            catch (URISyntaxException x)
-            {
-                throw new RuntimeException(x);
-            }
         }
     }
 
@@ -532,7 +532,7 @@ public interface HttpURI
          * <a href="https://tools.ietf.org/html/rfc3986#section-5.2.4">Remove Dot Segments</a>
          * algorithm.  This results in some ambiguity as dot segments can result from later
          * parameter removal or % encoding expansion, that are not removed from the URI
-         * by {@link URIUtil#canonicalPath(String)}.  Thus this class flags such ambiguous
+         * by {@link URIUtil#normalizePath(String)}.  Thus this class flags such ambiguous
          * path segments, so that they may be rejected by the server if so configured.
          */
         private static final Index<Boolean> __ambiguousSegments = new Index.Builder<Boolean>()
@@ -551,17 +551,109 @@ public interface HttpURI
             .with("%u002e%u002e", Boolean.TRUE)
             .build();
 
+        private static final boolean[] __suspiciousPathCharacters;
+
+        private static final boolean[] __unreservedPctEncodedSubDelims;
+
+        private static final boolean[] __pathCharacters;
+
+        private static boolean isDigit(char c)
+        {
+            return (c >= '0') && (c <= '9');
+        }
+
+        private static boolean isHexDigit(char c)
+        {
+            return (((c >= 'a') && (c <= 'f')) || // ALPHA (lower)
+                ((c >= 'A') && (c <= 'F')) ||  // ALPHA (upper)
+                ((c >= '0') && (c <= '9')));
+        }
+
+        private static boolean isUnreserved(char c)
+        {
+            return (((c >= 'a') && (c <= 'z')) || // ALPHA (lower)
+                ((c >= 'A') && (c <= 'Z')) ||  // ALPHA (upper)
+                ((c >= '0') && (c <= '9')) || // DIGIT
+                (c == '-') || (c == '.') || (c == '_') || (c == '~'));
+        }
+
+        private static boolean isSubDelim(char c)
+        {
+            return c == '!' || c == '$' || c == '&' || c == '\'' || c == '(' || c == ')' || c == '*' || c == '+' || c == ',' || c == ';' || c == '=';
+        }
+
+        static boolean isUnreservedPctEncodedOrSubDelim(char c)
+        {
+            return c < __unreservedPctEncodedSubDelims.length && __unreservedPctEncodedSubDelims[c];
+        }
+
+        static
+        {
+            // Establish allowed and disallowed characters per the path rules of
+            // https://datatracker.ietf.org/doc/html/rfc3986#section-3.3
+            // ABNF
+            //   path          = path-abempty    ; begins with "/" or is empty
+            //                 / path-absolute   ; begins with "/" but not "//"
+            //                 / path-noscheme   ; begins with a non-colon segment
+            //                 / path-rootless   ; begins with a segment
+            //                 / path-empty      ; zero characters
+            //   path-abempty  = *( "/" segment )
+            //   path-absolute = "/" [ segment-nz *( "/" segment ) ]
+            //   path-noscheme = segment-nz-nc *( "/" segment )
+            //   path-rootless = segment-nz *( "/" segment )
+            //   path-empty    = 0<pchar>
+            //
+            //   segment       = *pchar
+            //   segment-nz    = 1*pchar
+            //   segment-nz-nc = 1*( unreserved / pct-encoded / sub-delims / "@" )
+            //                 ; non-zero-length segment without any colon ":"
+            //   pchar         = unreserved / pct-encoded / sub-delims / ":" / "@"
+            //   pct-encoded   = "%" HEXDIG HEXDIG
+            //
+            //   unreserved    = ALPHA / DIGIT / "-" / "." / "_" / "~"
+            //   reserved      = gen-delims / sub-delims
+            //   gen-delims    = ":" / "/" / "?" / "#" / "[" / "]" / "@"
+            //   sub-delims    = "!" / "$" / "&" / "'" / "(" / ")"
+            //                 / "*" / "+" / "," / ";" / "="
+            //
+            //   authority     = [ userinfo "@" ] host [ ":" port ]
+            //   userinfo      = *( unreserved / pct-encoded / sub-delims / ":" )
+            //   host          = IP-literal / IPv4address / reg-name
+            //   port          = *DIGIT
+            //
+            //   reg-name      = *( unreserved / pct-encoded / sub-delims )
+            //
+            // we are limited to US-ASCII per https://datatracker.ietf.org/doc/html/rfc3986#section-2
+            __unreservedPctEncodedSubDelims = new boolean[128];
+            __pathCharacters = new boolean[128];
+
+            for (int i = 0; i < __pathCharacters.length; i++)
+            {
+                char c = (char)i;
+
+                __unreservedPctEncodedSubDelims[i] = isUnreserved(c) || c == '%' || isSubDelim(c);
+                __pathCharacters[i] = __unreservedPctEncodedSubDelims[i] ||  c == ':' || c == '@';
+            }
+
+            // suspicious path characters
+            __suspiciousPathCharacters = new boolean[128];
+            __suspiciousPathCharacters['\\'] = true;
+            __suspiciousPathCharacters[0x7F] = true;
+            for (int i = 0; i <= 0x1F; i++)
+                __suspiciousPathCharacters[i] = true;
+        }
+
         private String _scheme;
         private String _user;
         private String _host;
-        private int _port;
+        private int _port = URIUtil.UNDEFINED_PORT;
         private String _path;
         private String _param;
         private String _query;
         private String _fragment;
         private String _uri;
         private String _canonicalPath;
-        private final EnumSet<Violation> _violations = EnumSet.noneOf(Violation.class);
+        private Set<Violation> _violations;
         private boolean _emptySegment;
 
         private Mutable()
@@ -578,6 +670,8 @@ public interface HttpURI
             _uri = null;
             _scheme = baseURI.getScheme();
             _user = baseURI.getUser();
+            if (_user != null)
+                _violations = EnumSet.of(Violation.USER_INFO);
             _host = baseURI.getHost();
             _port = baseURI.getPort();
             if (pathQuery != null)
@@ -589,6 +683,8 @@ public interface HttpURI
             _uri = null;
             _scheme = baseURI.getScheme();
             _user = baseURI.getUser();
+            if (_user != null)
+                _violations = EnumSet.of(Violation.USER_INFO);
             _host = baseURI.getHost();
             _port = baseURI.getPort();
             if (path != null)
@@ -601,7 +697,6 @@ public interface HttpURI
 
         private Mutable(String uri)
         {
-            _port = -1;
             parse(State.START, uri);
         }
 
@@ -609,12 +704,14 @@ public interface HttpURI
         {
             _uri = null;
 
-            _scheme = uri.getScheme();
+            _scheme = URIUtil.normalizeScheme(uri.getScheme());
             _host = uri.getHost();
             if (_host == null && uri.getRawSchemeSpecificPart().startsWith("//"))
                 _host = "";
             _port = uri.getPort();
             _user = uri.getUserInfo();
+            if (_user != null)
+                _violations = EnumSet.of(Violation.USER_INFO);
             String path = uri.getRawPath();
             if (path != null)
                 parse(State.PATH, path);
@@ -624,15 +721,11 @@ public interface HttpURI
 
         private Mutable(String scheme, String host, int port, String pathQuery)
         {
-            // TODO review if this should be here
-            if (port == HttpScheme.getDefaultPort(scheme))
-                port = 0;
-
             _uri = null;
 
-            _scheme = scheme;
+            _scheme = URIUtil.normalizeScheme(scheme);
             _host = host;
-            _port = port;
+            _port = (port > 0) ? port : URIUtil.UNDEFINED_PORT;
 
             if (pathQuery != null)
                 parse(State.PATH, pathQuery);
@@ -661,7 +754,7 @@ public interface HttpURI
                 throw new IllegalArgumentException("Relative path with authority");
             _user = null;
             _host = host;
-            _port = port;
+            _port = (port > 0) ? port : URIUtil.UNDEFINED_PORT;
             _uri = null;
             return this;
         }
@@ -696,7 +789,7 @@ public interface HttpURI
             _scheme = null;
             _user = null;
             _host = null;
-            _port = -1;
+            _port = URIUtil.UNDEFINED_PORT;
             _path = null;
             _param = null;
             _query = null;
@@ -704,7 +797,8 @@ public interface HttpURI
             _uri = null;
             _canonicalPath = null;
             _emptySegment = false;
-            _violations.clear();
+            if (_violations != null)
+                _violations.clear();
             return this;
         }
 
@@ -712,7 +806,7 @@ public interface HttpURI
         {
             _uri = null;
             _path = URIUtil.encodePath(path);
-            _canonicalPath = path;
+            _canonicalPath = URIUtil.canonicalPath(_path);
             return this;
         }
 
@@ -750,7 +844,7 @@ public interface HttpURI
         public String getCanonicalPath()
         {
             if (_canonicalPath == null && _path != null)
-                _canonicalPath = URIUtil.canonicalPath(URIUtil.normalizePath(_path));
+                _canonicalPath = URIUtil.canonicalPath(_path);
             return _canonicalPath;
         }
 
@@ -839,25 +933,25 @@ public interface HttpURI
         @Override
         public boolean isAmbiguous()
         {
-            return !_violations.isEmpty() && !(_violations.size() == 1 && _violations.contains(Violation.UTF16_ENCODINGS));
+            return _violations != null && UriCompliance.isAmbiguous(_violations);
         }
 
         @Override
         public boolean hasViolations()
         {
-            return !_violations.isEmpty();
+            return _violations != null && !_violations.isEmpty();
         }
 
         @Override
         public boolean hasViolation(Violation violation)
         {
-            return _violations.contains(violation);
+            return _violations != null && _violations.contains(violation);
         }
 
         @Override
         public Collection<Violation> getViolations()
         {
-            return Collections.unmodifiableCollection(_violations);
+            return _violations == null ? Collections.emptySet() : Collections.unmodifiableCollection(_violations);
         }
 
         public Mutable normalize()
@@ -875,7 +969,16 @@ public interface HttpURI
         {
             _param = param;
             if (_path != null && _param != null)
+            {
+                int lastSlash = _path.lastIndexOf('/');
+                if (lastSlash >= 0)
+                {
+                    int trailingParam = _path.indexOf(';', lastSlash + 1);
+                    if (trailingParam >= 0)
+                        _path = _path.substring(0, trailingParam);
+                }
                 _path += ";" + _param;
+            }
 
             _uri = null;
             return this;
@@ -889,9 +992,26 @@ public interface HttpURI
         {
             if (hasAuthority() && !isPathValidForAuthority(path))
                 throw new IllegalArgumentException("Relative path with authority");
+            if (!URIUtil.isPathValid(path))
+                throw new IllegalArgumentException("Path not correctly encoded: " + path);
+            // since we are resetting the path, lets clear out the path specific violations.
+            if (_violations != null)
+                _violations.removeIf(UriCompliance::isPathViolation);
             _uri = null;
-            _path = path;
+            _path = null;
             _canonicalPath = null;
+            String param = _param;
+            _param = null;
+            parse(State.PATH, path);
+
+            // If the passed path does not have a parameter, then keep the current parameter
+            // else delete the current parameter
+            if (param != null && path.indexOf(';') < 0)
+            {
+                _param = param;
+                _path = _path + ';' + _param;
+            }
+
             return this;
         }
 
@@ -899,6 +1019,9 @@ public interface HttpURI
         {
             if (hasAuthority() && !isPathValidForAuthority(pathQuery))
                 throw new IllegalArgumentException("Relative path with authority");
+            // since we are resetting the path, lets clear out the path specific violations.
+            if (_violations != null)
+                _violations.removeIf(UriCompliance::isPathViolation);
             _uri = null;
             _path = null;
             _canonicalPath = null;
@@ -911,7 +1034,7 @@ public interface HttpURI
 
         public Mutable port(int port)
         {
-            _port = port;
+            _port = (port > 0) ? port : URIUtil.UNDEFINED_PORT;
             _uri = null;
             return this;
         }
@@ -930,7 +1053,7 @@ public interface HttpURI
 
         public Mutable scheme(String scheme)
         {
-            _scheme = scheme;
+            _scheme = URIUtil.normalizeScheme(scheme);
             _uri = null;
             return this;
         }
@@ -939,18 +1062,6 @@ public interface HttpURI
         public String toString()
         {
             return asString();
-        }
-
-        public URI toURI()
-        {
-            try
-            {
-                return new URI(_scheme, null, _host, _port, _path, _query == null ? null : UrlEncoded.decodeString(_query), null);
-            }
-            catch (URISyntaxException x)
-            {
-                throw new RuntimeException(x);
-            }
         }
 
         public Mutable uri(HttpURI uri)
@@ -964,7 +1075,9 @@ public interface HttpURI
             _query = uri.getQuery();
             _uri = null;
             _canonicalPath = uri.getCanonicalPath();
-            _violations.addAll(uri.getViolations());
+            Collection<Violation> violations = uri.getViolations();
+            if (!violations.isEmpty())
+                _violations = EnumSet.copyOf(violations);
             return this;
         }
 
@@ -982,6 +1095,9 @@ public interface HttpURI
             {
                 clear();
                 parse(State.HOST, uri);
+                _path = null;
+                _query = null;
+                _param = null;
             }
             else if (uri.startsWith("/"))
             {
@@ -1005,6 +1121,10 @@ public interface HttpURI
         public Mutable user(String user)
         {
             _user = user;
+            if (user == null)
+                removeViolation(Violation.USER_INFO);
+            else
+                addViolation(Violation.USER_INFO);
             _uri = null;
             return this;
         }
@@ -1014,12 +1134,13 @@ public interface HttpURI
             int mark = 0; // the start of the current section being parsed
             int pathMark = 0; // the start of the path section
             int segment = 0; // the start of the current segment within the path
-            boolean encodedPath = false; // set to true if the path contains % encoded characters
+            boolean encoded = false; // set to true if the string contains % encoded characters
             boolean encodedUtf16 = false; // Is the current encoding for UTF16?
             int encodedCharacters = 0; // partial state of parsing a % encoded character<x>
             int encodedValue = 0; // the partial encoded value
             boolean dot = false; // set to true if the path contains . or .. segments
             int end = uri.length();
+            boolean password = false;
             _emptySegment = false;
             for (int i = 0; i < end; i++)
             {
@@ -1036,20 +1157,20 @@ public interface HttpURI
                                 state = State.HOST_OR_PATH;
                                 break;
                             case ';':
-                                checkSegment(uri, segment, i, true);
+                                checkSegment(uri, false, segment, i, true);
                                 mark = i + 1;
                                 state = State.PARAM;
                                 break;
                             case '?':
                                 // assume empty path (if seen at start)
-                                checkSegment(uri, segment, i, false);
+                                checkSegment(uri, false, segment, i, false);
                                 _path = "";
                                 mark = i + 1;
                                 state = State.QUERY;
                                 break;
                             case '#':
                                 // assume empty path (if seen at start)
-                                checkSegment(uri, segment, i, false);
+                                checkSegment(uri, false, segment, i, false);
                                 _path = "";
                                 mark = i + 1;
                                 state = State.FRAGMENT;
@@ -1059,7 +1180,7 @@ public interface HttpURI
                                 state = State.ASTERISK;
                                 break;
                             case '%':
-                                encodedPath = true;
+                                encoded = true;
                                 encodedCharacters = 2;
                                 encodedValue = 0;
                                 mark = pathMark = segment = i;
@@ -1090,7 +1211,7 @@ public interface HttpURI
                         {
                             case ':':
                                 // must have been a scheme
-                                _scheme = uri.substring(mark, i);
+                                _scheme = URIUtil.normalizeScheme(uri.substring(mark, i));
                                 // Start again with scheme set
                                 state = State.START;
                                 break;
@@ -1106,13 +1227,14 @@ public interface HttpURI
                                 break;
                             case '?':
                                 // must have been in a path
+                                checkSegment(uri, false, segment, i, false);
                                 _path = uri.substring(mark, i);
                                 mark = i + 1;
                                 state = State.QUERY;
                                 break;
                             case '%':
                                 // must have been in an encoded path
-                                encodedPath = true;
+                                encoded = true;
                                 encodedCharacters = 2;
                                 encodedValue = 0;
                                 state = State.PATH;
@@ -1162,27 +1284,71 @@ public interface HttpURI
                         switch (c)
                         {
                             case '/':
+                            case '?':
+                            case '#':
+                                if (encodedCharacters > 0 || password)
+                                    throw new IllegalArgumentException("Bad authority");
                                 _host = uri.substring(mark, i);
-                                pathMark = mark = i;
-                                segment = mark + 1;
-                                state = State.PATH;
+                                encoded = false;
+                                if (c == '/')
+                                {
+                                    pathMark = mark = i;
+                                    segment = mark + 1;
+                                    state = State.PATH;
+                                }
+                                else
+                                {
+                                    mark = i + 1;
+                                    _path = "";
+                                    state = switch (c)
+                                    {
+                                        case '?' -> State.QUERY;
+                                        case '#' -> State.FRAGMENT;
+                                        default -> throw new IllegalArgumentException("Bad authority");
+                                    };
+                                }
                                 break;
+                            case ';':
+                                throw new IllegalArgumentException("Bad authority");
                             case ':':
+                                if (encodedCharacters > 0 || password)
+                                    throw new IllegalArgumentException("Bad authority");
                                 if (i > mark)
                                     _host = uri.substring(mark, i);
                                 mark = i + 1;
                                 state = State.PORT;
                                 break;
                             case '@':
-                                if (_user != null)
+                                if (encodedCharacters > 0)
                                     throw new IllegalArgumentException("Bad authority");
                                 _user = uri.substring(mark, i);
+                                addViolation(Violation.USER_INFO);
+                                password = false;
+                                encoded = false;
                                 mark = i + 1;
                                 break;
                             case '[':
+                                if (i != mark)
+                                    throw new IllegalArgumentException("Bad authority");
                                 state = State.IPV6;
                                 break;
+                            case '%':
+                                if (encodedCharacters > 0)
+                                    throw new IllegalArgumentException("Bad authority");
+                                encoded = true;
+                                encodedCharacters = 2;
+                                break;
                             default:
+                                if (encodedCharacters > 0)
+                                {
+                                    encodedCharacters--;
+                                    if (!isHexDigit(c))
+                                        throw new IllegalArgumentException("Bad authority");
+                                }
+                                else if (!isUnreservedPctEncodedOrSubDelim(c))
+                                {
+                                    throw new IllegalArgumentException("Bad authority");
+                                }
                                 break;
                         }
                         break;
@@ -1207,28 +1373,71 @@ public interface HttpURI
                                     state = State.PATH;
                                 }
                                 break;
+                            case ':':
+                                break;
                             default:
+                                if (!isHexDigit(c))
+                                    throw new IllegalArgumentException("Bad authority");
                                 break;
                         }
                         break;
                     }
                     case PORT:
                     {
-                        if (c == '@')
+                        switch (c)
                         {
-                            if (_user != null)
+                            case '@' ->
+                            {
+                                if (_user != null)
+                                    throw new IllegalArgumentException("Bad authority");
+                                // It wasn't a port, but a password!
+                                _user = _host + ":" + uri.substring(mark, i);
+                                addViolation(Violation.USER_INFO);
+                                mark = i + 1;
+                                state = State.HOST;
+                            }
+                            case '/' ->
+                            {
+                                _port = TypeUtil.parseInt(uri, mark, i - mark, 10);
+                                pathMark = mark = i;
+                                segment = mark + 1;
+                                state = State.PATH;
+                            }
+                            case '?', '#' ->
+                            {
+                                _port = TypeUtil.parseInt(uri, mark, i - mark, 10);
+                                mark = i + 1;
+                                _path = "";
+                                state = switch (c)
+                                {
+                                    case '?' -> State.QUERY;
+                                    case '#' -> State.FRAGMENT;
+                                    default -> throw new IllegalStateException();
+                                };
+                            }
+                            case ';' ->
+                            {
                                 throw new IllegalArgumentException("Bad authority");
-                            // It wasn't a port, but a password!
-                            _user = _host + ":" + uri.substring(mark, i);
-                            mark = i + 1;
-                            state = State.HOST;
-                        }
-                        else if (c == '/')
-                        {
-                            _port = TypeUtil.parseInt(uri, mark, i - mark, 10);
-                            pathMark = mark = i;
-                            segment = i + 1;
-                            state = State.PATH;
+                            }
+                            default ->
+                            {
+                                if (!isDigit(c))
+                                {
+                                    if (isUnreservedPctEncodedOrSubDelim(c))
+                                    {
+                                        // must be a password
+                                        password = true;
+                                        state = State.HOST;
+                                        if (_host != null)
+                                        {
+                                            mark = mark - _host.length() - 1;
+                                            _host = null;
+                                        }
+                                        break;
+                                    }
+                                    throw new IllegalArgumentException("Bad authority");
+                                }
+                            }
                         }
                         break;
                     }
@@ -1238,7 +1447,7 @@ public interface HttpURI
                         {
                             if (encodedCharacters == 2 && c == 'u' && !encodedUtf16)
                             {
-                                _violations.add(Violation.UTF16_ENCODINGS);
+                                addViolation(Violation.UTF16_ENCODINGS);
                                 encodedUtf16 = true;
                                 encodedCharacters = 4;
                                 continue;
@@ -1254,12 +1463,14 @@ public interface HttpURI
                                         // other than as the NUL ASCII byte which we do not wish to allow.
                                         throw new IllegalArgumentException("Illegal character in path");
                                     case '/':
-                                        _violations.add(Violation.AMBIGUOUS_PATH_SEPARATOR);
+                                        addViolation(Violation.AMBIGUOUS_PATH_SEPARATOR);
                                         break;
                                     case '%':
-                                        _violations.add(Violation.AMBIGUOUS_PATH_ENCODING);
+                                        addViolation(Violation.AMBIGUOUS_PATH_ENCODING);
                                         break;
                                     default:
+                                        if (encodedValue < __suspiciousPathCharacters.length && __suspiciousPathCharacters[encodedValue])
+                                            addViolation(Violation.SUSPICIOUS_PATH_CHARACTERS);
                                         break;
                                 }
                             }
@@ -1269,18 +1480,18 @@ public interface HttpURI
                             switch (c)
                             {
                                 case ';':
-                                    checkSegment(uri, segment, i, true);
+                                    checkSegment(uri, dot || encoded, segment, i, true);
                                     mark = i + 1;
                                     state = State.PARAM;
                                     break;
                                 case '?':
-                                    checkSegment(uri, segment, i, false);
+                                    checkSegment(uri, dot || encoded, segment, i, false);
                                     _path = uri.substring(pathMark, i);
                                     mark = i + 1;
                                     state = State.QUERY;
                                     break;
                                 case '#':
-                                    checkSegment(uri, segment, i, false);
+                                    checkSegment(uri, dot || encoded, segment, i, false);
                                     _path = uri.substring(pathMark, i);
                                     mark = i + 1;
                                     state = State.FRAGMENT;
@@ -1288,19 +1499,24 @@ public interface HttpURI
                                 case '/':
                                     // There is no leading segment when parsing only a path that starts with slash.
                                     if (i != 0)
-                                        checkSegment(uri, segment, i, false);
+                                        checkSegment(uri, dot || encoded, segment, i, false);
                                     segment = i + 1;
                                     break;
                                 case '.':
                                     dot |= segment == i;
                                     break;
                                 case '%':
-                                    encodedPath = true;
+                                    encoded = true;
                                     encodedUtf16 = false;
                                     encodedCharacters = 2;
                                     encodedValue = 0;
                                     break;
                                 default:
+                                    // The RFC does not allow unencoded path characters that are outside the ABNF
+                                    if (c > __pathCharacters.length || !__pathCharacters[c])
+                                        addViolation(Violation.ILLEGAL_PATH_CHARACTERS);
+                                    if (c < __suspiciousPathCharacters.length && __suspiciousPathCharacters[c])
+                                       addViolation(Violation.SUSPICIOUS_PATH_CHARACTERS);
                                     break;
                             }
                         }
@@ -1323,7 +1539,7 @@ public interface HttpURI
                                 state = State.FRAGMENT;
                                 break;
                             case '/':
-                                encodedPath = true;
+                                encoded = true;
                                 segment = i + 1;
                                 state = State.PATH;
                                 break;
@@ -1366,7 +1582,7 @@ public interface HttpURI
             {
                 case START:
                     _path = "";
-                    checkSegment(uri, segment, end, false);
+                    checkSegment(uri, false, segment, end, false);
                     break;
                 case ASTERISK:
                     break;
@@ -1376,19 +1592,23 @@ public interface HttpURI
                     break;
                 case HOST:
                     if (end > mark)
+                    {
                         _host = uri.substring(mark, end);
+                        _path = "";
+                    }
                     break;
                 case IPV6:
                     throw new IllegalArgumentException("No closing ']' for ipv6 in " + uri);
                 case PORT:
                     _port = TypeUtil.parseInt(uri, mark, end - mark, 10);
+                    _path = "";
                     break;
                 case PARAM:
                     _path = uri.substring(pathMark, end);
                     _param = uri.substring(mark, end);
                     break;
                 case PATH:
-                    checkSegment(uri, segment, end, false);
+                    checkSegment(uri, dot || encoded, segment, end, false);
                     _path = uri.substring(pathMark, end);
                     break;
                 case QUERY:
@@ -1401,7 +1621,7 @@ public interface HttpURI
                     throw new IllegalStateException(state.toString());
             }
 
-            if (!encodedPath && !dot)
+            if (!encoded && !dot)
             {
                 if (_param == null)
                     _canonicalPath = _path;
@@ -1412,11 +1632,17 @@ public interface HttpURI
             {
                 // The RFC requires this to be canonical before decoding, but this can leave dot segments and dot dot segments
                 // which are not canonicalized and could be used in an attempt to bypass security checks.
-                String decodedNonCanonical = URIUtil.normalizePath(_path);
-                _canonicalPath = URIUtil.canonicalPath(decodedNonCanonical);
+                _canonicalPath = URIUtil.canonicalPath(_path, this::onBadUtf8);
                 if (_canonicalPath == null)
                     throw new IllegalArgumentException("Bad URI");
             }
+        }
+
+        private RuntimeException onBadUtf8()
+        {
+            // We just remember the violation and return null so nothing is thrown
+            addViolation(Violation.BAD_UTF8_ENCODING);
+            return null;
         }
 
         /**
@@ -1426,10 +1652,11 @@ public interface HttpURI
          * due to possible ambiguity.  Examples include segments like '..;', '%2e', '%2e%2e' etc.
          *
          * @param uri The URI string
+         * @param dotOrEncoded true if the URI might contain dot segments
          * @param segment The inclusive starting index of the segment (excluding any '/')
          * @param end The exclusive end index of the segment
          */
-        private void checkSegment(String uri, int segment, int end, boolean param)
+        private void checkSegment(String uri, boolean dotOrEncoded, int segment, int end, boolean param)
         {
             // This method is called once for every segment parsed.
             // A URI like "/foo/" has two segments: "foo" and an empty segment.
@@ -1437,7 +1664,7 @@ public interface HttpURI
             // So if this method is called for any segment and we have previously
             // seen an empty segment, then it was ambiguous.
             if (_emptySegment)
-                _violations.add(Violation.AMBIGUOUS_EMPTY_SEGMENT);
+                addViolation(Violation.AMBIGUOUS_EMPTY_SEGMENT);
 
             if (end == segment)
             {
@@ -1448,11 +1675,11 @@ public interface HttpURI
                 // If this empty segment is the first segment then it is ambiguous.
                 if (segment == 0)
                 {
-                    _violations.add(Violation.AMBIGUOUS_EMPTY_SEGMENT);
+                    addViolation(Violation.AMBIGUOUS_EMPTY_SEGMENT);
                     return;
                 }
 
-                // Otherwise remember we have seen an empty segment, which is check if we see a subsequent segment.
+                // Otherwise remember we have seen an empty segment, which is checked if we see a subsequent segment.
                 if (!_emptySegment)
                 {
                     _emptySegment = true;
@@ -1461,16 +1688,31 @@ public interface HttpURI
             }
 
             // Look for segment in the ambiguous segment index.
-            Boolean ambiguous = __ambiguousSegments.get(uri, segment, end - segment);
+            Boolean ambiguous = dotOrEncoded ? __ambiguousSegments.get(uri, segment, end - segment) : null;
             if (ambiguous != null)
             {
                 // The segment is always ambiguous.
                 if (Boolean.TRUE.equals(ambiguous))
-                    _violations.add(Violation.AMBIGUOUS_PATH_SEGMENT);
+                    addViolation(Violation.AMBIGUOUS_PATH_SEGMENT);
                 // The segment is ambiguous only when followed by a parameter.
                 if (param)
-                    _violations.add(Violation.AMBIGUOUS_PATH_PARAMETER);
+                    addViolation(Violation.AMBIGUOUS_PATH_PARAMETER);
             }
+        }
+
+        private void addViolation(Violation violation)
+        {
+            if (_violations == null)
+                _violations = EnumSet.of(violation);
+            else 
+                _violations.add(violation);
+        }
+
+        private void removeViolation(Violation violation)
+        {
+            if (_violations == null)
+                return;
+            _violations.remove(violation);
         }
     }
 }

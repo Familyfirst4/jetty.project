@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -23,6 +23,7 @@ import java.io.LineNumberReader;
 import java.io.OutputStream;
 import java.net.Socket;
 import java.net.URL;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Queue;
@@ -35,27 +36,31 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.awaitility.Awaitility;
 import org.eclipse.jetty.http.HttpHeader;
+import org.eclipse.jetty.http.HttpMethod;
+import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.http.HttpTester;
-import org.eclipse.jetty.io.ArrayRetainableByteBufferPool;
+import org.eclipse.jetty.io.AbstractConnection;
+import org.eclipse.jetty.io.ArrayByteBufferPool;
 import org.eclipse.jetty.io.ByteBufferPool;
 import org.eclipse.jetty.io.Connection;
 import org.eclipse.jetty.io.Content;
 import org.eclipse.jetty.io.EndPoint;
-import org.eclipse.jetty.io.RetainableByteBufferPool;
 import org.eclipse.jetty.logging.StacklessLogging;
-import org.eclipse.jetty.server.handler.ContextRequest;
 import org.eclipse.jetty.server.handler.EchoHandler;
 import org.eclipse.jetty.server.handler.HelloHandler;
 import org.eclipse.jetty.server.internal.HttpConnection;
-import org.eclipse.jetty.util.Blocking;
+import org.eclipse.jetty.util.Blocker;
 import org.eclipse.jetty.util.BufferUtil;
 import org.eclipse.jetty.util.Callback;
+import org.eclipse.jetty.util.FutureCallback;
 import org.eclipse.jetty.util.IO;
+import org.eclipse.jetty.util.NanoTime;
 import org.eclipse.jetty.util.StringUtil;
-import org.eclipse.jetty.util.thread.Invocable;
 import org.hamcrest.Matchers;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.DisabledIfSystemProperty;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -63,10 +68,10 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.endsWith;
 import static org.hamcrest.Matchers.equalTo;
-import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.lessThan;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.startsWith;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -93,7 +98,6 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
     private static final String REQUEST1 = REQUEST1_HEADER + REQUEST1_CONTENT.getBytes().length + "\n\n" + REQUEST1_CONTENT;
 
     private static final String RESPONSE1 = "HTTP/1.1 200 OK\n" +
-        "Server: Jetty(" + Server.getVersion() + ")\n" +
         "Content-Type: text/plain;charset=utf-8\n" +
         "Content-Length: 5\n" +
         "\n" +
@@ -123,7 +127,6 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
 
     protected static final String RESPONSE2 =
         "HTTP/1.1 200 OK\n" +
-            "Server: Jetty(" + Server.getVersion() + ")\n" +
             "Content-Type: text/xml; charset=ISO-8859-1\n" +
             "Content-Length: " + REQUEST2_CONTENT.getBytes().length + "\n" +
             "\n" +
@@ -148,10 +151,11 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
             os.flush();
 
             // Read the response.
-            String response = readResponse(client);
+            String rawResponse = readResponse(client);
 
-            assertThat(response, containsString("HTTP/1.1 200 OK"));
-            assertThat(response, containsString("Hello"));
+            assertThat(rawResponse, containsString("HTTP/1.1 200 OK"));
+            HttpTester.Response response = HttpTester.parseResponse(rawResponse);
+            assertThat(response.getContent(), containsString("Hello"));
         }
     }
 
@@ -179,10 +183,78 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
             os.flush();
 
             // Read the response.
-            String response = readResponse(client);
+            String rawResponse = readResponse(client);
 
-            assertThat(response, containsString("HTTP/1.1 200 OK"));
-            assertThat(response, containsString("0123456789"));
+            assertThat(rawResponse, containsString("HTTP/1.1 200 OK"));
+            HttpTester.Response response = HttpTester.parseResponse(rawResponse);
+            assertThat(response.getContent(), containsString("0123456789"));
+        }
+    }
+
+    @Test
+    public void testSimpleFailure() throws Exception
+    {
+        startServer(new Handler.Abstract()
+        {
+            @Override
+            public boolean handle(Request request, Response response, Callback callback)
+            {
+                callback.failed(new Exception("Test failure"));
+                return true;
+            }
+        });
+
+        try (StacklessLogging ignored = new StacklessLogging(Response.class); Socket client = newSocket(_serverURI.getHost(), _serverURI.getPort()))
+        {
+            OutputStream os = client.getOutputStream();
+
+            String request = """
+                GET / HTTP/1.1
+                Host: localhost
+                Connection: close
+                
+                """;
+            os.write(request.getBytes(StandardCharsets.ISO_8859_1));
+            os.flush();
+
+            // Read the response.
+            String rawResponse = readResponse(client);
+            assertThat(rawResponse, containsString("HTTP/1.1 500 Server Error"));
+            HttpTester.Response response = HttpTester.parseResponse(rawResponse);
+            assertThat(response.getContent(), containsString("Exception: Test failure"));
+        }
+    }
+
+    @Test
+    public void testSimpleException() throws Exception
+    {
+        startServer(new Handler.Abstract()
+        {
+            @Override
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
+            {
+                throw new Exception("Test failure");
+            }
+        });
+
+        try (StacklessLogging ignored = new StacklessLogging(Response.class); Socket client = newSocket(_serverURI.getHost(), _serverURI.getPort()))
+        {
+            OutputStream os = client.getOutputStream();
+
+            String request = """
+                GET / HTTP/1.1
+                Host: localhost
+                Connection: close
+                
+                """;
+            os.write(request.getBytes(StandardCharsets.ISO_8859_1));
+            os.flush();
+
+            // Read the response.
+            String rawResponse = readResponse(client);
+            assertThat(rawResponse, containsString("HTTP/1.1 500 Server Error"));
+            HttpTester.Response response = HttpTester.parseResponse(rawResponse);
+            assertThat(response.getContent(), containsString("Exception: Test failure"));
         }
     }
 
@@ -235,6 +307,7 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
      * Feed a full header method
      */
     @Test
+    @Tag("flaky")
     public void testFullMethod() throws Exception
     {
         // TODO this test is flakey
@@ -395,7 +468,7 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
         startServer(new Handler.Abstract()
         {
             @Override
-            public Request.Processor handle(Request request) throws Exception
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
             {
                 throw new Exception("TEST handler exception");
             }
@@ -407,7 +480,7 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
         Socket client = newSocket(_serverURI.getHost(), _serverURI.getPort());
         OutputStream os = client.getOutputStream();
 
-        try (StacklessLogging ignored = new StacklessLogging(ContextRequest.class))
+        try (StacklessLogging ignored = new StacklessLogging(Response.class))
         {
             LOG.info("Expecting Exception: TEST handler exception...");
             os.write(request.toString().getBytes());
@@ -424,7 +497,7 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
         startServer(new Handler.Abstract()
         {
             @Override
-            public Request.Processor handle(Request request) throws Exception
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
             {
                 throw new Exception("TEST handler exception");
             }
@@ -436,7 +509,7 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
         Socket client = newSocket(_serverURI.getHost(), _serverURI.getPort());
         OutputStream os = client.getOutputStream();
 
-        try (StacklessLogging ignored = new StacklessLogging(ContextRequest.class))
+        try (StacklessLogging ignored = new StacklessLogging(Response.class))
         {
             LOG.info("Expecting Exception: TEST handler exception...");
             os.write(request.toString().getBytes());
@@ -452,10 +525,10 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
     {
         final AtomicBoolean fourBytesRead = new AtomicBoolean(false);
         final CountDownLatch earlyEOFException = new CountDownLatch(1);
-        startServer(new Handler.Processor(Invocable.InvocationType.BLOCKING)
+        startServer(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback) throws Exception
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
             {
                 long contentLength = request.getLength();
                 long read = 0;
@@ -464,7 +537,7 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
                     Content.Chunk chunk = request.read();
                     if (chunk == null)
                     {
-                        try (Blocking.Runnable blocker = Blocking.runnable())
+                        try (Blocker.Runnable blocker = Blocker.runnable())
                         {
                             request.demand(blocker);
                             blocker.block();
@@ -472,20 +545,21 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
                         continue;
                     }
 
-                    if (chunk instanceof Content.Chunk.Error error)
+                    if (Content.Chunk.isFailure(chunk))
                     {
                         earlyEOFException.countDown();
-                        throw IO.rethrow(error.getCause());
+                        throw IO.rethrow(chunk.getFailure());
                     }
 
                     if (chunk.hasRemaining())
                     {
                         read += chunk.remaining();
                         chunk.getByteBuffer().clear();
-                        chunk.release();
                         if (!fourBytesRead.get() && read >= 4)
                             fourBytesRead.set(true);
                     }
+
+                    chunk.release();
 
                     if (chunk.isLast())
                     {
@@ -493,6 +567,7 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
                         break;
                     }
                 }
+                return true;
             }
         });
 
@@ -521,7 +596,6 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
     @Test
     public void testFullHeader() throws Exception
     {
-
         startServer(new HelloHandler());
 
         try (Socket client = newSocket(_serverURI.getHost(), _serverURI.getPort());
@@ -656,7 +730,7 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
         }
     }
 
-    /*
+    /**
      * Feed the server fragmentary headers and see how it copes with it.
      */
     @Test
@@ -717,7 +791,7 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
     }
 
     @Test
-    @DisabledIfSystemProperty(named = "env", matches = "ci") // TODO: SLOW, needs review
+    @Tag("slow")
     public void testRequest2Sliced2() throws Exception
     {
         startServer(new TestHandler());
@@ -749,7 +823,7 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
     }
 
     @Test
-    @DisabledIfSystemProperty(named = "env", matches = "ci") // TODO: SLOW, needs review
+    @Tag("slow")
     public void testRequest2Sliced3() throws Exception
     {
         startServer(new TestHandler());
@@ -969,7 +1043,7 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
     {
         startServer(new DataHandler());
 
-        try (StacklessLogging ignored = new StacklessLogging(Server.class))
+        try (StacklessLogging ignored = new StacklessLogging(AbstractConnection.class))
         {
             try (Socket client = newSocket(_serverURI.getHost(), _serverURI.getPort()))
             {
@@ -1013,6 +1087,56 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
                 assertThat(response, startsWith("HTTP/1.1 200 OK"));
             }
         }
+    }
+
+    @Test
+    public void testCloseWhileCompletePending() throws Exception
+    {
+        String content = "The End!\r\n";
+        CountDownLatch handleComplete = new CountDownLatch(1);
+        startServer(new Handler.Abstract()
+        {
+            @Override
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
+            {
+                FutureCallback writeComplete = new FutureCallback();
+                Content.Sink.write(response, true, content, writeComplete);
+                // Wait until the write is complete
+                writeComplete.get(30, TimeUnit.SECONDS);
+
+                // Wait until test lets the handling complete
+                assertTrue(handleComplete.await(30, TimeUnit.SECONDS));
+
+                callback.succeeded();
+                return true;
+            }
+        });
+
+        try (Socket client = newSocket(_serverURI.getHost(), _serverURI.getPort()))
+        {
+            OutputStream output = client.getOutputStream();
+            output.write("""
+                   GET / HTTP/1.1\r
+                   Host: localhost:%d\r
+                   Connection: close\r
+                   \r
+                   """.formatted(_serverURI.getPort())
+                .getBytes());
+            output.flush();
+
+            client.setSoTimeout(5000);
+            long start = NanoTime.now();
+            HttpTester.Input input = HttpTester.from(client.getInputStream());
+            HttpTester.Response response = HttpTester.parseResponse(input);
+            assertEquals(HttpStatus.OK_200, response.getStatus());
+            assertEquals(content, response.getContent());
+            assertFalse(input.isEOF());
+            assertEquals(-1, input.fillBuffer());
+            assertTrue(input.isEOF());
+            assertThat(NanoTime.secondsSince(start), lessThan(5L));
+
+        }
+        handleComplete.countDown();
     }
 
     @Test
@@ -1115,13 +1239,12 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
     }
 
     // Handler that sends big blocks of data in each of 10 writes, and then sends the time it took for each big block.
-    protected static class BigBlockHandler extends Handler.Processor
+    protected static class BigBlockHandler extends Handler.Abstract
     {
         byte[] buf = new byte[128 * 1024];
 
         private BigBlockHandler()
         {
-            super(InvocationType.BLOCKING);
             for (int i = 0; i < buf.length; i++)
             {
                 buf[i] = (byte)("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_".charAt(i % 63));
@@ -1129,7 +1252,7 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
         }
 
         @Override
-        public void process(Request request, Response response, Callback callback) throws Exception
+        public boolean handle(Request request, Response response, Callback callback) throws Exception
         {
             response.setStatus(200);
             response.getHeaders().put(HttpHeader.CONTENT_TYPE, "text/plain");
@@ -1138,7 +1261,7 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
             for (int i = 0; i < times.length; i++)
             {
                 long start = System.currentTimeMillis();
-                try (Blocking.Callback blocker = Blocking.callback())
+                try (Blocker.Callback blocker = Blocker.callback())
                 {
                     response.write(false, BufferUtil.toBuffer(buf), blocker);
                     blocker.block();
@@ -1154,6 +1277,7 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
             }
 
             response.write(true, BufferUtil.toBuffer(out.toString()), callback);
+            return true;
         }
     }
 
@@ -1164,10 +1288,10 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
         startServer(new HelloHandler("Hello\n")
         {
             @Override
-            public Request.Processor handle(Request request) throws Exception
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
             {
                 served.incrementAndGet();
-                return super.handle(request);
+                return super.handle(request, response, callback);
             }
         });
 
@@ -1264,6 +1388,108 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
     }
 
     @Test
+    public void testHeadHandled() throws Exception
+    {
+        startServer(new Handler.Abstract()
+        {
+            @Override
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
+            {
+                response.getHeaders().put(HttpHeader.CONTENT_LENGTH, 10);
+                if (HttpMethod.HEAD.is(request.getMethod()))
+                {
+                    if (request.getHttpURI().getCanonicalPath().equals("/writeNull"))
+                        response.write(true, null, callback);
+                    else
+                        callback.succeeded();
+                }
+                else
+                {
+                    Content.Sink.write(response, true, "123456789\n", callback);
+                }
+                return true;
+            }
+        });
+        _httpConfiguration.setSendDateHeader(false);
+        _httpConfiguration.setSendServerVersion(false);
+        _httpConfiguration.setSendXPoweredBy(false);
+
+        try (Socket client = newSocket(_serverURI.getHost(), _serverURI.getPort()))
+        {
+            OutputStream os = client.getOutputStream();
+            InputStream is = client.getInputStream();
+
+            os.write("""
+                GET / HTTP/1.1
+                Host: localhost
+                
+                HEAD / HTTP/1.1
+                Host: localhost
+                
+                HEAD /writeNull HTTP/1.1
+                Host: localhost
+                
+                GET / HTTP/1.1
+                Host: localhost
+                Connection: close
+                
+                """.getBytes(StandardCharsets.ISO_8859_1));
+
+            String in = IO.toString(is);
+            assertThat(in.replace("\r", ""), is("""
+                HTTP/1.1 200 OK
+                Content-Length: 10
+                
+                123456789
+                HTTP/1.1 200 OK
+                Content-Length: 10
+                
+                HTTP/1.1 200 OK
+                Content-Length: 10
+                
+                HTTP/1.1 200 OK
+                Content-Length: 10
+                Connection: close
+                
+                123456789
+                """));
+        }
+    }
+
+    @Test
+    public void test304WithContentLength() throws Exception
+    {
+        startServer(new Handler.Abstract()
+        {
+            @Override
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
+            {
+                response.setStatus(304);
+                response.getHeaders().add(HttpHeader.CONTENT_LENGTH, 10);
+                callback.succeeded();
+                return true;
+            }
+        });
+
+        try (Socket client = newSocket(_serverURI.getHost(), _serverURI.getPort()))
+        {
+            OutputStream os = client.getOutputStream();
+            InputStream is = client.getInputStream();
+
+            os.write(("""
+                GET /R1 HTTP/1.1\r
+                Host: localhost\r
+                Connection: close\r
+                
+                """).getBytes(StandardCharsets.ISO_8859_1));
+
+            String in = IO.toString(is);
+            assertThat(in, containsString("304 Not Modified"));
+            assertThat(in, containsString("Content-Length: 10"));
+        }
+    }
+
+    @Test
     public void testBlockedClient() throws Exception
     {
         startServer(new HelloHandler());
@@ -1335,29 +1561,24 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
         }
     }
 
-    public static class CommittedErrorHandler extends Handler.Processor
+    public static class CommittedErrorHandler extends Handler.Abstract
     {
         public EndPoint _endp;
 
-        public CommittedErrorHandler()
-        {
-            super(InvocationType.BLOCKING);
-        }
-
         @Override
-        public void process(Request request, Response response, Callback callback) throws Exception
+        public boolean handle(Request request, Response response, Callback callback) throws Exception
         {
             _endp = request.getConnectionMetaData().getConnection().getEndPoint();
             response.getHeaders().put("test", "value");
             response.setStatus(200);
             response.getHeaders().put(HttpHeader.CONTENT_TYPE, "text/plain");
-            try (Blocking.Callback blocker = Blocking.callback())
+            try (Blocker.Callback blocker = Blocker.callback())
             {
                 response.write(false, BufferUtil.toBuffer("Now is the time for all good men to come to the aid of the party"), blocker);
                 blocker.block();
             }
 
-            throw new Exception(new Exception("exception after commit"));
+            throw new Exception("exception after commit");
         }
     }
 
@@ -1564,31 +1785,30 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
             assertThat(line, not(containsString("Transfer-Encoding")));
         }
 
-        do
-        {
+        while (line != null)
             line = in.readLine();
-        }
-        while (line != null);
     }
 
-    private static class WriteBodyAfterNoBodyResponseHandler extends Handler.Processor
+    private static class WriteBodyAfterNoBodyResponseHandler extends Handler.Abstract
     {
         @Override
-        public void process(Request request, Response response, Callback callback)
+        public boolean handle(Request request, Response response, Callback callback)
         {
-            response.setStatus(304);
+            response.setStatus(HttpStatus.NOT_MODIFIED_304);
             response.write(false, BufferUtil.toBuffer("yuck"), callback);
+            return true;
         }
     }
 
-    public static class NoopHandler extends Handler.Processor
+    public static class NoopHandler extends Handler.Abstract
     {
         @Override
-        public void process(Request request, Response response, Callback callback)
+        public boolean handle(Request request, Response response, Callback callback)
         {
             //don't read the input, just send something back
             response.setStatus(200);
             callback.succeeded();
+            return true;
         }
     }
 
@@ -1637,7 +1857,6 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
     {
         startServer(new ReadExactHandler(4096));
         byte[] content = new byte[4096];
-        Arrays.fill(content, (byte)'X');
 
         try (Socket client = newSocket(_serverURI.getHost(), _serverURI.getPort()))
         {
@@ -1645,52 +1864,64 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
 
             // Send two persistent pipelined requests and then shutdown output
             os.write(("""
-                GET / HTTP/1.1\r
+                GET /one HTTP/1.1\r
                 Host: localhost\r
                 Transfer-Encoding: chunked\r
                 \r
                 1000\r
                 """).getBytes(StandardCharsets.ISO_8859_1));
+            Arrays.fill(content, (byte)'1');
             os.write(content);
             os.write("\r\n0\r\n\r\n".getBytes(StandardCharsets.ISO_8859_1));
             os.write(("""
-                GET / HTTP/1.1\r
+                GET /two HTTP/1.1\r
                 Host: localhost\r
                 Transfer-Encoding: chunked\r
                 \r
                 1000\r
                 """).getBytes(StandardCharsets.ISO_8859_1));
+            Arrays.fill(content, (byte)'2');
             os.write(content);
             os.write("\r\n0\r\n\r\n".getBytes(StandardCharsets.ISO_8859_1));
             os.flush();
+
             client.shutdownOutput();
 
-            // Read the two pipelined responses
-            HttpTester.Response response = HttpTester.parseResponse(client.getInputStream());
+            // Read the two pipelined responses until EOF
+            ByteBuffer responses = ByteBuffer.wrap(IO.readBytes(client.getInputStream()));
+
+            HttpTester.Response response = HttpTester.parseResponse(responses);
             assertThat(response.getStatus(), is(200));
             assertThat(response.getContent(), containsString("Read " + content.length));
 
-            response = HttpTester.parseResponse(client.getInputStream());
+            response = HttpTester.parseResponse(responses);
             assertThat(response.getStatus(), is(200));
             assertThat(response.getContent(), containsString("Read " + content.length));
-
-            // Read the close
-            assertThat(client.getInputStream().read(), is(-1));
         }
     }
 
-    @Test
-    public void testHoldContent() throws Exception
+    @ParameterizedTest
+    @CsvSource({"false,false", "false,true", "true,false", "true,true"})
+    public void testHoldContent(boolean close, boolean pipeline) throws Exception
     {
         Queue<Content.Chunk> contents = new ConcurrentLinkedQueue<>();
         final int bufferSize = 1024;
         _connector.getConnectionFactory(HttpConnectionFactory.class).setInputBufferSize(bufferSize);
         CountDownLatch closed = new CountDownLatch(1);
-        startServer(new Handler.Processor()
+        startServer(new Handler.Abstract.NonBlocking()
         {
             @Override
-            public void process(Request request, Response response, Callback callback) throws Exception
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
             {
+                if (LOG.isDebugEnabled())
+                    LOG.debug("Handling request: {}", request);
+                if ("GET".equals(request.getMethod()))
+                {
+                    response.setStatus(200);
+                    callback.succeeded();
+                    return true;
+                }
+
                 request.getConnectionMetaData().getConnection().addEventListener(new Connection.Listener()
                 {
                     @Override
@@ -1699,90 +1930,131 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
                         closed.countDown();
                     }
                 });
+
                 while (true)
                 {
                     Content.Chunk chunk = request.read();
-
+                    if (LOG.isDebugEnabled())
+                        LOG.debug("read: {}", chunk);
                     if (chunk == null)
                     {
-                        try (Blocking.Runnable blocker = Blocking.runnable())
+                        try (Blocker.Runnable blocker = Blocker.runnable())
                         {
                             request.demand(blocker);
                             blocker.block();
                             continue;
                         }
                     }
-
                     if (chunk.hasRemaining())
                         contents.add(chunk);
-
+                    else
+                        chunk.release();
                     if (chunk.isLast())
                         break;
                 }
-
                 response.setStatus(200);
+
+                if (close)
+                {
+                    LOG.info("Closing {}", request.getConnectionMetaData().getConnection().getEndPoint());
+                    request.getConnectionMetaData().getConnection().getEndPoint().close();
+                }
+
                 callback.succeeded();
+                return true;
             }
         });
-
         byte[] chunk = new byte[bufferSize / 2];
         Arrays.fill(chunk, (byte)'X');
-
         try (Socket client = newSocket(_serverURI.getHost(), _serverURI.getPort()))
         {
             OutputStream os = client.getOutputStream();
             BufferedOutputStream out = new BufferedOutputStream(os, bufferSize);
-            out.write(("""
+            String request = """
                 POST / HTTP/1.1\r
                 Host: localhost\r
-                Connection: close\r
+                Connection: %s\r
                 Transfer-Encoding: chunked\r
                 \r
-                """).getBytes(StandardCharsets.ISO_8859_1));
+                """.formatted(pipeline ? "other" : "close");
+            if (LOG.isDebugEnabled())
+                LOG.debug("raw request {}", request);
+            out.write(request.getBytes(StandardCharsets.ISO_8859_1));
 
             // single chunk
             out.write((Integer.toHexString(chunk.length) + "\r\n").getBytes(StandardCharsets.ISO_8859_1));
             out.write(chunk);
             out.write("\r\n".getBytes(StandardCharsets.ISO_8859_1));
             out.flush();
-
-            // double chunk (will overflow)
+            // double chunk (will overflow bufferSize)
             out.write((Integer.toHexString(chunk.length * 2) + "\r\n").getBytes(StandardCharsets.ISO_8859_1));
             out.write(chunk);
             out.write(chunk);
             out.write("\r\n".getBytes(StandardCharsets.ISO_8859_1));
             out.flush();
 
-            // single chunk and end chunk
-            out.write((Integer.toHexString(chunk.length) + "\r\n").getBytes(StandardCharsets.ISO_8859_1));
-            out.write(chunk);
-            out.write("\r\n0\r\n\r\n".getBytes(StandardCharsets.ISO_8859_1));
+            // single chunk and end chunk plus optional pipelined request
+            ByteBuffer last = BufferUtil.allocate(4096);
+            BufferUtil.append(last, (Integer.toHexString(chunk.length) + "\r\n").getBytes(StandardCharsets.ISO_8859_1));
+            BufferUtil.append(last, chunk);
+            BufferUtil.append(last, "\r\n0\r\n\r\n".getBytes(StandardCharsets.ISO_8859_1));
+            if (pipeline)
+                BufferUtil.append(last, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n".getBytes(StandardCharsets.ISO_8859_1));
+
+            if (LOG.isDebugEnabled())
+                LOG.debug("last {}", BufferUtil.toString(last));
+            out.write(BufferUtil.toArray(last));
             out.flush();
 
             // check the response
-            HttpTester.Response response = HttpTester.parseResponse(client.getInputStream());
-            assertNotNull(response);
-            assertThat(response.getStatus(), is(200));
+            if (close)
+            {
+                assertThat(client.getInputStream().read(), equalTo(-1));
+            }
+            else
+            {
+                HttpTester.Input input = HttpTester.from(client.getInputStream());
+                HttpTester.Response response = HttpTester.parseResponse(input);
+                assertNotNull(response);
+                assertThat(response.getStatus(), is(200));
+                if (pipeline)
+                {
+                    response = HttpTester.parseResponse(input);
+                    assertNotNull(response);
+                    assertThat(response.getStatus(), is(200));
+                }
+            }
         }
 
         assertTrue(closed.await(10, TimeUnit.SECONDS));
-
         long total = contents.stream().mapToLong(Content.Chunk::remaining).sum();
         assertThat(total, equalTo(chunk.length * 4L));
-
-        ByteBufferPool bbp = _connector.getBean(ByteBufferPool.class);
-        RetainableByteBufferPool rbbp = bbp.asRetainableByteBufferPool();
-        if (rbbp instanceof ArrayRetainableByteBufferPool pool)
+        ByteBufferPool rbbp = _connector.getByteBufferPool();
+        if (rbbp instanceof ArrayByteBufferPool pool)
         {
             long buffersBeforeRelease = pool.getAvailableDirectByteBufferCount() + pool.getAvailableHeapByteBufferCount();
+            if (LOG.isDebugEnabled())
+            {
+                LOG.debug("pool {}", pool);
+                contents.stream().map(Content.Chunk::toString).forEach(LOG::debug);
+            }
             contents.forEach(Content.Chunk::release);
-            long buffersAfterRelease = pool.getAvailableDirectByteBufferCount() + pool.getAvailableHeapByteBufferCount();
-            assertThat(buffersAfterRelease, greaterThan(buffersBeforeRelease));
+
+            Awaitility.waitAtMost(5, TimeUnit.SECONDS).until(() ->
+            {
+                if (LOG.isDebugEnabled())
+                {
+                    LOG.debug("pool {}", pool);
+                    contents.stream().map(Content.Chunk::toString).forEach(LOG::debug);
+                }
+                long buffersAfterRelease = pool.getAvailableDirectByteBufferCount() + pool.getAvailableHeapByteBufferCount();
+                return buffersAfterRelease > buffersBeforeRelease;
+            });
             assertThat(pool.getAvailableDirectMemory() + pool.getAvailableHeapMemory(), greaterThanOrEqualTo(chunk.length * 4L));
         }
         else
         {
-            assertThat(rbbp, instanceOf(ArrayRetainableByteBufferPool.class));
+            assertThat(rbbp, instanceOf(ArrayByteBufferPool.class));
         }
     }
 
@@ -1801,7 +2073,7 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
         }
 
         @Override
-        public Request.Processor handle(Request request) throws Exception
+        public boolean handle(Request request, Response response, Callback callback)
         {
             AtomicBoolean hasContent = new AtomicBoolean();
             Request.Wrapper wrapper = new Request.Wrapper(request)
@@ -1816,18 +2088,13 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
                 }
             };
 
-            Request.Processor processor = super.handle(request);
-            if (processor == null)
-                return null;
-
-            return (ignored, response, callback) ->
-                processor.process(wrapper, response, Callback.from(() ->
-                {
-                    if (_mustHaveContent && !hasContent.get())
-                        callback.failed(new IllegalStateException("No Test Content"));
-                    else
-                        callback.succeeded();
-                }, callback::failed));
+            return super.handle(wrapper, response, Callback.from(() ->
+            {
+                if (_mustHaveContent && !hasContent.get())
+                    callback.failed(new IllegalStateException("No Test Content"));
+                else
+                    callback.succeeded();
+            }, callback::failed));
         }
     }
 
@@ -1835,21 +2102,20 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
     public void testProcessingAfterCompletion() throws Exception
     {
         AtomicReference<String> result = new AtomicReference<>();
-        Handler.Wrapper wrapper = new Handler.Wrapper()
+        Handler.Singleton wrapper = new Handler.Wrapper()
         {
             @Override
-            public Request.Processor handle(Request request) throws Exception
+            public boolean handle(Request request, Response response, Callback callback) throws Exception
             {
-                Request.Processor processor = super.handle(request);
-                if (processor == null)
-                    return null;
                 request.setAttribute("test", "value");
-
-                return (req, resp, callback) ->
+                try
                 {
-                    processor.process(req, resp, callback);
-                    result.set(String.valueOf(req.getAttribute("test")));
-                };
+                    return super.handle(request, response, callback);
+                }
+                finally
+                {
+                    result.set(String.valueOf(request.getAttribute("test")));
+                }
             }
         };
 

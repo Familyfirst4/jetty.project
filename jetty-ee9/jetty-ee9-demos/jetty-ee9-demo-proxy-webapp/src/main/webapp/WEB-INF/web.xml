@@ -6,18 +6,18 @@
   metadata-complete="false"
   version="3.0">
 
-  <display-name>Transparent Proxy WebApp</display-name>
+  <display-name>EE9 Demo Proxy WebApp</display-name>
 
   <servlet>
     <servlet-name>JavadocTransparentProxy</servlet-name>
-    <servlet-class>org.eclipse.jetty.proxy.ProxyServlet$Transparent</servlet-class>
+    <servlet-class>org.eclipse.jetty.ee9.proxy.ProxyServlet$Transparent</servlet-class>
     <init-param>
       <param-name>proxyTo</param-name>
-      <param-value>https://www.eclipse.org/jetty/javadoc/jetty-11/index.html?overview-summary.html</param-value>
+      <param-value>https://javadoc.jetty.org/</param-value>
     </init-param>
     <init-param>
       <param-name>hostHeader</param-name>
-      <param-value>www.eclipse.org</param-value>
+      <param-value>javadoc.jetty.org</param-value>
     </init-param>
     <load-on-startup>1</load-on-startup>
     <async-supported>true</async-supported>
@@ -25,7 +25,7 @@
 
   <servlet-mapping>
     <servlet-name>JavadocTransparentProxy</servlet-name>
-    <url-pattern>/current/*</url-pattern>
+    <url-pattern>/jetty-12/*</url-pattern>
   </servlet-mapping>
 
 </web-app>

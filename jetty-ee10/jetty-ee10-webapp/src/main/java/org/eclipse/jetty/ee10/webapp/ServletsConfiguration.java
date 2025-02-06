@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -29,13 +29,11 @@ public class ServletsConfiguration extends AbstractConfiguration
 
     public ServletsConfiguration()
     {
-        addDependencies(WebXmlConfiguration.class, MetaInfConfiguration.class, WebInfConfiguration.class, WebAppConfiguration.class);
-        addDependents(JettyWebXmlConfiguration.class);
-        protectAndExpose();
-        protect("org.eclipse.jetty.ee10.servlets.PushCacheFilter", //must be loaded by container classpath
-            "org.eclipse.jetty.ee10.servlets.PushSessionCacheFilter" //must be loaded by container classpath
-        );
-        expose("org.eclipse.jetty.ee10.servlets."); // don't hide jetty servlets
+        super(new Builder()
+            .addDependencies(WebXmlConfiguration.class, MetaInfConfiguration.class, WebInfConfiguration.class, WebAppConfiguration.class)
+            .addDependents(JettyWebXmlConfiguration.class)
+            .protectAndExpose()
+            .expose("org.eclipse.jetty.ee10.servlets.")); // don't hide jetty servlets
     }
 
     @Override
@@ -43,7 +41,7 @@ public class ServletsConfiguration extends AbstractConfiguration
     {
         try
         {
-            return Loader.loadClass("org.eclipse.jetty.ee10.servlets.PushCacheFilter") != null;
+            return Loader.loadClass("org.eclipse.jetty.ee10.servlets.DoSFilter") != null;
         }
         catch (Throwable e)
         {

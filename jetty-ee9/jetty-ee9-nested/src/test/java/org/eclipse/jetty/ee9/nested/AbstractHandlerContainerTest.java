@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -82,7 +82,7 @@ public class AbstractHandlerContainerTest
      * It cannot be done with a ServletContextHandler as the parent, because
      * the parent of a ServletContextHandler can only be org.eclipse.jetty.server containers,
      * whereas this test needs an org.eclipse.jetty.ee9.nested container.
-     * @throws Exception
+     * @throws Exception if there is an unspecified problem
      */
     @Test
     public void testFindContainer() throws Exception

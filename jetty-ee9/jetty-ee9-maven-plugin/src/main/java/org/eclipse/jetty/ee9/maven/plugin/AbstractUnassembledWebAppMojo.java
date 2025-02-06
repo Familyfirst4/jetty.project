@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -23,7 +23,12 @@ import java.util.stream.Collectors;
 import org.apache.maven.artifact.Artifact;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugins.annotations.Parameter;
+import org.eclipse.jetty.maven.MavenProjectHelper;
+import org.eclipse.jetty.maven.Overlay;
+import org.eclipse.jetty.maven.ScanPattern;
 import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
+import org.eclipse.jetty.util.resource.Resources;
 
 /**
  * Base class for all goals that operate on unassembled webapps.
@@ -112,7 +117,7 @@ public abstract class AbstractUnassembledWebAppMojo extends AbstractWebAppMojo
     /**
      * Configure a webapp that has not been assembled into a war. 
      * 
-     * @throws Exception
+     * @throws Exception if there is an unspecified problem
      */
     protected void configureUnassembledWebApp() throws Exception
     {   
@@ -130,7 +135,7 @@ public abstract class AbstractUnassembledWebAppMojo extends AbstractWebAppMojo
                 //Use the default static resource location
                 if (!webAppSourceDirectory.exists())
                     webAppSourceDirectory.mkdirs();
-                originalBaseResource = Resource.newResource(webAppSourceDirectory.getCanonicalPath());
+                originalBaseResource = ResourceFactory.root().newResource(webAppSourceDirectory.getCanonicalPath());
             }
             else
                 originalBaseResource = webApp.getBaseResource();
@@ -140,8 +145,9 @@ public abstract class AbstractUnassembledWebAppMojo extends AbstractWebAppMojo
         //we might have applied any war overlays onto it
         webApp.setBaseResource(originalBaseResource);
 
+        //TODO the war does not need to be set, _except_ that QuickStartConfiguration checks for non null
         if (webApp.getWar() == null)
-            webApp.setWar(originalBaseResource.getURI().toURL().toExternalForm());
+            webApp.setWar(originalBaseResource.toString());
         
         if (classesDirectory != null)
             webApp.setClasses(classesDirectory);
@@ -165,18 +171,18 @@ public abstract class AbstractUnassembledWebAppMojo extends AbstractWebAppMojo
             //Has an explicit web.xml file been configured to use?
             if (webXml != null)
             {
-                Resource r = Resource.newResource(webXml);
-                if (r.exists() && !r.isDirectory())
+                Resource r = webApp.getResourceFactory().newResource(webXml.toPath());
+                if (Resources.isReadableFile(r))
                 {
-                    webApp.setDescriptor(r.toString());
+                    webApp.setDescriptor(r.getURI().toASCIIString());
                 }
             }
 
             //Still don't have a web.xml file: try the resourceBase of the webapp, if it is set
             if (webApp.getDescriptor() == null && webApp.getBaseResource() != null)
             {
-                Resource r = webApp.getBaseResource().addPath("WEB-INF/web.xml");
-                if (r.exists() && !r.isDirectory())
+                Resource r = webApp.getBaseResource().resolve("WEB-INF/web.xml");
+                if (Resources.isReadableFile(r))
                 {
                     webApp.setDescriptor(r.toString());
                 }
@@ -192,10 +198,10 @@ public abstract class AbstractUnassembledWebAppMojo extends AbstractWebAppMojo
                 }
             }
         }
-
+        
         //process any overlays and the war type artifacts, and
         //sets up the base resource collection for the webapp
-        mavenProjectHelper.getOverlayManager().applyOverlays(webApp);
+        mavenProjectHelper.getOverlayManager().applyOverlays(webApp.getCoreContextHandler(), webApp.getBaseAppFirst());
 
         getLog().info("web.xml file = " + webApp.getDescriptor());       
         getLog().info("Webapp directory = " + webAppSourceDirectory.getCanonicalPath());

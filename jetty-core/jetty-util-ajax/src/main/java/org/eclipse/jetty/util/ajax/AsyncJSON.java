@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -773,8 +773,7 @@ public class AsyncJSON
                     }
                     else
                     {
-                        String string = stringBuilder.toString();
-                        stringBuilder.reset();
+                        String string = stringBuilder.takeCompleteString(null);
                         stack.pop();
                         stack.peek().value(string);
                         return true;
@@ -1173,7 +1172,7 @@ public class AsyncJSON
         builder.append(indent);
         builder.append("^ ");
         builder.append(message);
-        return new IllegalArgumentException(builder.toString());
+        return new IllegalArgumentException(builder.toCompleteString());
     }
 
     private static boolean isWhitespace(byte ws)

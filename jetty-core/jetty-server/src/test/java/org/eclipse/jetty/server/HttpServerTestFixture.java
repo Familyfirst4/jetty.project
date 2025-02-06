@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -18,17 +18,24 @@ import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.TimeUnit;
 
 import org.eclipse.jetty.http.HttpHeader;
+import org.eclipse.jetty.io.ArrayByteBufferPool;
 import org.eclipse.jetty.io.Content;
-import org.eclipse.jetty.util.Blocking;
+import org.eclipse.jetty.util.Blocker;
 import org.eclipse.jetty.util.BufferUtil;
 import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.Fields;
 import org.eclipse.jetty.util.Promise;
 import org.eclipse.jetty.util.thread.QueuedThreadPool;
+import org.eclipse.jetty.util.thread.ScheduledExecutorScheduler;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+
+import static org.awaitility.Awaitility.await;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.is;
 
 // @checkstyle-disable-check : AvoidEscapedUnicodeCharactersCheck
 public class HttpServerTestFixture
@@ -38,6 +45,7 @@ public class HttpServerTestFixture
 
     protected QueuedThreadPool _threadPool;
     protected Server _server;
+    protected ArrayByteBufferPool.Tracking _bufferPool;
     protected URI _serverURI;
     protected HttpConfiguration _httpConfiguration;
     protected ServerConnector _connector;
@@ -55,7 +63,8 @@ public class HttpServerTestFixture
     public void before()
     {
         _threadPool = new QueuedThreadPool();
-        _server = new Server(_threadPool);
+        _bufferPool = new ArrayByteBufferPool.Tracking();
+        _server = new Server(_threadPool, new ScheduledExecutorScheduler(), _bufferPool);
     }
 
     protected void initServer(ServerConnector connector) throws Exception
@@ -63,15 +72,21 @@ public class HttpServerTestFixture
         _connector = connector;
         _httpConfiguration = _connector.getConnectionFactory(HttpConnectionFactory.class).getHttpConfiguration();
         _httpConfiguration.setSendDateHeader(false);
+        _httpConfiguration.setSendServerVersion(false);
         _server.addConnector(_connector);
     }
 
     @AfterEach
     public void stopServer() throws Exception
     {
-        _server.stop();
-        _server.join();
-        _server.setConnectors(new Connector[]{});
+        try
+        {
+            await().atMost(5, TimeUnit.SECONDS).untilAsserted(() -> assertThat("Server leaks: " + _bufferPool.dumpLeaks(), _bufferPool.getLeaks().size(), is(0)));
+        }
+        finally
+        {
+            _server.stop();
+        }
     }
 
     protected void startServer(Handler handler) throws Exception
@@ -81,10 +96,10 @@ public class HttpServerTestFixture
         _serverURI = _server.getURI();
     }
 
-    protected static class OptionsHandler extends Handler.Processor
+    protected static class OptionsHandler extends Handler.Abstract
     {
         @Override
-        public void process(Request request, Response response, Callback callback)
+        public boolean handle(Request request, Response response, Callback callback)
         {
             if (request.getMethod().equals("OPTIONS"))
                 response.setStatus(200);
@@ -92,20 +107,22 @@ public class HttpServerTestFixture
                 response.setStatus(500);
             response.getHeaders().put("Allow", "GET");
             callback.succeeded();
+            return true;
         }
     }
 
-    protected static class HelloWorldHandler extends Handler.Processor
+    protected static class HelloWorldHandler extends Handler.Abstract
     {
         @Override
-        public void process(Request request, Response response, Callback callback) throws Exception
+        public boolean handle(Request request, Response response, Callback callback) throws Exception
         {
             response.setStatus(200);
             Content.Sink.write(response, true, "Hello world\r\n", callback);
+            return true;
         }
     }
 
-    protected static class SendErrorHandler extends Handler.Processor
+    protected static class SendErrorHandler extends Handler.Abstract
     {
         private final int code;
         private final String message;
@@ -117,13 +134,14 @@ public class HttpServerTestFixture
         }
 
         @Override
-        public void process(Request request, Response response, Callback callback)
+        public boolean handle(Request request, Response response, Callback callback)
         {
             Response.writeError(request, response, callback, code, message);
+            return true;
         }
     }
 
-    protected static class ReadExactHandler extends Handler.Processor
+    protected static class ReadExactHandler extends Handler.Abstract
     {
         private final int expected;
 
@@ -138,7 +156,7 @@ public class HttpServerTestFixture
         }
 
         @Override
-        public void process(Request request, Response response, Callback callback) throws Exception
+        public boolean handle(Request request, Response response, Callback callback) throws Exception
         {
             long len = expected < 0 ? request.getLength() : expected;
             if (len < 0)
@@ -150,7 +168,7 @@ public class HttpServerTestFixture
                 Content.Chunk c = request.read();
                 if (c == null)
                 {
-                    try (Blocking.Runnable blocker = Blocking.runnable())
+                    try (Blocker.Runnable blocker = Blocker.runnable())
                     {
                         request.demand(blocker);
                         blocker.block();
@@ -163,41 +181,39 @@ public class HttpServerTestFixture
                     int r = c.remaining();
                     c.get(content, offset, r);
                     offset += r;
-                    c.release();
                 }
+
+                c.release();
 
                 if (c.isLast())
                     break;
             }
             response.setStatus(200);
             String reply = "Read " + offset + "\r\n";
-            response.getHeaders().putLongField(HttpHeader.CONTENT_LENGTH, reply.length());
+            response.getHeaders().put(HttpHeader.CONTENT_LENGTH, reply.length());
             response.write(true, BufferUtil.toBuffer(reply, StandardCharsets.ISO_8859_1), callback);
+            return true;
         }
     }
 
-    protected static class ReadHandler extends Handler.Processor
+    protected static class ReadHandler extends Handler.Abstract
     {
         @Override
-        public void process(Request request, Response response, Callback callback)
+        public boolean handle(Request request, Response response, Callback callback)
         {
             response.setStatus(200);
             Content.Source.asString(request, StandardCharsets.UTF_8, Promise.from(
                 s -> Content.Sink.write(response, true, "read %d%n" + s.length(), callback),
-                t -> Content.Sink.write(response, true, String.format("caught %s%n", t), callback)
+                callback::failed
             ));
+            return true;
         }
     }
 
-    protected static class DataHandler extends Handler.Processor
+    protected static class DataHandler extends Handler.Abstract
     {
-        public DataHandler()
-        {
-            super(InvocationType.BLOCKING);
-        }
-
         @Override
-        public void process(Request request, Response response, Callback callback) throws Exception
+        public boolean handle(Request request, Response response, Callback callback) throws Exception
         {
             response.setStatus(200);
 
@@ -226,7 +242,7 @@ public class HttpServerTestFixture
                 ByteBuffer bytes = BufferUtil.toBuffer(chunk, StandardCharsets.ISO_8859_1);
                 for (int i = writes; i-- > 0;)
                 {
-                    try (Blocking.Callback blocker = Blocking.callback())
+                    try (Blocker.Callback blocker = Blocker.callback())
                     {
                         response.write(i == 0, bytes.slice(), blocker);
                         blocker.block();
@@ -239,7 +255,7 @@ public class HttpServerTestFixture
                 ByteBuffer bytes = BufferUtil.toBuffer(chunk, Charset.forName(encoding));
                 for (int i = writes; i-- > 0;)
                 {
-                    try (Blocking.Callback blocker = Blocking.callback())
+                    try (Blocker.Callback blocker = Blocker.callback())
                     {
                         response.write(i == 0, bytes.slice(), blocker);
                         blocker.block();
@@ -247,6 +263,7 @@ public class HttpServerTestFixture
                 }
             }
             callback.succeeded();
+            return true;
         }
     }
 }

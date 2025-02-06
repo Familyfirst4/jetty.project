@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -18,18 +18,19 @@ import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Locale;
 
+import jakarta.servlet.ServletContext;
 import org.eclipse.jetty.server.Connector;
 import org.eclipse.jetty.server.NetworkConnector;
 import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.util.FileID;
 import org.eclipse.jetty.util.IO;
 import org.eclipse.jetty.util.StringUtil;
 import org.eclipse.jetty.util.URIUtil;
-import org.eclipse.jetty.util.resource.JarFileResource;
-import org.eclipse.jetty.util.resource.JarResource;
+import org.eclipse.jetty.util.resource.MountedPathResource;
 import org.eclipse.jetty.util.resource.Resource;
-import org.eclipse.jetty.util.resource.ResourceCollection;
+import org.eclipse.jetty.util.resource.ResourceFactory;
+import org.eclipse.jetty.util.resource.Resources;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -37,8 +38,7 @@ public class WebInfConfiguration extends AbstractConfiguration
 {
     private static final Logger LOG = LoggerFactory.getLogger(WebInfConfiguration.class);
 
-    public static final String TEMPDIR_CONFIGURED = "org.eclipse.jetty.tmpdirConfigured";
-    public static final String TEMPORARY_RESOURCE_BASE = "org.eclipse.jetty.ee9.webapp.tmpResourceBase";
+    public static final String TEMPORARY_RESOURCE_BASE = "org.eclipse.jetty.webapp.tmpResourceBase";
 
     protected Resource _preUnpackBaseResource;
 
@@ -51,6 +51,9 @@ public class WebInfConfiguration extends AbstractConfiguration
     {
         // Make a temp directory for the webapp if one is not already set
         resolveTempDirectory(context);
+
+        // Force early configuration (clearing) of the temporary directory so we can unpack into it.
+        context.getCoreContextHandler().createTempDirectory();
 
         // Extract webapp if necessary
         unpack(context);
@@ -65,13 +68,13 @@ public class WebInfConfiguration extends AbstractConfiguration
         if (webInf != null && webInf.isDirectory() && context.getClassLoader() instanceof WebAppClassLoader)
         {
             // Look for classes directory
-            Resource classes = webInf.addPath("classes/");
-            if (classes.exists())
+            Resource classes = webInf.resolve("classes/");
+            if (Resources.isReadableDirectory(classes))
                 ((WebAppClassLoader)context.getClassLoader()).addClassPath(classes);
 
             // Look for jars
-            Resource lib = webInf.addPath("lib/");
-            if (lib.exists() || lib.isDirectory())
+            Resource lib = webInf.resolve("lib/");
+            if (Resources.isReadableDirectory(lib))
                 ((WebAppClassLoader)context.getClassLoader()).addJars(lib);
         }
     }
@@ -79,22 +82,7 @@ public class WebInfConfiguration extends AbstractConfiguration
     @Override
     public void deconfigure(WebAppContext context) throws Exception
     {
-        File tempDirectory = context.getTempDirectory();
-
-        // if we're not persisting the temp dir contents delete it
-        if (!context.isPersistTempDirectory())
-        {
-            IO.delete(tempDirectory);
-        }
-
-        //if it wasn't explicitly configured by the user, then unset it
-        Boolean tmpdirConfigured = (Boolean)context.getAttribute(TEMPDIR_CONFIGURED);
-        if (tmpdirConfigured != null && !tmpdirConfigured)
-            context.setTempDirectory(null);
-
         //reset the base resource back to what it was before we did any unpacking of resources
-        if (context.getBaseResource() != null)
-            context.getBaseResource().close();
         context.setBaseResource(_preUnpackBaseResource);
     }
 
@@ -119,7 +107,7 @@ public class WebInfConfiguration extends AbstractConfiguration
      * exit depends on value of persistTempDirectory.
      * </li>
      * <li>
-     * Iff jakarta.servlet.context.tempdir context attribute is set for
+     * Iff {@value jakarta.servlet.ServletContext#TEMPDIR} context attribute is set for
      * this webapp &amp;&amp; exists &amp;&amp; writeable, then use it. Set delete on exit depends on
      * value of persistTempDirectory.
      * </li>
@@ -128,10 +116,9 @@ public class WebInfConfiguration extends AbstractConfiguration
      * <p>
      * B. Create a directory based on global settings. The new directory
      * will be called <code>"Jetty-"+host+"-"+port+"__"+context+"-"+virtualhost+"-"+randomdigits+".dir"</code>
-     * <p>
-     * If the user has specified the context attribute org.eclipse.jetty.ee9.webapp.basetempdir, the
-     * directory specified by this attribute will be the parent of the temp dir created. Otherwise,
-     * the parent dir is <code>${java.io.tmpdir}</code>. Set delete on exit depends on value of persistTempDirectory.
+     * If the temporary directory is persistent, then the random digits are not added to the name.
+     * The {@link Server#getTempDirectory()} is used for the parent of a created temporary directory.
+     * </p>
      *
      * @param context the context to resolve the temp directory from
      * @throws Exception if unable to resolve the temp directory
@@ -140,140 +127,31 @@ public class WebInfConfiguration extends AbstractConfiguration
         throws Exception
     {
         //If a tmp directory is already set we should use it
-        File tmpDir = context.getTempDirectory();
-        if (tmpDir != null)
+        File tempDirectory = context.getTempDirectory();
+        if (tempDirectory != null)
         {
-            configureTempDirectory(tmpDir, context);
-            context.setAttribute(TEMPDIR_CONFIGURED, Boolean.TRUE); //the tmp dir was set explicitly
             return;
         }
 
         // No temp directory configured, try to establish one via the jakarta.servlet.context.tempdir.
-        File servletTmpDir = asFile(context.getAttribute(WebAppContext.TEMPDIR));
+        File servletTmpDir = IO.asFile(context.getAttribute(ServletContext.TEMPDIR));
         if (servletTmpDir != null)
         {
             // Use as tmpDir
-            tmpDir = servletTmpDir;
-            configureTempDirectory(tmpDir, context);
-            // Ensure Attribute has File object
-            context.setAttribute(WebAppContext.TEMPDIR, tmpDir);
+            tempDirectory = servletTmpDir;
             // Set as TempDir in context.
-            context.setTempDirectory(tmpDir);
+            context.setTempDirectory(tempDirectory);
             return;
         }
 
-        //We need to make a temp dir. Check if the user has set a directory to use instead
-        //of java.io.tmpdir as the parent of the dir
-        File baseTemp = asFile(context.getAttribute(WebAppContext.BASETEMPDIR));
-        if (baseTemp != null)
-        {
-            if (!baseTemp.isDirectory() || !baseTemp.canWrite())
-                throw new IllegalStateException(WebAppContext.BASETEMPDIR + " is not a writable directory");
-
-            //Make a temp directory as a child of the given base dir
-            makeTempDirectory(baseTemp, context);
-            return;
-        }
-
-        //Look for a directory named "work" in ${jetty.base} and
-        //treat it as parent of a new temp dir (which we will persist)
-        File jettyBase = asFile(System.getProperty("jetty.base"));
-        if (jettyBase != null)
-        {
-            File work = new File(jettyBase, "work");
-            if (work.exists() && work.isDirectory() && work.canWrite())
-            {
-                context.setPersistTempDirectory(true);
-                makeTempDirectory(work, context);
-                return;
-            }
-        }
-
-        //Make a temp directory in java.io.tmpdir
-        makeTempDirectory(new File(System.getProperty("java.io.tmpdir")), context);
+        context.makeTempDirectory();
     }
 
-    /**
-     * Given an Object, return File reference for object.
-     * Typically used to convert anonymous Object from getAttribute() calls to a File object.
-     *
-     * @param fileattr the file attribute to analyze and return from (supports type File, Path, and String).
-     * @return the File object if it can be converted otherwise null.
-     */
-    private File asFile(Object fileattr)
-    {
-        if (fileattr == null)
-            return null;
-        if (fileattr instanceof File)
-            return (File)fileattr;
-        if (fileattr instanceof String)
-            return new File((String)fileattr);
-        if (fileattr instanceof Path)
-            return ((Path)fileattr).toFile();
-
-        return null;
-    }
-
+    @Deprecated(forRemoval = true, since = "12.0.12")
     public void makeTempDirectory(File parent, WebAppContext context)
         throws Exception
     {
-        if (parent == null || !parent.exists() || !parent.canWrite() || !parent.isDirectory())
-            throw new IllegalStateException("Parent for temp dir not configured correctly: " + (parent == null ? "null" : "writeable=" + parent.canWrite()));
-
-        //Create a name for the webapp     
-        String temp = getCanonicalNameForWebAppTmpDir(context);
-        File tmpDir = null;
-        if (context.isPersistTempDirectory())
-        {
-            //if it is to be persisted, make sure it will be the same name
-            //by not using File.createTempFile, which appends random digits
-            tmpDir = new File(parent, temp);
-            configureTempDirectory(tmpDir, context);
-        }
-        else
-        {
-            // ensure dir will always be unique by having classlib generate random path name
-            tmpDir = Files.createTempDirectory(parent.toPath(), temp).toFile();
-            tmpDir.deleteOnExit();
-            ensureTempDirUsable(tmpDir);
-        }
-
-        if (LOG.isDebugEnabled())
-            LOG.debug("Set temp dir {}", tmpDir);
-        context.setTempDirectory(tmpDir);
-    }
-
-    public void configureTempDirectory(File dir, WebAppContext context)
-    {
-        if (dir == null)
-            throw new IllegalArgumentException("Null temp dir");
-
-        // if dir exists and we don't want it persisted, delete it
-        if (!context.isPersistTempDirectory() && dir.exists() && !IO.delete(dir))
-        {
-            throw new IllegalStateException("Failed to delete temp dir " + dir);
-        }
-
-        // if it doesn't exist make it
-        if (!dir.exists())
-        {
-            if (!dir.mkdirs())
-            {
-                throw new IllegalStateException("Unable to create temp dir " + dir);
-            }
-        }
-
-        if (!context.isPersistTempDirectory())
-            dir.deleteOnExit();
-
-        ensureTempDirUsable(dir);
-    }
-
-    private void ensureTempDirUsable(File dir)
-    {
-        // is it useable
-        if (!dir.canWrite() || !dir.isDirectory())
-            throw new IllegalStateException("Temp dir " + dir + " not useable: writeable=" + dir.canWrite() + ", dir=" + dir.isDirectory());
+        context.makeTempDirectory();
     }
 
     public void unpack(WebAppContext context) throws IOException
@@ -292,16 +170,19 @@ public class WebInfConfiguration extends AbstractConfiguration
             if (webApp == null)
                 throw new IllegalStateException("No resourceBase or war set for context");
 
-            // Accept aliases for WAR files
+            // Use real location (if different) for WAR file, so that change/modification monitoring can work.
             if (webApp.isAlias())
             {
+                URI realURI = webApp.getRealURI();
                 if (LOG.isDebugEnabled())
-                    LOG.debug("{} anti-aliased to {}", webApp, webApp.getAlias());
-                webApp = context.newResource(webApp.getAlias());
+                    LOG.debug("{} anti-aliased to {}", webApp, realURI);
+                Resource realWebApp = context.newResource(realURI);
+                if (realWebApp != null && realWebApp.exists())
+                    webApp = realWebApp;
             }
 
             if (LOG.isDebugEnabled())
-                LOG.debug("Try webapp={} exists={} directory={} file={}", webApp, webApp.exists(), webApp.isDirectory(), webApp.getFile());
+                LOG.debug("Try webapp={} exists={} directory={} file={}", webApp, webApp.exists(), webApp.isDirectory(), webApp.getPath());
 
             // Track the original web_app Resource, as this could be a PathResource.
             // Later steps force the Resource to be a JarFileResource, which introduces
@@ -310,45 +191,51 @@ public class WebInfConfiguration extends AbstractConfiguration
             Resource originalWarResource = webApp;
 
             // Is the WAR usable directly?
-            if (webApp.exists() && !webApp.isDirectory() && !webApp.toString().startsWith("jar:"))
+            if (Resources.isReadableFile(webApp) && FileID.isArchive(webApp.getURI()) && !webApp.getURI().getScheme().equalsIgnoreCase("jar"))
             {
-                // No - then lets see if it can be turned into a jar URL.
-                Resource jarWebApp = JarResource.newJarResource(webApp);
-                if (jarWebApp.exists() && jarWebApp.isDirectory())
+                // Turned this into a jar URL.
+                Resource jarWebApp = context.getResourceFactory().newJarFileResource(webApp.getURI());
+                if (Resources.isDirectory(jarWebApp))
                     webApp = jarWebApp;
             }
 
             // If we should extract or the URL is still not usable
             if (webApp.exists() && (
-                (context.isCopyWebDir() && webApp.getFile() != null && webApp.getFile().isDirectory()) ||
-                    (context.isExtractWAR() && webApp.getFile() != null && !webApp.getFile().isDirectory()) ||
-                    (context.isExtractWAR() && webApp.getFile() == null) ||
+                (context.isCopyWebDir() && webApp.getPath() != null && originalWarResource.isDirectory()) ||
+                    (context.isExtractWAR() && webApp.getPath() != null && !originalWarResource.isDirectory()) ||
+                    (context.isExtractWAR() && webApp.getPath() == null) ||
                     !webApp.isDirectory())
             )
             {
-                // Look for sibling directory.
-                File extractedWebAppDir = null;
+                Path extractedWebAppDir = null;
 
+                // If this is a war file, we should look for a sibling
+                // directory of the same name
                 if (war != null)
                 {
-                    // look for a sibling like "foo/" to a "foo.war"
-                    File warfile = Resource.newResource(war).getFile();
-                    if (warfile != null && warfile.getName().toLowerCase(Locale.ENGLISH).endsWith(".war"))
+                    // We have obtained the webApp from the war string, so it
+                    // cannot be a CombinedResource, therefore safe to use it's Path
+                    Path warPath = webApp.getPath();
+                    if (warPath != null)
                     {
-                        File sibling = new File(warfile.getParent(), warfile.getName().substring(0, warfile.getName().length() - 4));
-                        if (sibling.exists() && sibling.isDirectory() && sibling.canWrite())
-                            extractedWebAppDir = sibling;
+                        // look for a sibling like "foo/" to a "foo.war"
+                        if (FileID.isWebArchive(warPath) && Files.exists(warPath))
+                        {
+                            Path sibling = warPath.getParent().resolve(FileID.getBasename(warPath));
+                            if (Files.exists(sibling) && Files.isDirectory(sibling) && Files.isWritable(sibling))
+                                extractedWebAppDir = sibling;
+                        }
                     }
                 }
 
                 if (extractedWebAppDir == null)
                 {
                     // Then extract it if necessary to the temporary location
-                    extractedWebAppDir = new File(context.getTempDirectory(), "webapp");
+                    extractedWebAppDir = context.getTempDirectory().toPath().resolve("webapp");
                     context.setAttribute(TEMPORARY_RESOURCE_BASE, extractedWebAppDir);
                 }
 
-                if (webApp.getFile() != null && webApp.getFile().isDirectory())
+                if (webApp.getPath() != null && webApp.isDirectory())
                 {
                     // Copy directory
                     if (LOG.isDebugEnabled())
@@ -361,39 +248,54 @@ public class WebInfConfiguration extends AbstractConfiguration
                     //This will help us detect interrupted extractions.
                     File extractionLock = new File(context.getTempDirectory(), ".extract_lock");
 
-                    if (!extractedWebAppDir.exists())
+                    if (!Files.exists(extractedWebAppDir))
                     {
                         //it hasn't been extracted before so extract it
                         extractionLock.createNewFile();
-                        extractedWebAppDir.mkdir();
+                        Files.createDirectory(extractedWebAppDir);
                         if (LOG.isDebugEnabled())
                             LOG.debug("Extract {} to {}", webApp, extractedWebAppDir);
-                        Resource jarWebApp = JarResource.newJarResource(webApp);
-                        jarWebApp.copyTo(extractedWebAppDir);
+                        try (ResourceFactory.Closeable resourceFactory = ResourceFactory.closeable())
+                        {
+                            Resource jarWebApp = resourceFactory.newJarFileResource(webApp.getURI());
+                            jarWebApp.copyTo(extractedWebAppDir);
+                        }
                         extractionLock.delete();
                     }
                     else
                     {
                         // Only extract if the war file is newer, or a .extract_lock file is left behind meaning a possible partial extraction
                         // Use the original War Resource to obtain lastModified to avoid filesystem locks on MS Windows.
-                        if (originalWarResource.lastModified() > extractedWebAppDir.lastModified() || extractionLock.exists())
+                        if (originalWarResource.lastModified().isAfter(Files.getLastModifiedTime(extractedWebAppDir).toInstant()) || extractionLock.exists())
                         {
                             extractionLock.createNewFile();
-                            IO.delete(extractedWebAppDir);
-                            extractedWebAppDir.mkdir();
+                            // Best effort delete
+                            if (IO.delete(extractedWebAppDir))
+                            {
+                                // Recreate the directory if it was deleted.
+                                Files.createDirectory(extractedWebAppDir);
+                            }
+                            else
+                            {
+                                if (LOG.isInfoEnabled())
+                                    LOG.info("Unable to delete path {}, reusing existing path", extractedWebAppDir);
+                            }
                             if (LOG.isDebugEnabled())
                                 LOG.debug("Extract {} to {}", webApp, extractedWebAppDir);
-                            Resource jarWebApp = JarResource.newJarResource(webApp);
-                            jarWebApp.copyTo(extractedWebAppDir);
+                            try (ResourceFactory.Closeable resourceFactory = ResourceFactory.closeable())
+                            {
+                                Resource jarWebApp = resourceFactory.newJarFileResource(webApp.getURI());
+                                jarWebApp.copyTo(extractedWebAppDir);
+                            }
                             extractionLock.delete();
                         }
                     }
                 }
-                webApp = Resource.newResource(extractedWebAppDir.getCanonicalPath());
+                webApp = context.getResourceFactory().newResource(extractedWebAppDir.normalize());
             }
 
             // Now do we have something usable?
-            if (!webApp.exists() || !webApp.isDirectory())
+            if (Resources.missing(webApp))
             {
                 LOG.warn("Web application not found {}", war);
                 throw new java.io.FileNotFoundException(war);
@@ -408,46 +310,49 @@ public class WebInfConfiguration extends AbstractConfiguration
         // Do we need to extract WEB-INF/lib?
         if (context.isCopyWebInf() && !context.isCopyWebDir())
         {
-            Resource webInf = webApp.addPath("WEB-INF/");
+            Resource webInf = webApp.resolve("WEB-INF/");
 
-            File extractedWebInfDir = new File(context.getTempDirectory(), "webinf");
-            if (extractedWebInfDir.exists())
-                IO.delete(extractedWebInfDir);
-            extractedWebInfDir.mkdir();
-            Resource webInfLib = webInf.addPath("lib/");
-            File webInfDir = new File(extractedWebInfDir, "WEB-INF");
-            webInfDir.mkdir();
-
-            if (webInfLib.exists())
+            if (Resources.isReadableDirectory(webInf))
             {
-                File webInfLibDir = new File(webInfDir, "lib");
-                if (webInfLibDir.exists())
-                    IO.delete(webInfLibDir);
-                webInfLibDir.mkdir();
+                File extractedWebInfDir = new File(context.getTempDirectory(), "webinf");
+                if (extractedWebInfDir.exists())
+                    IO.delete(extractedWebInfDir);
+                extractedWebInfDir.mkdir();
 
-                if (LOG.isDebugEnabled())
-                    LOG.debug("Copying WEB-INF/lib {} to {}", webInfLib, webInfLibDir);
-                webInfLib.copyTo(webInfLibDir);
+                File webInfDir = new File(extractedWebInfDir, "WEB-INF");
+                webInfDir.mkdir();
+
+                Resource webInfLib = webInf.resolve("lib/");
+                if (Resources.isReadableDirectory(webInfLib))
+                {
+                    File webInfLibDir = new File(webInfDir, "lib");
+                    if (webInfLibDir.exists())
+                        IO.delete(webInfLibDir);
+                    webInfLibDir.mkdir();
+
+                    if (LOG.isDebugEnabled())
+                        LOG.debug("Copying WEB-INF/lib {} to {}", webInfLib, webInfLibDir);
+                    webInfLib.copyTo(webInfLibDir.toPath());
+                }
+
+                Resource webInfClasses = webInf.resolve("classes/");
+                if (Resources.isReadableDirectory(webInfClasses))
+                {
+                    File webInfClassesDir = new File(webInfDir, "classes");
+                    if (webInfClassesDir.exists())
+                        IO.delete(webInfClassesDir);
+                    webInfClassesDir.mkdir();
+                    if (LOG.isDebugEnabled())
+                        LOG.debug("Copying WEB-INF/classes from {} to {}", webInfClasses, webInfClassesDir.getAbsolutePath());
+                    webInfClasses.copyTo(webInfClassesDir.toPath());
+                }
+                webInf = context.getResourceFactory().newResource(extractedWebInfDir.getCanonicalPath());
             }
 
-            Resource webInfClasses = webInf.addPath("classes/");
-            if (webInfClasses.exists())
-            {
-                File webInfClassesDir = new File(webInfDir, "classes");
-                if (webInfClassesDir.exists())
-                    IO.delete(webInfClassesDir);
-                webInfClassesDir.mkdir();
-                if (LOG.isDebugEnabled())
-                    LOG.debug("Copying WEB-INF/classes from {} to {}", webInfClasses, webInfClassesDir.getAbsolutePath());
-                webInfClasses.copyTo(webInfClassesDir);
-            }
-
-            webInf = Resource.newResource(extractedWebInfDir.getCanonicalPath());
-
-            ResourceCollection rc = new ResourceCollection(webInf, webApp);
+            Resource rc = ResourceFactory.combine(webInf, webApp);
 
             if (LOG.isDebugEnabled())
-                LOG.debug("context.resourcebase={}", rc);
+                LOG.debug("context.baseResource={}", rc);
 
             context.setBaseResource(rc);
         }
@@ -469,116 +374,24 @@ public class WebInfConfiguration extends AbstractConfiguration
      */
     public static String getCanonicalNameForWebAppTmpDir(WebAppContext context)
     {
-        StringBuffer canonicalName = new StringBuffer();
-        canonicalName.append("jetty-");
-
-        //get the host and the port from the first connector
-        Server server = context.getServer();
-        if (server != null)
-        {
-            Connector[] connectors = context.getServer().getConnectors();
-
-            if (connectors.length > 0)
-            {
-                //Get the host
-                String host = null;
-                int port = 0;
-                if (connectors != null && (connectors[0] instanceof NetworkConnector))
-                {
-                    NetworkConnector connector = (NetworkConnector)connectors[0];
-                    host = connector.getHost();
-                    port = connector.getLocalPort();
-                    if (port < 0)
-                        port = connector.getPort();
-                }
-                if (host == null)
-                    host = "0.0.0.0";
-                canonicalName.append(host);
-
-                //Get the port
-                canonicalName.append("-");
-
-                //if not available (eg no connectors or connector not started),
-                //try getting one that was configured.
-                canonicalName.append(port);
-                canonicalName.append("-");
-            }
-        }
-
-        // Resource base
-        try
-        {
-            Resource resource = context.getBaseResource();
-            if (resource == null)
-            {
-                if (context.getWar() == null || context.getWar().length() == 0)
-                    throw new IllegalStateException("No resourceBase or war set for context");
-
-                // Set dir or WAR to resource
-                resource = context.newResource(context.getWar());
-            }
-
-            String resourceBaseName = getResourceBaseName(resource);
-            canonicalName.append(resourceBaseName);
-            canonicalName.append("-");
-        }
-        catch (Exception e)
-        {
-            if (LOG.isDebugEnabled())
-                LOG.debug("Can't get resource base name", e);
-
-            canonicalName.append("-"); // empty resourceBaseName segment
-        }
-
-        //Context name
-        String contextPath = context.getContextPath();
-        contextPath = contextPath.replace('/', '_');
-        contextPath = contextPath.replace('\\', '_');
-        canonicalName.append(contextPath);
-
-        //Virtual host (if there is one)
-        canonicalName.append("-");
-        String[] vhosts = context.getVirtualHosts();
-        if (vhosts == null || vhosts.length <= 0)
-            canonicalName.append("any");
-        else
-            canonicalName.append(vhosts[0]);
-
-        // sanitize
-        for (int i = 0; i < canonicalName.length(); i++)
-        {
-            char c = canonicalName.charAt(i);
-            if (!Character.isJavaIdentifierPart(c) && "-.".indexOf(c) < 0)
-                canonicalName.setCharAt(i, '.');
-        }
-
-        canonicalName.append("-");
-
-        return StringUtil.sanitizeFileSystemName(canonicalName.toString());
+        return context.getCanonicalNameForTmpDir();
     }
 
+    @Deprecated(forRemoval = true, since = "12.0.12")
     protected static String getResourceBaseName(Resource resource)
     {
         // Use File System and File interface if present
-        try
-        {
-            File resourceFile = resource.getFile();
-            if ((resourceFile != null) && (resource instanceof JarFileResource))
-            {
-                resourceFile = ((JarFileResource)resource).getJarFile();
-            }
+        Path resourceFile = resource.getPath();
 
-            if (resourceFile != null)
-            {
-                return resourceFile.getName();
-            }
-        }
-        catch (IOException e)
+        if ((resourceFile != null) && (resource instanceof MountedPathResource))
         {
-            if (LOG.isDebugEnabled())
-            {
-                LOG.debug("Resource has no File reference: {}", resource);
-            }
+            resourceFile = ((MountedPathResource)resource).getContainerPath();
+        }
+
+        if (resourceFile != null)
+        {
+            Path fileName = resourceFile.getFileName();
+            return fileName == null ? "" : fileName.toString();
         }
 
         // Use URI itself.

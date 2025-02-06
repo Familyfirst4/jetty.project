@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -18,18 +18,22 @@ import java.nio.charset.Charset;
 import org.eclipse.jetty.io.Content;
 import org.eclipse.jetty.util.CharsetStringBuilder;
 import org.eclipse.jetty.util.Promise;
+import org.eclipse.jetty.util.thread.Invocable;
 
 public class ContentSourceString
 {
     private final Content.Source content;
     private final CharsetStringBuilder text;
     private final Promise<String> promise;
+    private final DemandTask _demandTask;
 
     public ContentSourceString(Content.Source content, Charset charset, Promise<String> promise)
     {
         this.content = content;
         this.text = CharsetStringBuilder.forCharset(charset);
         this.promise = promise;
+        // Inner class used instead of lambda for clarity in stack traces.
+        this._demandTask = new DemandTask();
     }
 
     public void convert()
@@ -39,12 +43,14 @@ public class ContentSourceString
             Content.Chunk chunk = content.read();
             if (chunk == null)
             {
-                content.demand(this::convert);
+                content.demand(_demandTask);
                 return;
             }
-            if (chunk instanceof Content.Chunk.Error error)
+            if (Content.Chunk.isFailure(chunk))
             {
-                promise.failed(error.getCause());
+                promise.failed(chunk.getFailure());
+                if (!chunk.isLast())
+                    content.fail(chunk.getFailure());
                 return;
             }
             text.append(chunk.getByteBuffer());
@@ -61,12 +67,26 @@ public class ContentSourceString
     {
         try
         {
-            String result = text.takeString();
+            String result = text.build();
             promise.succeeded(result);
         }
         catch (Throwable x)
         {
             promise.failed(x);
+        }
+    }
+
+    private class DemandTask extends Invocable.Task.Abstract
+    {
+        DemandTask()
+        {
+            super(Invocable.getInvocationType(promise));
+        }
+
+        @Override
+        public void run()
+        {
+            convert();
         }
     }
 }

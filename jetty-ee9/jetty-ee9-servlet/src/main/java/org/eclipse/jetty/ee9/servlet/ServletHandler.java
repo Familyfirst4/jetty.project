@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -50,8 +50,7 @@ import org.eclipse.jetty.ee9.nested.ScopedHandler;
 import org.eclipse.jetty.ee9.nested.ServletPathMapping;
 import org.eclipse.jetty.ee9.nested.ServletRequestHttpWrapper;
 import org.eclipse.jetty.ee9.nested.ServletResponseHttpWrapper;
-import org.eclipse.jetty.ee9.nested.UserIdentity;
-import org.eclipse.jetty.ee9.security.IdentityService;
+import org.eclipse.jetty.ee9.nested.UserIdentityScope;
 import org.eclipse.jetty.ee9.security.SecurityHandler;
 import org.eclipse.jetty.http.pathmap.MappedResource;
 import org.eclipse.jetty.http.pathmap.MatchedPath;
@@ -59,8 +58,9 @@ import org.eclipse.jetty.http.pathmap.MatchedResource;
 import org.eclipse.jetty.http.pathmap.PathMappings;
 import org.eclipse.jetty.http.pathmap.PathSpec;
 import org.eclipse.jetty.http.pathmap.ServletPathSpec;
+import org.eclipse.jetty.security.IdentityService;
 import org.eclipse.jetty.util.ArrayUtil;
-import org.eclipse.jetty.util.MultiException;
+import org.eclipse.jetty.util.ExceptionUtil;
 import org.eclipse.jetty.util.MultiMap;
 import org.eclipse.jetty.util.annotation.ManagedAttribute;
 import org.eclipse.jetty.util.annotation.ManagedObject;
@@ -458,7 +458,7 @@ public class ServletHandler extends ScopedHandler
         final ServletPathMapping old_servlet_path_mapping = baseRequest.getServletPathMapping();
 
         ServletHolder servletHolder = null;
-        UserIdentity.Scope oldScope = null;
+        UserIdentityScope oldScope = null;
 
         MatchedResource<MappedServlet> matched = getMatchedServlet(target);
         if (matched != null)
@@ -468,9 +468,7 @@ public class ServletHandler extends ScopedHandler
             ServletPathMapping servletPathMapping = mappedServlet.getServletPathMapping(target, matched.getMatchedPath());
 
             if (servletPathMapping != null)
-            {
                 baseRequest.setServletPathMapping(servletPathMapping);
-            }
         }
 
         if (LOG.isDebugEnabled())
@@ -546,7 +544,7 @@ public class ServletHandler extends ScopedHandler
      */
     public MatchedResource<MappedServlet> getMatchedServlet(String target)
     {
-        if (target.startsWith("/"))
+        if (target.startsWith("/") || target.length() == 0)
         {
             if (_servletPathMap == null)
                 return null;
@@ -691,6 +689,7 @@ public class ServletHandler extends ScopedHandler
     }
 
     /**
+     * Set the allowDuplicateMappings to set.
      * @param allowDuplicateMappings the allowDuplicateMappings to set
      */
     public void setAllowDuplicateMappings(boolean allowDuplicateMappings)
@@ -714,7 +713,7 @@ public class ServletHandler extends ScopedHandler
     public void initialize()
         throws Exception
     {
-        MultiException mx = new MultiException();
+        ExceptionUtil.MultiException multiException = new ExceptionUtil.MultiException();
 
         Consumer<BaseHolder<?>> c = h ->
         {
@@ -722,14 +721,17 @@ public class ServletHandler extends ScopedHandler
             {
                 if (!h.isStarted())
                 {
-                    h.start();
-                    h.initialize();
+                    multiException.callAndCatch(() ->
+                    {
+                        h.start();
+                        h.initialize();
+                    });
                 }
             }
             catch (Throwable e)
             {
                 LOG.debug("Unable to start {}", h, e);
-                mx.add(e);
+                multiException.add(e);
             }
         };
         
@@ -749,7 +751,7 @@ public class ServletHandler extends ScopedHandler
             _servlets.stream().sorted())
             .forEach(c);
 
-        mx.ifExceptionThrow();
+        multiException.ifExceptionThrow();
     }
     
     /**
@@ -1146,7 +1148,7 @@ public class ServletHandler extends ScopedHandler
             if (_filterMappings.isEmpty())
             {
                 _filterMappings.add(mapping);
-                if (source == Source.JAVAX_API)
+                if (source == Source.JAKARTA_API)
                     _matchAfterIndex = 0;
             }
             else
@@ -1154,7 +1156,7 @@ public class ServletHandler extends ScopedHandler
                 //there are existing entries. If this is a programmatic filtermapping, it is added at the end of the list.
                 //If this is a normal filtermapping, it is inserted after all the other filtermappings (matchBefores and normals),
                 //but before the first matchAfter filtermapping.
-                if (Source.JAVAX_API == source)
+                if (Source.JAKARTA_API == source)
                 {
                     _filterMappings.add(mapping);
                     if (_matchAfterIndex < 0)
@@ -1192,12 +1194,12 @@ public class ServletHandler extends ScopedHandler
             if (_filterMappings.isEmpty())
             {
                 _filterMappings.add(mapping);
-                if (Source.JAVAX_API == source)
+                if (Source.JAKARTA_API == source)
                     _matchBeforeIndex = 0;
             }
             else
             {
-                if (Source.JAVAX_API == source)
+                if (Source.JAKARTA_API == source)
                 {
                     //programmatically defined filter mappings are prepended to mapping list in the order
                     //in which they were defined. In other words, insert this mapping at the tail of the 
@@ -1284,6 +1286,7 @@ public class ServletHandler extends ScopedHandler
 
     protected PathSpec asPathSpec(String pathSpec)
     {
+        // By default only allow servlet path specs
         return new ServletPathSpec(pathSpec);
     }
 

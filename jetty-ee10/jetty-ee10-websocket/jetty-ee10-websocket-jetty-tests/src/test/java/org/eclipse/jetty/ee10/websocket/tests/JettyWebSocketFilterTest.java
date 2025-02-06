@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -35,10 +35,6 @@ import jakarta.servlet.http.HttpServlet;
 import org.eclipse.jetty.ee10.servlet.FilterHolder;
 import org.eclipse.jetty.ee10.servlet.ServletContextHandler;
 import org.eclipse.jetty.ee10.servlet.ServletHolder;
-import org.eclipse.jetty.ee10.websocket.api.Session;
-import org.eclipse.jetty.ee10.websocket.api.annotations.OnWebSocketMessage;
-import org.eclipse.jetty.ee10.websocket.api.annotations.WebSocket;
-import org.eclipse.jetty.ee10.websocket.client.WebSocketClient;
 import org.eclipse.jetty.ee10.websocket.server.JettyWebSocketServerContainer;
 import org.eclipse.jetty.ee10.websocket.server.config.JettyWebSocketServletContainerInitializer;
 import org.eclipse.jetty.ee10.websocket.servlet.WebSocketUpgradeFilter;
@@ -46,6 +42,11 @@ import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.toolchain.test.MavenTestingUtils;
 import org.eclipse.jetty.util.component.AbstractLifeCycle;
+import org.eclipse.jetty.websocket.api.Callback;
+import org.eclipse.jetty.websocket.api.Session;
+import org.eclipse.jetty.websocket.api.annotations.OnWebSocketMessage;
+import org.eclipse.jetty.websocket.api.annotations.WebSocket;
+import org.eclipse.jetty.websocket.client.WebSocketClient;
 import org.eclipse.jetty.websocket.core.WebSocketConstants;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -124,7 +125,7 @@ public class JettyWebSocketFilterTest
         CompletableFuture<Session> connect = client.connect(socket, uri);
         try (Session session = connect.get(5, TimeUnit.SECONDS))
         {
-            session.getRemote().sendString("hello world");
+            session.sendText("hello world", Callback.NOOP);
         }
         assertTrue(socket.closeLatch.await(10, TimeUnit.SECONDS));
 
@@ -158,7 +159,7 @@ public class JettyWebSocketFilterTest
         CompletableFuture<Session> connect = client.connect(socket, uri);
         try (Session session = connect.get(5, TimeUnit.SECONDS))
         {
-            session.getRemote().sendString("hello world");
+            session.sendText("hello world", Callback.NOOP);
         }
         assertTrue(socket.closeLatch.await(10, TimeUnit.SECONDS));
 
@@ -195,7 +196,7 @@ public class JettyWebSocketFilterTest
         CompletableFuture<Session> connect = client.connect(socket, uri);
         try (Session session = connect.get(5, TimeUnit.SECONDS))
         {
-            session.getRemote().sendString("hello world");
+            session.sendText("hello world", Callback.NOOP);
         }
         assertTrue(socket.closeLatch.await(10, TimeUnit.SECONDS));
 
@@ -253,8 +254,8 @@ public class JettyWebSocketFilterTest
         CompletableFuture<Session> connect = client.connect(socket, uri);
         try (Session session = connect.get(5, TimeUnit.SECONDS))
         {
-            session.getRemote().sendString("hElLo wOrLd");
-            session.getRemote().sendString("getIdleTimeout");
+            session.sendText("hElLo wOrLd", Callback.NOOP);
+            session.sendText("getIdleTimeout", Callback.NOOP);
         }
         assertTrue(socket.closeLatch.await(5, TimeUnit.SECONDS));
         assertThat(socket.textMessages.poll(), is("hello world"));
@@ -266,8 +267,8 @@ public class JettyWebSocketFilterTest
         connect = client.connect(socket, uri);
         try (Session session = connect.get(5, TimeUnit.SECONDS))
         {
-            session.getRemote().sendString("hElLo wOrLd");
-            session.getRemote().sendString("getIdleTimeout");
+            session.sendText("hElLo wOrLd", Callback.NOOP);
+            session.sendText("getIdleTimeout", Callback.NOOP);
         }
         assertTrue(socket.closeLatch.await(5, TimeUnit.SECONDS));
         assertThat(socket.textMessages.poll(), is("HELLO WORLD"));
@@ -297,7 +298,7 @@ public class JettyWebSocketFilterTest
         CompletableFuture<Session> connect = client.connect(socket, uri);
         try (Session session = connect.get(5, TimeUnit.SECONDS))
         {
-            session.getRemote().sendString("hElLo wOrLd");
+            session.sendText("hElLo wOrLd", Callback.NOOP);
         }
         assertTrue(socket.closeLatch.await(5, TimeUnit.SECONDS));
         assertThat(socket.textMessages.poll(), is("hElLo wOrLd"));
@@ -329,8 +330,8 @@ public class JettyWebSocketFilterTest
         CompletableFuture<Session> connect = client.connect(socket, uri);
         try (Session session = connect.get(5, TimeUnit.SECONDS))
         {
-            session.getRemote().sendString("hello world");
-            session.getRemote().sendString("getIdleTimeout");
+            session.sendText("hello world", Callback.NOOP);
+            session.sendText("getIdleTimeout", Callback.NOOP);
         }
         assertTrue(socket.closeLatch.await(5, TimeUnit.SECONDS));
         assertThat(socket.textMessages.poll(), is("hello world"));
@@ -363,8 +364,8 @@ public class JettyWebSocketFilterTest
         CompletableFuture<Session> connect = client.connect(socket, uri);
         try (Session session = connect.get(5, TimeUnit.SECONDS))
         {
-            session.getRemote().sendString("hello world");
-            session.getRemote().sendString("getIdleTimeout");
+            session.sendText("hello world", Callback.NOOP);
+            session.sendText("getIdleTimeout", Callback.NOOP);
         }
         assertTrue(socket.closeLatch.await(5, TimeUnit.SECONDS));
         assertThat(socket.textMessages.poll(), is("hello world"));
@@ -388,9 +389,9 @@ public class JettyWebSocketFilterTest
             public void onMessage(Session session, String message) throws IOException
             {
                 if ("getIdleTimeout".equals(message))
-                    session.getRemote().sendString(Long.toString(session.getIdleTimeout().toMillis()));
+                    session.sendText(Long.toString(session.getIdleTimeout().toMillis()), Callback.NOOP);
                 else
-                    session.getRemote().sendString(message);
+                    session.sendText(message, Callback.NOOP);
             }
         }
     }
@@ -413,9 +414,9 @@ public class JettyWebSocketFilterTest
         public void onMessage(Session session, String message) throws IOException
         {
             if ("getIdleTimeout".equals(message))
-                session.getRemote().sendString(Long.toString(session.getIdleTimeout().toMillis()));
+                session.sendText(Long.toString(session.getIdleTimeout().toMillis()), Callback.NOOP);
             else
-                session.getRemote().sendString(message.toLowerCase());
+                session.sendText(message.toLowerCase(), Callback.NOOP);
         }
     }
 
@@ -426,9 +427,9 @@ public class JettyWebSocketFilterTest
         public void onMessage(Session session, String message) throws IOException
         {
             if ("getIdleTimeout".equals(message))
-                session.getRemote().sendString(Long.toString(session.getIdleTimeout().toMillis()));
+                session.sendText(Long.toString(session.getIdleTimeout().toMillis()), Callback.NOOP);
             else
-                session.getRemote().sendString(message.toUpperCase());
+                session.sendText(message.toUpperCase(), Callback.NOOP);
         }
     }
 }

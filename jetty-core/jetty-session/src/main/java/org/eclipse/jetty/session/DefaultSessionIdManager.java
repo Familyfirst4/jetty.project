@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -16,6 +16,7 @@ package org.eclipse.jetty.session;
 import java.security.SecureRandom;
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.Objects;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
@@ -66,7 +67,7 @@ public class DefaultSessionIdManager extends ContainerLifeCycle implements Sessi
      */
     public DefaultSessionIdManager(Server server)
     {
-        _server = server;
+        _server = Objects.requireNonNull(server);
     }
 
     /**
@@ -80,14 +81,16 @@ public class DefaultSessionIdManager extends ContainerLifeCycle implements Sessi
     }
 
     /**
+     * Set the server associated with this id manager.
      * @param server the server associated with this id manager
      */
     public void setServer(Server server)
     {
-        _server = server;
+        _server = Objects.requireNonNull(server);
     }
 
     /**
+     * Get the server associated with this id manager.
      * @return the server associated with this id manager
      */
     public Server getServer()
@@ -152,6 +155,7 @@ public class DefaultSessionIdManager extends ContainerLifeCycle implements Sessi
     }
 
     /**
+     * Get the random number generator.
      * @return the random number generator
      */
     public Random getRandom()
@@ -160,6 +164,7 @@ public class DefaultSessionIdManager extends ContainerLifeCycle implements Sessi
     }
 
     /**
+     * Set a random number generator for generating ids.
      * @param random a random number generator for generating ids
      */
     public void setRandom(Random random)
@@ -169,6 +174,7 @@ public class DefaultSessionIdManager extends ContainerLifeCycle implements Sessi
     }
 
     /**
+     * Get the reseed probability.
      * @return the reseed probability
      */
     public long getReseed()
@@ -224,7 +230,7 @@ public class DefaultSessionIdManager extends ContainerLifeCycle implements Sessi
         // pick a new unique ID!
         String id = null;
 
-        try (AutoLock l = _lock.lock())
+        try (AutoLock ignored = _lock.lock())
         {
             while (id == null || id.length() == 0)
             {
@@ -239,15 +245,10 @@ public class DefaultSessionIdManager extends ContainerLifeCycle implements Sessi
                 {
                     if (LOG.isDebugEnabled())
                         LOG.debug("Reseeding {}", this);
-                    if (_random instanceof SecureRandom)
-                    {
-                        SecureRandom secure = (SecureRandom)_random;
+                    if (_random instanceof SecureRandom secure)
                         secure.setSeed(secure.generateSeed(8));
-                    }
                     else
-                    {
                         _random.setSeed(_random.nextLong() ^ System.currentTimeMillis() ^ seedTerm ^ Runtime.getRuntime().freeMemory());
-                    }
                 }
 
                 long r1 = _weakRandom
@@ -263,12 +264,12 @@ public class DefaultSessionIdManager extends ContainerLifeCycle implements Sessi
                 if (!StringUtil.isBlank(_workerName))
                     id = _workerName + id;
 
-                id = id + Long.toString(COUNTER.getAndIncrement());
+                id = id + COUNTER.getAndIncrement();
             }
         }
         return id;
     }
-
+    
     @Override
     public boolean isIdInUse(String id)
     {
@@ -306,9 +307,6 @@ public class DefaultSessionIdManager extends ContainerLifeCycle implements Sessi
     @Override
     protected void doStart() throws Exception
     {
-        if (_server == null)
-            throw new IllegalStateException("No Server for SessionIdManager");
-
         initRandom();
 
         if (_workerName == null)
@@ -317,7 +315,7 @@ public class DefaultSessionIdManager extends ContainerLifeCycle implements Sessi
             _workerName = "node" + (inst == null ? "0" : inst);
         }
 
-        _workerAttr = (_workerName != null && _workerName.startsWith("$")) ? _workerName.substring(1) : null;
+        _workerAttr = _workerName.startsWith("$") ? _workerName.substring(1) : null;
 
         if (_houseKeeper == null)
         {
@@ -405,8 +403,6 @@ public class DefaultSessionIdManager extends ContainerLifeCycle implements Sessi
 
     /**
      * Remove an id from use by telling all contexts to remove a session with this id.
-     *
-     * @see org.eclipse.jetty.sessionIdManager#expireAll(java.lang.String)
      */
     @Override
     public void expireAll(String id)
@@ -503,7 +499,7 @@ public class DefaultSessionIdManager extends ContainerLifeCycle implements Sessi
             //This method can be called on shutdown when the handlers are STOPPING, so only
             //check that they are not already stopped
             if (!sm.isStopped() && !sm.isFailed())
-                managers.add((SessionManager)sm);
+                managers.add(sm);
         }
 
         return managers;

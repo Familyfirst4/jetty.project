@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -69,7 +69,7 @@ public class ServletContainerInitializerHolderTest
     @Test
     public void testInstanceWithStartupClassesAndSource() throws Exception
     {
-        ServletContainerInitializerHolder holder = new ServletContainerInitializerHolder(new Source(Origin.ANNOTATION, null), new SimpleSCI(), Integer.class);
+        ServletContainerInitializerHolder holder = new ServletContainerInitializerHolder(new Source(Origin.ANNOTATION), new SimpleSCI(), Integer.class);
         assertEquals(Origin.ANNOTATION, holder.getSource().getOrigin());
         assertEquals(SimpleSCI.class, holder.getHeldClass());
         assertEquals("ContainerInitializer{org.eclipse.jetty.ee9.servlet.ServletContainerInitializerHolderTest$SimpleSCI,interested=[java.lang.Integer],applicable=[],annotated=[]}", holder.toString());

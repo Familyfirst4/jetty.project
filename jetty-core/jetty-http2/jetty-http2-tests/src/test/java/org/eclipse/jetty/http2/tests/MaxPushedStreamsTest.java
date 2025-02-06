@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -26,6 +26,8 @@ import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.http.HttpVersion;
 import org.eclipse.jetty.http.MetaData;
+import org.eclipse.jetty.http2.ErrorCode;
+import org.eclipse.jetty.http2.HTTP2Session;
 import org.eclipse.jetty.http2.api.Session;
 import org.eclipse.jetty.http2.api.Stream;
 import org.eclipse.jetty.http2.api.server.ServerSessionListener;
@@ -33,11 +35,8 @@ import org.eclipse.jetty.http2.frames.DataFrame;
 import org.eclipse.jetty.http2.frames.HeadersFrame;
 import org.eclipse.jetty.http2.frames.PushPromiseFrame;
 import org.eclipse.jetty.http2.frames.ResetFrame;
-import org.eclipse.jetty.http2.internal.ErrorCode;
-import org.eclipse.jetty.http2.internal.HTTP2Session;
 import org.eclipse.jetty.util.BufferUtil;
 import org.eclipse.jetty.util.Callback;
-import org.eclipse.jetty.util.FuturePromise;
 import org.eclipse.jetty.util.Promise;
 import org.junit.jupiter.api.Test;
 
@@ -52,7 +51,7 @@ public class MaxPushedStreamsTest extends AbstractTest
         int maxPushed = 2;
 
         CountDownLatch resetLatch = new CountDownLatch(1);
-        start(new ServerSessionListener.Adapter()
+        start(new ServerSessionListener()
         {
             @Override
             public Stream.Listener onNewStream(Stream stream, HeadersFrame frame)
@@ -74,12 +73,7 @@ public class MaxPushedStreamsTest extends AbstractTest
                 // Push maxPushed resources...
                 IntStream.range(0, maxPushed)
                     .mapToObj(i -> new PushPromiseFrame(stream.getId(), 0, newRequest("GET", "/push_" + i, HttpFields.EMPTY)))
-                    .map(pushFrame ->
-                    {
-                        Promise.Completable<Stream> promise = new Promise.Completable<>();
-                        stream.push(pushFrame, promise, new Stream.Listener.Adapter());
-                        return promise;
-                    })
+                    .map(pushFrame -> stream.push(pushFrame, null))
                     // ... wait for the pushed streams...
                     .reduce(result, (cfList, cfStream) -> cfList.thenCombine(cfStream, add),
                         (cfList1, cfList2) -> cfList1.thenCombine(cfList2, addAll))
@@ -87,14 +81,14 @@ public class MaxPushedStreamsTest extends AbstractTest
                     .thenApply(streams ->
                     {
                         PushPromiseFrame extraPushFrame = new PushPromiseFrame(stream.getId(), 0, newRequest("GET", "/push_extra", HttpFields.EMPTY));
-                        FuturePromise<Stream> extraPromise = new FuturePromise<>();
-                        stream.push(extraPushFrame, extraPromise, new Stream.Listener.Adapter()
+                        stream.push(extraPushFrame, new Stream.Listener()
                         {
                             @Override
-                            public void onReset(Stream stream, ResetFrame frame)
+                            public void onReset(Stream stream, ResetFrame frame, Callback callback)
                             {
                                 assertEquals(ErrorCode.REFUSED_STREAM_ERROR.code, frame.getError());
                                 resetLatch.countDown();
+                                callback.succeeded();
                             }
                         });
                         return streams;
@@ -103,23 +97,23 @@ public class MaxPushedStreamsTest extends AbstractTest
                     .thenAccept(streams -> streams.forEach(pushedStream ->
                     {
                         DataFrame data = new DataFrame(pushedStream.getId(), BufferUtil.EMPTY_BUFFER, true);
-                        pushedStream.data(data, Callback.NOOP);
+                        pushedStream.data(data);
                     }))
                     // ... then send the response.
                     .thenRun(() ->
                     {
-                        MetaData.Response response = new MetaData.Response(HttpVersion.HTTP_2, HttpStatus.OK_200, HttpFields.EMPTY);
-                        stream.headers(new HeadersFrame(stream.getId(), response, null, true), Callback.NOOP);
+                        MetaData.Response response = new MetaData.Response(HttpStatus.OK_200, null, HttpVersion.HTTP_2, HttpFields.EMPTY);
+                        stream.headers(new HeadersFrame(stream.getId(), response, null, true));
                     });
                 return null;
             }
         });
         http2Client.setMaxConcurrentPushedStreams(maxPushed);
 
-        Session session = newClientSession(new Session.Listener.Adapter());
+        Session session = newClientSession(new Session.Listener() {});
         MetaData.Request request = newRequest("GET", HttpFields.EMPTY);
         CountDownLatch responseLatch = new CountDownLatch(1);
-        session.newStream(new HeadersFrame(request, null, true), new Promise.Adapter<>(), new Stream.Listener.Adapter()
+        session.newStream(new HeadersFrame(request, null, true), new Promise.Adapter<>(), new Stream.Listener()
         {
             @Override
             public void onHeaders(Stream stream, HeadersFrame frame)

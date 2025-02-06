@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -22,6 +22,7 @@ import java.util.List;
 import org.eclipse.jetty.util.annotation.Name;
 import org.eclipse.jetty.util.component.Environment;
 import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
 
 /**
  * A Builder of {@link Environment}s intended to be used in XML
@@ -47,9 +48,9 @@ public class EnvironmentBuilder
     {
         for (String classPath : classPaths)
         {
-            try (Resource resource = Resource.newResource(classPath))
+            try
             {
-                _classpath.add(resource.getURI().toURL());
+                _classpath.add(ResourceFactory.root().newResource(classPath).getURI().toURL());
             }
             catch (IOException e)
             {

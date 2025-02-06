@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -74,7 +74,7 @@ public class WebListenerAnnotation extends DiscoveredAnnotation
                 MetaData metaData = _context.getMetaData();
                 if (metaData.getOrigin(clazz.getName() + ".listener") == Origin.NotSet)
                 {
-                    ListenerHolder h = _context.getServletHandler().newListenerHolder(new Source(Source.Origin.ANNOTATION, clazz.getName()));
+                    ListenerHolder h = _context.getServletHandler().newListenerHolder(new Source(Source.Origin.ANNOTATION, clazz));
                     h.setHeldClass(clazz);
                     _context.getServletHandler().addListener(h);
                     metaData.setOrigin(clazz.getName() + ".listener", clazz.getAnnotation(WebListener.class), clazz);

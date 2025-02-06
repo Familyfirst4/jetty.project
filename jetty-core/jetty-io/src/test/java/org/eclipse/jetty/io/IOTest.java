@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -30,6 +30,7 @@ import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -38,16 +39,14 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 import org.eclipse.jetty.toolchain.test.FS;
-import org.eclipse.jetty.toolchain.test.MavenTestingUtils;
 import org.eclipse.jetty.toolchain.test.jupiter.WorkDir;
 import org.eclipse.jetty.toolchain.test.jupiter.WorkDirExtension;
 import org.eclipse.jetty.util.BufferUtil;
 import org.eclipse.jetty.util.IO;
-import org.eclipse.jetty.util.resource.PathResource;
 import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInfo;
 import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.extension.ExtendWith;
 
@@ -58,11 +57,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
-@ExtendWith(WorkDirExtension.class)
+@ExtendWith(WorkDirExtension.class) 
 public class IOTest
 {
-    public WorkDir workDir;
 
     @Test
     public void testIO() throws Exception
@@ -159,7 +158,9 @@ public class IOTest
         try (ServerSocketChannel connector = ServerSocketChannel.open())
         {
             connector.socket().bind(null);
-            try (Socket client = SocketChannel.open(connector.socket().getLocalSocketAddress()).socket())
+            try (ServerSocket serverSocket = connector.socket();
+                 SocketChannel socketChannel = SocketChannel.open(serverSocket.getLocalSocketAddress());
+                 Socket client = socketChannel.socket())
             {
                 client.setSoTimeout(1000);
                 try (Socket server = connector.accept().socket())
@@ -219,7 +220,9 @@ public class IOTest
         {
             connector.socket().bind(null);
 
-            try (Socket client = SocketChannel.open(connector.socket().getLocalSocketAddress()).socket())
+            try (ServerSocket serverSocket = connector.socket();
+                 SocketChannel socketChannel = SocketChannel.open(serverSocket.getLocalSocketAddress());
+                 Socket client = socketChannel.socket())
             {
                 client.setSoTimeout(1000);
                 try (Socket server = connector.accept().socket())
@@ -269,8 +272,7 @@ public class IOTest
                     // Client eventually sees Broken Pipe
                     assertThrows(IOException.class, () ->
                     {
-                        int i = 0;
-                        for (i = 0; i < 100000; i++)
+                        for (int i = 0; i < 100000; i++)
                         {
                             client.getOutputStream().write(1);
                         }
@@ -287,7 +289,9 @@ public class IOTest
         {
             connector.configureBlocking(true);
             connector.socket().bind(null);
-            try (Socket client = SocketChannel.open(connector.socket().getLocalSocketAddress()).socket())
+            try (ServerSocket serverSocket = connector.socket();
+                 SocketChannel socketChannel = SocketChannel.open(serverSocket.getLocalSocketAddress());
+                 Socket client = socketChannel.socket())
             {
                 client.setSoTimeout(2000);
                 try (Socket server = connector.accept().socket())
@@ -396,36 +400,39 @@ public class IOTest
     @Test
     public void testAsyncSocketChannel() throws Exception
     {
-        AsynchronousServerSocketChannel connector = AsynchronousServerSocketChannel.open();
-        connector.bind(null);
-        InetSocketAddress addr = (InetSocketAddress)connector.getLocalAddress();
-        Future<AsynchronousSocketChannel> acceptor = connector.accept();
+        try (AsynchronousServerSocketChannel connector = AsynchronousServerSocketChannel.open())
+        {
+            connector.bind(null);
+            InetSocketAddress addr = (InetSocketAddress)connector.getLocalAddress();
+            Future<AsynchronousSocketChannel> acceptor = connector.accept();
 
-        AsynchronousSocketChannel client = AsynchronousSocketChannel.open();
+            try (AsynchronousSocketChannel client = AsynchronousSocketChannel.open())
+            {
+                client.connect(new InetSocketAddress("127.0.0.1", addr.getPort())).get(5, TimeUnit.SECONDS);
 
-        client.connect(new InetSocketAddress("127.0.0.1", addr.getPort())).get(5, TimeUnit.SECONDS);
+                AsynchronousSocketChannel server = acceptor.get(5, TimeUnit.SECONDS);
 
-        AsynchronousSocketChannel server = acceptor.get(5, TimeUnit.SECONDS);
+                ByteBuffer read = ByteBuffer.allocate(1024);
+                Future<Integer> reading = server.read(read);
 
-        ByteBuffer read = ByteBuffer.allocate(1024);
-        Future<Integer> reading = server.read(read);
+                byte[] data = "Testing 1 2 3".getBytes(StandardCharsets.UTF_8);
+                ByteBuffer write = BufferUtil.toBuffer(data);
+                Future<Integer> writing = client.write(write);
 
-        byte[] data = "Testing 1 2 3".getBytes(StandardCharsets.UTF_8);
-        ByteBuffer write = BufferUtil.toBuffer(data);
-        Future<Integer> writing = client.write(write);
+                writing.get(5, TimeUnit.SECONDS);
+                reading.get(5, TimeUnit.SECONDS);
+                read.flip();
 
-        writing.get(5, TimeUnit.SECONDS);
-        reading.get(5, TimeUnit.SECONDS);
-        read.flip();
-
-        assertEquals(ByteBuffer.wrap(data), read);
+                assertEquals(ByteBuffer.wrap(data), read);
+            }
+        }
     }
 
     @Test
-    public void testGatherWrite() throws Exception
+    public void testGatherWrite(WorkDir workDir) throws Exception
     {
-        Path dir = workDir.getEmptyPathDir();
-        Path file = Files.createTempFile(dir, "test", ".txt");
+        Path tmpPath = workDir.getEmptyPathDir();
+        Path file = Files.createTempFile(tmpPath, "test", ".txt");
         FileChannel out = FileChannel.open(file,
             StandardOpenOption.CREATE,
             StandardOpenOption.READ,
@@ -453,16 +460,34 @@ public class IOTest
     @Test
     public void testDeleteNull()
     {
-        assertFalse(IO.delete(null));
+        assertFalse(IO.delete((File)null));
+        assertFalse(IO.delete((Path)null));
     }
 
     @Test
-    public void testDeleteNonExistentFile(TestInfo testInfo)
+    public void testDeleteNonExistentFile(WorkDir workDir)
     {
-        File dir = MavenTestingUtils.getTargetTestingDir(testInfo.getDisplayName());
+        Path dir = workDir.getEmptyPathDir();
         FS.ensureEmpty(dir);
-        File noFile = new File(dir, "nada");
+        Path noFile = dir.resolve("nada");
         assertFalse(IO.delete(noFile));
+        assertFalse(IO.delete(noFile.toFile()));
+    }
+
+    @Test
+    public void testDeleteTreeDeep(WorkDir workDir) throws IOException
+    {
+        Path dir = workDir.getEmptyPathDir();
+        FS.ensureEmpty(dir);
+
+        Files.createDirectory(dir.resolve("foo"));
+        Files.createDirectory(dir.resolve("foo/bar"));
+        Files.createDirectory(dir.resolve("foo/zed"));
+        Files.createDirectory(dir.resolve("foo/zed/one"));
+        Files.writeString(dir.resolve("foo/bar/test.txt"), "Test");
+        Files.writeString(dir.resolve("foo/zed/one/test.txt"), "Test");
+
+        assertTrue(IO.delete(dir));
     }
 
     @Test
@@ -472,40 +497,40 @@ public class IOTest
     }
 
     @Test
-    public void testIsEmptyDoesNotExist(TestInfo testInfo)
+    public void testIsEmptyDoesNotExist(WorkDir workDir)
     {
-        File dir = MavenTestingUtils.getTargetTestingDir(testInfo.getDisplayName());
+        Path dir = workDir.getEmptyPathDir();
         FS.ensureEmpty(dir);
-        File noFile = new File(dir, "nada");
-        assertTrue(IO.isEmptyDir(noFile));
+        Path noFile = dir.resolve("nada");
+        assertTrue(IO.isEmptyDir(noFile.toFile()));
     }
 
     @Test
-    public void testIsEmptyExistButAsFile(TestInfo testInfo) throws IOException
+    public void testIsEmptyExistButAsFile(WorkDir workDir) throws IOException
     {
-        File dir = MavenTestingUtils.getTargetTestingDir(testInfo.getDisplayName());
+        Path dir = workDir.getEmptyPathDir();
         FS.ensureEmpty(dir);
-        File file = new File(dir, "nada");
+        Path file = dir.resolve("nada");
         FS.touch(file);
-        assertFalse(IO.isEmptyDir(file));
+        assertFalse(IO.isEmptyDir(file.toFile()));
     }
 
     @Test
-    public void testIsEmptyExistAndIsEmpty(TestInfo testInfo)
+    public void testIsEmptyExistAndIsEmpty(WorkDir workDir)
     {
-        File dir = MavenTestingUtils.getTargetTestingDir(testInfo.getDisplayName());
+        Path dir = workDir.getEmptyPathDir();
         FS.ensureEmpty(dir);
-        assertTrue(IO.isEmptyDir(dir));
+        assertTrue(IO.isEmptyDir(dir.toFile()));
     }
 
     @Test
-    public void testIsEmptyExistAndHasContent(TestInfo testInfo) throws IOException
+    public void testIsEmptyExistAndHasContent(WorkDir workDir) throws IOException
     {
-        File dir = MavenTestingUtils.getTargetTestingDir(testInfo.getDisplayName());
+        Path dir = workDir.getEmptyPathDir();
         FS.ensureEmpty(dir);
-        File file = new File(dir, "nada");
+        Path file = dir.resolve("nada");
         FS.touch(file);
-        assertFalse(IO.isEmptyDir(dir));
+        assertFalse(IO.isEmptyDir(dir.toFile()));
     }
 
     @Test
@@ -549,17 +574,26 @@ public class IOTest
     }
 
     @Test
-    public void testSymbolicLink(TestInfo testInfo) throws Exception
+    public void testSymbolicLink(WorkDir workDir) throws Exception
     {
-        File dir = MavenTestingUtils.getTargetTestingDir(testInfo.getDisplayName());
+        Path dir = workDir.getEmptyPathDir();
         FS.ensureEmpty(dir);
-        File realFile = new File(dir, "real");
-        Path realPath = realFile.toPath();
-        FS.touch(realFile);
+        Path realPath = dir.resolve("real");
+        FS.touch(realPath);
 
-        File linkFile = new File(dir, "link");
-        Path linkPath = linkFile.toPath();
-        Files.createSymbolicLink(linkPath, realPath);
+        Path linkPath = dir.resolve("link");
+        boolean symlinkSupported;
+        try
+        {
+            Files.createSymbolicLink(linkPath, realPath);
+            symlinkSupported = true;
+        }
+        catch (UnsupportedOperationException | FileSystemException e)
+        {
+            symlinkSupported = false;
+        }
+
+        assumeTrue(symlinkSupported, "Symlink not supported");
         Path targPath = linkPath.toRealPath();
 
         System.err.printf("realPath = %s%n", realPath);
@@ -569,30 +603,37 @@ public class IOTest
         assertFalse(Files.isSymbolicLink(realPath));
         assertTrue(Files.isSymbolicLink(linkPath));
 
-        Resource link = new PathResource(dir).addPath("link");
+        Resource link = ResourceFactory.root().newResource(dir.resolve("link"));
         assertThat(link.isAlias(), is(true));
     }
 
     @Test
-    public void testSymbolicLinkDir(TestInfo testInfo) throws Exception
+    public void testSymbolicLinkDir(WorkDir workDir) throws Exception
     {
-        File dir = MavenTestingUtils.getTargetTestingDir(testInfo.getDisplayName());
+        Path dir = workDir.getEmptyPathDir();
         FS.ensureEmpty(dir);
 
-        File realDirFile = new File(dir, "real");
-        Path realDirPath = realDirFile.toPath();
+        Path realDirPath = dir.resolve("real");
         Files.createDirectories(realDirPath);
 
-        File linkDirFile = new File(dir, "link");
-        Path linkDirPath = linkDirFile.toPath();
-        Files.createSymbolicLink(linkDirPath, realDirPath);
+        Path linkDirPath = dir.resolve("link");
+        boolean symlinkSupported;
+        try
+        {
+            Files.createSymbolicLink(linkDirPath, realDirPath);
+            symlinkSupported = true;
+        }
+        catch (UnsupportedOperationException | FileSystemException e)
+        {
+            symlinkSupported = false;
+        }
 
-        File realFile = new File(realDirFile, "file");
-        Path realPath = realFile.toPath();
-        FS.touch(realFile);
+        assumeTrue(symlinkSupported, "Symlink not supported");
 
-        File linkFile = new File(linkDirFile, "file");
-        Path linkPath = linkFile.toPath();
+        Path realPath = realDirPath.resolve("file");
+        FS.touch(realPath);
+
+        Path linkPath = linkDirPath.resolve("file");
         Path targPath = linkPath.toRealPath();
 
         System.err.printf("realPath = %s%n", realPath);
@@ -602,4 +643,5 @@ public class IOTest
         assertFalse(Files.isSymbolicLink(realPath));
         assertFalse(Files.isSymbolicLink(linkPath));
     }
+
 }

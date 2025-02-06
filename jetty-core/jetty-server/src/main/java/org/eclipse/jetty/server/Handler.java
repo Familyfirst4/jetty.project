@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -18,7 +18,6 @@ import java.util.Collections;
 import java.util.List;
 import java.util.function.Supplier;
 
-import org.eclipse.jetty.server.handler.ErrorProcessor;
 import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.annotation.ManagedAttribute;
 import org.eclipse.jetty.util.annotation.ManagedObject;
@@ -30,143 +29,116 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * <p>A Jetty component that handles HTTP requests, of any version (HTTP/1.1, HTTP/2 or HTTP/3).</p>
- * <p>{@code Handler}s are organized in a tree structure.</p>
- * <p>An incoming HTTP request is first delivered to the {@link Server} instance
- * (itself the root {@code Handler}), which forwards it to one or more children {@code Handler}s,
- * which may recursively forward it to their children {@code Handler}s, until one of them
- * returns a non-null {@link Request.Processor}.</p>
- * <p>Returning a non-null {@code Request.Processor} indicates that the {@code Handler}
- * will process the HTTP request, and subsequent sibling or children {@code Handler}s
- * are not invoked.</p>
- * <p>If none of the {@code Handler}s returns a {@code Request.Processor}, a default HTTP 404
- * response is generated.</p>
- * <p>{@code Handler}s may wrap the {@link Request} and then forward the wrapped instance
- * to their children, so that they see modified HTTP headers or a modified HTTP URI,
- * or to intercept the read of the request content.</p>
- * <p>Similarly, {@code Handler}s may wrap the {@link Request.Processor} returned by one
- * of the descendants.</p>
+ * <p>A Jetty component that handles HTTP requests, of any version (HTTP/1.1, HTTP/2 or HTTP/3).
+ * A {@code Handler} is a {@link Request.Handler} with the addition of {@link LifeCycle}
+ * behaviours, plus variants that allow organizing {@code Handler}s as a tree structure.</p>
+ * <p>{@code Handler}s may wrap the {@link Request}, {@link Response} and/or {@link Callback} and
+ * then forward the wrapped instances to their children, so that they see a modified request;
+ * and/or to intercept the read of the request content; and/or intercept the generation of the
+ * response; and/or to intercept the completion of the callback.</p>
+ * <p>A {@code Handler} is an {@link Invocable} and implementations must respect
+ * the {@link InvocationType} they declare within calls to
+ * {@link #handle(Request, Response, Callback)}.</p>
  * <p>A minimal tree structure could be:</p>
- * <pre>
+ * <pre>{@code
  * Server
  * `- YourCustomHandler
- * </pre>
+ * }</pre>
  * <p>A more sophisticated tree structure:</p>
- * <pre>
+ * <pre>{@code
  * Server
- * `- DelayedHandler.UntilContent
- *    `- GzipHandler
- *       `- ContextHandlerCollection
- *          +- ContextHandler (contextPath="/user")
- *          |  `- YourUserHandler
- *          |- ContextHandler (contextPath="/admin")
- *          |  `- YourAdminHandler
- *          `- DefaultHandler
- * </pre>
+ * `- GzipHandler
+ *    `- ContextHandlerCollection
+ *       +- ContextHandler (contextPath="/user")
+ *       |  `- YourUserHandler
+ *       |- ContextHandler (contextPath="/admin")
+ *       |  `- YourAdminHandler
+ *       `- DefaultHandler
+ * }</pre>
  * <p>A simple {@code Handler} implementation could be:</p>
  * <pre>{@code
- * class SimpleHandler extends Handler.Processor
+ * class SimpleHandler extends Handler.Abstract.NonBlocking
  * {
  *     @Override
- *     public void process(Request request, Response response, Callback callback)
+ *     public boolean handle(Request request, Response response, Callback callback)
  *     {
- *         // Mark the processing as completed.
  *         // Implicitly sends a 200 OK response with no content.
  *         callback.succeeded();
+ *         return true;
  *     }
  * }
  * }</pre>
+ *
  * <p>A more sophisticated example of a {@code Handler} that decides whether to handle
  * requests based on their URI path:</p>
  * <pre>{@code
- * class YourHelloHandler extends Handler.Abstract
+ * class YourHelloHandler extends Handler.Abstract.NonBlocking
  * {
  *     @Override
- *     public Processor handle(Request request)
+ *     public boolean handle(Request request, Response response, Callback callback)
+ *     {
+ *         if (request.getHttpURI().getPath().startsWith("/yourPath"))
+ *         {
+ *             // The request is for this Handler
+ *             response.setStatus(200);
+ *             // The callback is completed when the write is completed.
+ *             response.write(true, UTF_8.encode("hello"), callback);
+ *             return true;
+ *         }
+ *         return false;
+ *     }
+ * }
+ * }</pre>
+ * <p>An example of a {@code Handler} that decides whether to pass the request to
+ * a child:</p>
+ * <pre>{@code
+ * class ConditionalHandler extends Handler.Wrapper
+ * {
+ *     @Override
+ *     public boolean handle(Request request, Response response, Callback callback)
  *     {
  *         if (request.getHttpURI().getPath().startsWith("/yourPath")
+ *             return super.handle(request, response, callback);
+ *         if (request.getHttpURI().getPath().startsWith("/wrong"))
  *         {
- *             // The request is for this Handler, process it.
- *             return this::process;
+ *             Response.writeError(request, response, callback, HttpStatus.BAD_REQUEST_400);
+ *             return true;
  *         }
- *         else
- *         {
- *             // The request is not for this Handler.
- *             return null;
- *         }
- *     }
- *
- *     private void process(Request request, Response response, Callback callback)
- *     {
- *         response.setStatus(200);
- *         // The callback is completed when the write is completed.
- *         response.write(true, callback, "hello");
+ *         return false;
  *     }
  * }
  * }</pre>
  *
- * @see Request.Processor
+ * @see Request.Handler
  */
-@ManagedObject("Handler")
-public interface Handler extends LifeCycle, Destroyable, Invocable
+@ManagedObject
+public interface Handler extends LifeCycle, Destroyable, Request.Handler
 {
-    /**
-     * <p>Invoked to decide whether to handle the given HTTP request.</p>
-     * <p>If the HTTP request can be handled by this {@code Handler},
-     * this method must return a non-null {@link Request.Processor}.</p>
-     * <p>Otherwise, the HTTP request is not handled by this {@code Handler}
-     * (for example, the HTTP request's URI does not match those handled
-     * by this {@code Handler}), and this method must return {@code null}.</p>
-     * <p>This method may inspect the HTTP request with the following rules:</p>
-     * <ul>
-     * <li>it may access read-only fields such as the HTTP headers, or the HTTP URI, etc.</li>
-     * <li>it may wrap the {@link Request} in a {@link Request.Wrapper}, for example
-     * to modify HTTP headers or modify the HTTP URI, etc.</li>
-     * <li>it may directly modify {@link Request#getAttribute(String) request attributes}</li>
-     * <li>it may directly add/remove request listeners supported in the {@link Request} APIs</li>
-     * <li>it must <em>not</em> read the request content (otherwise an {@link IllegalStateException}
-     * will be thrown)</li>
-     * </ul>
-     * <p>Exceptions thrown by this method are processed by an {@link ErrorProcessor},
-     * if present, otherwise a default HTTP 500 error is generated.</p>
-     *
-     * @param request the incoming HTTP request to analyze
-     * @return a non-null {@link Request.Processor} that processes the request/response,
-     * or null if this {@code Handler} does not handle the request
-     * @throws Exception Thrown if there is a problem handling.
-     */
-    Request.Processor handle(Request request) throws Exception;
-
     /**
      * @return the {@code Server} associated with this {@code Handler}
      */
-    @ManagedAttribute(value = "the Server instance associated to this Handler", readonly = true)
+    @ManagedAttribute(value = "The Server instance associated to this Handler", readonly = true)
     Server getServer();
 
     /**
+     * Set the {@code Server} to associate to this {@code Handler}.
      * @param server the {@code Server} to associate to this {@code Handler}
      */
     void setServer(Server server);
 
-    @Override
-    void destroy();
-
     /**
-     * <p>A {@code Handler} that contains one or more other {@code Handler}s.
+     * <p>A {@code Handler} that contains one or more other {@code Handler}s.</p>
+     *
+     * @see Singleton
+     * @see Collection
      */
+    @ManagedObject
     interface Container extends Handler
     {
-        void addHandler(Handler handler);
-
-        default void addHandler(Supplier<Handler> supplier)
-        {
-            addHandler(supplier.get());
-        }
-
         /**
          * @return an immutable collection of {@code Handler}s directly contained by this {@code Handler}.
          */
-        @ManagedAttribute("The direct children Handlers of this container")
+        @ManagedAttribute(value = "The direct children Handlers of this Container", readonly = true)
         List<Handler> getHandlers();
 
         /**
@@ -178,10 +150,8 @@ public interface Handler extends LifeCycle, Destroyable, Invocable
         }
 
         /**
-         * Get a list of descendants of the passed type.
-         * The default implementation is not memory efficient and should be overridden.
-         * @param type the type of {@code Handler}
-         * @param <T> the type of {@code Handler}
+         * @param type the class of the descendant {@code Handler}
+         * @param <T> the type of the descendant {@code Handler}
          * @return an immutable collection of {@code Handler}s of the given type, descendants of this {@code Handler}
          */
         default <T extends Handler> List<T> getDescendants(Class<T> type)
@@ -202,8 +172,8 @@ public interface Handler extends LifeCycle, Destroyable, Invocable
         }
 
         /**
-         * @param type the type of {@code Handler}
-         * @param <T> the type of {@code Handler}
+         * @param type the class of the descendant {@code Handler}
+         * @param <T> the type of the descendant{@code Handler}
          * @return the first {@code Handler} of the given type, descendants of this {@code Handler},
          * or null if no such {@code Handler} exist
          */
@@ -228,10 +198,11 @@ public interface Handler extends LifeCycle, Destroyable, Invocable
         }
 
         /**
-         * @param handler the child {@code Handler}
-         * @param type the type of {@code Handler}
-         * @param <T> the type of {@code Handler}
-         * @return the {@code Handler.Container} of the given type, parent of the given {@code Handler}
+         * @param handler the descendant {@code Handler}
+         * @param type the class of the container {@code Handler}
+         * @param <T> the type of the container {@code Handler}
+         * @return the {@code Handler.Container} descendant of this {@code Handler}
+         * that is the ancestor of the given {@code Handler}
          */
         default <T extends Handler.Container> T getContainer(Handler handler, Class<T> type)
         {
@@ -248,24 +219,98 @@ public interface Handler extends LifeCycle, Destroyable, Invocable
     }
 
     /**
-     * <p>A {@link Handler.Container} that wraps a single other {@code Handler}.</p>
-     * @see Handler.Wrapper for an implementation of nested.
+     * <p>A {@link Handler.Container} that can contain multiple other {@link Handler}s.</p>
+     *
+     * @see Sequence for an implementation of {@link Collection}.
+     * @see Singleton
      */
-    interface Nested extends Container
+    interface Collection extends Container
     {
+        /**
+         * <p>Adds the given {@code Handler} to this collection of {@code Handler}s.</p>
+         *
+         * @param handler the {@code Handler} to add
+         */
+        default void addHandler(Handler handler)
+        {
+            List<Handler> list = new ArrayList<>(getHandlers());
+            list.add(handler);
+            setHandlers(list);
+        }
+
+        /**
+         * <p>Removes the given {@code Handler} from this collection of {@code Handler}s.</p>
+         *
+         * @param handler the {@code Handler} to remove
+         * @return whether the {@code Handler} was removed
+         */
+        default boolean removeHandler(Handler handler)
+        {
+            List<Handler> list = new ArrayList<>(getHandlers());
+            boolean removed = list.remove(handler);
+            if (removed)
+                setHandlers(list);
+            return removed;
+        }
+
+        /**
+         * <p>Adds the {@code Handler} supplied by the given {@code Supplier}
+         * to this collection of {@code Handler}s.</p>
+         *
+         * @param supplier the {@code Handler} supplier
+         */
+        default void addHandler(Supplier<Handler> supplier)
+        {
+            addHandler(supplier.get());
+        }
+
+        /**
+         * <p>Sets the given {@code Handler}s as children of this collection of {@code Handler}s.</p>
+         * <p>The list is copied and any subsequent modification to the list does not have any
+         * effect on this {@code Handler}.</p>
+         * <p>Any existing children {@code Handler} is removed.</p>
+         *
+         * @param handlers the {@code Handler} to set as children
+         */
+        void setHandlers(List<Handler> handlers);
+
+        /**
+         * <p>Similar to {@link #setHandlers(List)}.</p>
+         *
+         * @param handlers the {@code Handler} to set as children
+         */
+        default void setHandlers(Handler... handlers)
+        {
+            setHandlers(handlers == null || handlers.length == 0 ? List.of() : List.of(handlers));
+        }
+    }
+
+    /**
+     * <p>A {@link Handler.Container} that can contain one single other {@code Handler}.</p>
+     * <p>This is a "singleton" in the sense of {@link Collections#singleton(Object)} and not
+     * in the sense of the singleton pattern of a single instance per JVM.</p>
+     *
+     * @see Wrapper for an implementation of {@link Singleton}.
+     * @see Collection
+     */
+    @ManagedObject
+    interface Singleton extends Container
+    {
+        /**
+         * @return the child {@code Handler}
+         */
+        @ManagedAttribute(value = "The child Handler of this Container", readonly = true)
         Handler getHandler();
 
         /**
-         * Set the nested handler.
-         * Implementations should check for loops, set the server and update any {@link ContainerLifeCycle} beans, all
-         * of which can be done by using the utility method {@link #updateHandler(Nested, Handler)}
-         * @param handler The handler to set.
+         * @param handler The {@code Handler} to set as a child
          */
         void setHandler(Handler handler);
 
         /**
-         * Set the nested handler from a supplier.  This allows for Handler type conversion.
-         * @param supplier A supplier of a Handler.
+         * <p>Sets the child {@code Handler} supplied by the given {@code Supplier}.</p>
+         *
+         * @param supplier the {@code Handler} supplier
          */
         default void setHandler(Supplier<Handler> supplier)
         {
@@ -275,28 +320,22 @@ public interface Handler extends LifeCycle, Destroyable, Invocable
         @Override
         default List<Handler> getHandlers()
         {
-            Handler h = getHandler();
-            if (h == null)
-                return Collections.emptyList();
-            return Collections.singletonList(h);
+            Handler next = getHandler();
+            return (next == null) ? Collections.emptyList() : Collections.singletonList(next);
         }
 
-        @Override
-        default void addHandler(Handler handler)
+        /**
+         * <p>Inserts the given {@code Handler} (and possible chain of {@code Handler}s)
+         * between this {@code Handler} and its current {@link #getHandler() child}.
+         * <p>For example, if this {@code Handler} {@code A} has a child {@code B},
+         * inserting {@code Handler} {@code X} built as a chain {@code Handler}s
+         * {@code X-Y-Z} results in the structure {@code A-X-Y-Z-B}.</p>
+         *
+         * @param handler the {@code Handler} to insert
+         */
+        default void insertHandler(Singleton handler)
         {
-            Handler existing = getHandler();
-            setHandler(handler);
-            if (existing != null && handler instanceof Container container)
-                container.addHandler(existing);
-        }
-
-        default void insertHandler(Handler.Nested handler)
-        {
-            Handler.Nested tail = handler;
-            while (tail.getHandler() instanceof Handler.Wrapper)
-            {
-                tail = (Handler.Wrapper)tail.getHandler();
-            }
+            Singleton tail = handler.getTail();
             if (tail.getHandler() != null)
                 throw new IllegalArgumentException("bad tail of inserted wrapper chain");
 
@@ -305,43 +344,94 @@ public interface Handler extends LifeCycle, Destroyable, Invocable
         }
 
         /**
-         * Utility method to: <ul>
-         *     <li>Check the server state and invocation type</li>
-         *     <li>Check for handler loops</li>
-         *     <li>Set the server on the handler</li>
-         *     <li>Update the beans on if the Nests is a {@link ContainerLifeCycle} </li>
-         * </ul>
-         * @param nested The Nested implementation to update
-         * @param handler The handle to set
-         * @return The set handler.
+         * @return the tail {@link Singleton} of a chain of {@link Singleton}s
          */
-        static Handler updateHandler(Nested nested, Handler handler)
+        default Singleton getTail()
+        {
+            Singleton tail = this;
+            while (tail.getHandler() instanceof Singleton wrapped)
+                tail = wrapped;
+            return tail;
+        }
+
+        /**
+         * <p>Utility method to perform sanity checks before updating the given {@code Handler} to
+         * the given {@code Singleton}, typically used in implementations of {@link #setHandler(Handler)}.</p>
+         * <p>The sanity checks are:</p>
+         * <ul>
+         *   <li>Check for the server start state and whether the invocation type is compatible</li>
+         *   <li>Check for {@code Handler} loops</li>
+         *   <li>Sets the {@code Server} on the {@code Handler}</li>
+         *   <li>Update the beans on the {@code Singleton} if it is a {@link ContainerLifeCycle}</li>
+         * </ul>
+         * @param singleton the {@code Singleton} to set the {@code Handler}
+         * @param handler the {@code Handler} to set
+         * @see #checkHandler(Singleton, Handler)
+         * @return The {@code Handler} to set
+         */
+        static Handler updateHandler(Singleton singleton, Handler handler)
         {
             // check state
-            Server server = nested.getServer();
-            if (server != null && server.isStarted() && handler != null &&
-                server.getInvocationType() != Invocable.combine(server.getInvocationType(), handler.getInvocationType()))
-                throw new IllegalArgumentException("Cannot change invocation type of started server");
+            checkHandler(singleton, handler);
 
-            // Check for loops.
-            if (handler == nested || (handler instanceof Handler.Container container &&
-                container.getDescendants().contains(nested)))
-                throw new IllegalStateException("setHandler loop");
-
-            if (handler != null && server != null)
-                handler.setServer(server);
-
-            if (nested instanceof org.eclipse.jetty.util.component.ContainerLifeCycle container)
-                container.updateBean(nested.getHandler(), handler);
+            if (singleton instanceof org.eclipse.jetty.util.component.ContainerLifeCycle container)
+                container.updateBean(singleton.getHandler(), handler);
 
             return handler;
         }
 
+        /**
+         * <p>Utility method to perform sanity checks on a {{@link Handler} to be added to
+         * the given {@code Singleton}.</p>
+         * <p>The sanity checks are:</p>
+         * <ul>
+         *   <li>Check for the server start state and whether the invocation type is compatible</li>
+         *   <li>Check for {@code Handler} loops</li>
+         *   <li>Sets the {@code Server} on the {@code Handler}</li>
+         *   <li>Update the beans on the {@code Singleton} if it is a {@link ContainerLifeCycle}</li>
+         * </ul>
+         *
+         * @param singleton the {@code Singleton} to set the {@code Handler}
+         * @param handler the {@code Handler} to set
+         * @return The {@code Handler} to set
+         */
+        static Handler checkHandler(Singleton singleton, Handler handler)
+        {
+            // check state
+            Server server = singleton.getServer();
+
+            // If the collection is changed whilst started, then the risk is that if we switch from NON_BLOCKING to BLOCKING
+            // whilst the execution strategy may have already dispatched the very last available thread, thinking it would
+            // never block, only for it to lose the race and find a newly added BLOCKING handler.
+            if (server != null && server.isStarted() && handler != null)
+            {
+                InvocationType serverInvocationType = server.getInvocationType();
+                if (serverInvocationType != Invocable.combine(serverInvocationType, handler.getInvocationType()) &&
+                    serverInvocationType != InvocationType.BLOCKING)
+                    throw new IllegalArgumentException("Cannot change invocation type of started server");
+            }
+
+            // Check for loops.
+            if (handler == singleton || (handler instanceof Handler.Container container &&
+                container.getDescendants().contains(singleton)))
+                throw new IllegalStateException("Handler loop");
+
+            if (handler != null && server != null)
+                handler.setServer(server);
+
+            return handler;
+        }
     }
 
     /**
      * <p>An abstract implementation of {@link Handler} that is a {@link ContainerLifeCycle}.</p>
+     * <p>The {@link InvocationType} is by default {@link InvocationType#BLOCKING} unless the
+     * {@code NonBlocking} variant is used or a specific {@link InvocationType} is passed to
+     * the constructor.</p>
+     *
+     * @see NonBlocking
      */
+    @ManagedObject
     abstract class Abstract extends ContainerLifeCycle implements Handler
     {
         private static final Logger LOG = LoggerFactory.getLogger(Abstract.class);
@@ -349,17 +439,27 @@ public interface Handler extends LifeCycle, Destroyable, Invocable
         private final InvocationType _invocationType;
         private Server _server;
 
+        /**
+         * <p>Creates a {@code Handler} with invocation type {@link InvocationType#BLOCKING}.</p>
+         */
         public Abstract()
         {
             this(InvocationType.BLOCKING);
         }
 
+        /**
+         * <p>Creates a {@code Handler} with the given invocation type.</p>
+         *
+         * @param type the {@link InvocationType} of this {@code Handler}
+         * @see AbstractContainer
+         */
         public Abstract(InvocationType type)
         {
             _invocationType = type;
         }
 
         @Override
+        @ManagedAttribute(value = "The Server associated with this Handler", readonly = true)
         public Server getServer()
         {
             return _server;
@@ -406,13 +506,71 @@ public interface Handler extends LifeCycle, Destroyable, Invocable
                 throw new IllegalStateException(getState());
             super.destroy();
         }
+
+        /**
+         * <p>An abstract {@code Handler} with a {@link InvocationType#NON_BLOCKING}
+         * invocation type.</p>
+         */
+        public abstract static class NonBlocking extends Abstract
+        {
+            public NonBlocking()
+            {
+                super(InvocationType.NON_BLOCKING);
+            }
+        }
     }
 
     /**
      * <p>A {@link Handler.Abstract} that implements {@link Handler.Container}.</p>
+     * <p>An {@link AbstractContainer} may be dynamic, that is allow {@code Handler}s
+     * to be added after it has been started.</p>
+     * <p>If this {@link AbstractContainer} is dynamic, then its invocation type
+     * is by default {@link InvocationType#BLOCKING}.</p>
+     *
+     * @see Abstract
      */
+    @ManagedObject
     abstract class AbstractContainer extends Abstract implements Container
     {
+        private boolean _dynamic;
+
+        /**
+         * <p>Creates an instance that is dynamic.</p>
+         */
+        protected AbstractContainer()
+        {
+            this(true);
+        }
+
+        /**
+         * <p>Creates an instance with the given dynamic argument.</p>
+         *
+         * @param dynamic whether this container is dynamic
+         */
+        protected AbstractContainer(boolean dynamic)
+        {
+            _dynamic = dynamic;
+        }
+
+        /**
+         * @return whether this container is dynamic
+         */
+        @ManagedAttribute("Whether this Handler container is dynamic")
+        public boolean isDynamic()
+        {
+            return _dynamic;
+        }
+
+        /**
+         * @param dynamic whether this container is dynamic
+         */
+        public void setDynamic(boolean dynamic)
+        {
+            if (isStarted())
+                throw new IllegalStateException(getState());
+            _dynamic = dynamic;
+        }
+
         @Override
         public <T extends Handler> List<T> getDescendants(Class<T> type)
         {
@@ -471,6 +629,9 @@ public interface Handler extends LifeCycle, Destroyable, Invocable
         @Override
         public InvocationType getInvocationType()
         {
+            // Dynamic is always BLOCKING, as a blocking handler can be added at any time.
+            if (_dynamic)
+                return InvocationType.BLOCKING;
             InvocationType invocationType = InvocationType.NON_BLOCKING;
             for (Handler child : getHandlers())
                 invocationType = Invocable.combine(invocationType, child.getInvocationType());
@@ -504,100 +665,147 @@ public interface Handler extends LifeCycle, Destroyable, Invocable
     }
 
     /**
-     * An implementation of {@link Nested}, which is a {@link Handler.Container} that wraps a single other {@link Handler}.
+     * <p>An implementation of {@link Singleton}, which is a {@link Container}
+     * that wraps one single other {@link Handler}.</p>
+     * <p>A {@link Wrapper} may be dynamic, that is allow {@code Handler}s
+     * to be set after it has been started.</p>
+     * <p>If this {@link Wrapper} is dynamic, then its invocation type
+     * is by default {@link InvocationType#BLOCKING}.</p>
      */
-    class Wrapper extends AbstractContainer implements Nested
+    class Wrapper extends AbstractContainer implements Singleton
     {
         private Handler _handler;
 
+        /**
+         * <p>Creates a wrapper with no wrapped {@code Handler}.</p>
+         */
         public Wrapper()
         {
             this(null);
         }
 
-        public Wrapper(Handler handler)
+        /**
+         * <p>Creates a wrapper with no wrapped {@code Handler} with the given
+         * {@code dynamic} parameter.</p>
+         *
+         * @param dynamic whether this container is dynamic
+         */
+        public Wrapper(boolean dynamic)
         {
-            _handler = handler == null ? null : Nested.updateHandler(this, handler);
+            this(dynamic, null);
         }
 
+        /**
+         * <p>Creates a non-dynamic wrapper of the given {@code Handler}.</p>
+         *
+         * @param handler the {@code Handler} to wrap
+         */
+        public Wrapper(Handler handler)
+        {
+            this(false, handler);
+        }
+
+        /**
+         * <p>Creates a wrapper with the given dynamic parameter wrapping the
+         * given {@code Handler}.</p>
+         *
+         * @param dynamic whether this container is dynamic
+         * @param handler the {@code Handler} to wrap
+         */
+        public Wrapper(boolean dynamic, Handler handler)
+        {
+            super(dynamic);
+            _handler = handler == null ? null : Singleton.checkHandler(this, handler);
+            installBean(_handler);
+        }
+
+        @Override
         public Handler getHandler()
         {
             return _handler;
         }
 
+        @Override
         public void setHandler(Handler handler)
         {
-            _handler = Nested.updateHandler(this, handler);
+            if (!isDynamic() && isStarted())
+                throw new IllegalStateException(getState());
+            _handler = Singleton.updateHandler(this, handler);
         }
 
         @Override
-        public List<Handler> getHandlers()
+        public boolean handle(Request request, Response response, Callback callback) throws Exception
         {
             Handler next = getHandler();
-            if (next == null)
-                return List.of();
-            return List.of(next);
-        }
-
-        @Override
-        public void setServer(Server server)
-        {
-            super.setServer(server);
-            Handler next = getHandler();
-            if (next != null)
-                next.setServer(getServer());
-        }
-
-        @Override
-        public Request.Processor handle(Request request) throws Exception
-        {
-            Handler next = getHandler();
-            return next == null ? null : next.handle(request);
+            return next != null && next.handle(request, response, callback);
         }
 
         @Override
         public InvocationType getInvocationType()
         {
+            if (isDynamic())
+                return InvocationType.BLOCKING;
             Handler next = getHandler();
             return next == null ? InvocationType.NON_BLOCKING : next.getInvocationType();
         }
     }
 
     /**
-     * <p>A {@link Handler.Container} that contains a list of other {@code Handler}s.</p>
-     * 
-     * TODO this should be called List instead
+     * <p>A {@link Handler.Container} that contains an ordered list of children {@link Handler}s
+     * whose {@link Handler#handle(Request, Response, Callback)} method is invoked
+     * in sequence on each child until a child returns {@code true}.</p>
      */
-    class Collection extends AbstractContainer
+    @ManagedObject
+    class Sequence extends AbstractContainer implements Collection
     {
         private volatile List<Handler> _handlers = new ArrayList<>();
 
-        public Collection(Handler... handlers)
+        /**
+         * <p>Creates a {@code Sequence} with the given {@code Handler}s.</p>
+         * <p>The created sequence is dynamic only if the {@code Handler}
+         * array is {@code null} or empty.</p>
+         *
+         * @param handlers the {@code Handler}s of this {@code Sequence}
+         */
+        public Sequence(Handler... handlers)
         {
-            this(List.of(handlers));
+            this(handlers == null || handlers.length == 0, handlers == null ? List.of() : List.of(handlers));
         }
 
-        public Collection(List<Handler> handlers)
+        /**
+         * <p>Creates a {@code Sequence} with the given {@code Handler}s.</p>
+         * <p>The created sequence is dynamic only if the {@code Handler}
+         * list is {@code null} or empty.</p>
+         *
+         * @param handlers the {@code Handler}s of this {@code Sequence}
+         */
+        public Sequence(List<Handler> handlers)
         {
+            this(handlers == null || handlers.isEmpty(), handlers);
+        }
+
+         /**
+          * <p>Creates a {@code Sequence} with the given {@code dynamic} parameter
+          * and the given {@code Handler}s.</p>
+          *
+          * @param dynamic whether this {@code Sequence} is dynamic
+          * @param handlers the {@code Handler}s of this {@code Sequence}
+         */
+        public Sequence(boolean dynamic, List<Handler> handlers)
+        {
+            super(dynamic);
             setHandlers(handlers);
         }
 
         @Override
-        public String toString()
-        {
-            return super.toString();
-        }
-
-        @Override
-        public Request.Processor handle(Request request) throws Exception
+        public boolean handle(Request request, Response response, Callback callback) throws Exception
         {
             for (Handler h : _handlers)
             {
-                Request.Processor processor = h.handle(request);
-                if (processor != null)
-                    return processor;
+                if (h.handle(request, response, callback))
+                    return true;
             }
-            return null;
+            return false;
         }
 
         @Override
@@ -606,17 +814,17 @@ public interface Handler extends LifeCycle, Destroyable, Invocable
             return _handlers;
         }
 
-        public void setHandlers(Handler... handlers)
-        {
-            setHandlers(handlers.length == 0 ? null : List.of(handlers));
-        }
-
+        @Override
         public void setHandlers(List<Handler> handlers)
         {
+            if (!isDynamic() && isStarted())
+                throw new IllegalStateException(getState());
+
             List<Handler> newHandlers = newHandlers(handlers);
 
             Server server = getServer();
-            InvocationType invocationType = server == null ? null : server.getInvocationType();
+            InvocationType serverInvocationType = server == null ? null : server.getInvocationType();
+            InvocationType invocationType = InvocationType.NON_BLOCKING;
 
             // Check for loops && InvocationType changes.
             for (Handler handler : newHandlers)
@@ -628,60 +836,36 @@ public interface Handler extends LifeCycle, Destroyable, Invocable
                     container.getDescendants().contains(this)))
                     throw new IllegalStateException("setHandler loop");
                 invocationType = Invocable.combine(invocationType, handler.getInvocationType());
-                if (server != null && server.isStarted() &&
-                    server.getInvocationType() != Invocable.combine(server.getInvocationType(), handler.getInvocationType()))
-                    throw new IllegalArgumentException("Cannot change invocation type of started server");
-
-                handler.setServer(getServer());
+                if (server != null)
+                    handler.setServer(server);
             }
+
+            // If the collection can be changed dynamically, then the risk is that if we switch from NON_BLOCKING to BLOCKING
+            // whilst the execution strategy may have already dispatched the very last available thread, thinking it would
+            // never block, only for it to lose the race and find a newly added BLOCKING handler.
+            if (isDynamic() && server != null && server.isStarted() && serverInvocationType != invocationType && serverInvocationType != InvocationType.BLOCKING)
+                throw new IllegalArgumentException("Cannot change invocation type of started server");
 
             updateBeans(_handlers, handlers);
 
             _handlers = newHandlers;
         }
 
+        @Override
+        public InvocationType getInvocationType()
+        {
+            if (isDynamic())
+                return InvocationType.BLOCKING;
+
+            InvocationType invocationType = InvocationType.NON_BLOCKING;
+            for (Handler handler : _handlers)
+                invocationType = Invocable.combine(invocationType, handler.getInvocationType());
+            return invocationType;
+        }
+
         protected List<Handler> newHandlers(List<Handler> handlers)
         {
             return handlers == null ? List.of() : List.copyOf(handlers);
-        }
-
-        public void addHandler(Handler handler)
-        {
-            List<Handler> list = new ArrayList<>(getHandlers());
-            list.add(handler);
-            setHandlers(list);
-        }
-
-        public void removeHandler(Handler handler)
-        {
-            List<Handler> list = new ArrayList<>(getHandlers());
-            if (list.remove(handler))
-                setHandlers(list);
-        }
-    }
-
-    /**
-     * <p>A {@link Handler} that itself implements {@link Request.Processor}
-     * and that returns itself from a call to {@link Handler#handle(Request)}.
-     * Subclasses only need to implement 
-     * {@link #process(Request, Response, Callback)}.</p>
-     */
-    abstract class Processor extends Abstract implements Request.Processor
-    {
-        public Processor()
-        {
-            super();
-        }
-
-        public Processor(InvocationType type)
-        {
-            super(type);
-        }
-
-        @Override
-        public Request.Processor handle(Request request) throws Exception
-        {
-            return this;
         }
     }
 }

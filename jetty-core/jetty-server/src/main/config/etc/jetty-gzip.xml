@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<!DOCTYPE Configure PUBLIC "-//Jetty//Configure//EN" "https://www.eclipse.org/jetty/configure_10_0.dtd">
+<!DOCTYPE Configure PUBLIC "-//Jetty//Configure//EN" "https://jetty.org/configure_10_0.dtd">
 
 <!-- =============================================================== -->
 <!-- Mixin the GZIP Handler                                          -->
@@ -15,7 +15,6 @@
         <Set name="minGzipSize" property="jetty.gzip.minGzipSize"/>
         <Set name="inflateBufferSize" property="jetty.gzip.inflateBufferSize"/>
         <Set name="syncFlush" property="jetty.gzip.syncFlush"/>
-        <Set name="dispatcherTypes" property="jetty.gzip.dispatcherTypes"/>
         <Set name="includedMethodList" property="jetty.gzip.includedMethodList"/>
         <Set name="excludedMethodList" property="jetty.gzip.excludedMethodList"/>
         <Set name="includedMimeTypesList" property="jetty.gzip.includedMimeTypeList"/>

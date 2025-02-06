@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,8 +13,9 @@
 
 package org.eclipse.jetty.client;
 
-import org.eclipse.jetty.client.api.Connection;
-import org.eclipse.jetty.util.Callback;
+import java.util.function.ToIntFunction;
+
+import org.eclipse.jetty.util.ConcurrentPool;
 import org.eclipse.jetty.util.Pool;
 import org.eclipse.jetty.util.annotation.ManagedAttribute;
 import org.eclipse.jetty.util.annotation.ManagedObject;
@@ -22,71 +23,45 @@ import org.eclipse.jetty.util.annotation.ManagedObject;
 @ManagedObject
 public class MultiplexConnectionPool extends AbstractConnectionPool
 {
-    public MultiplexConnectionPool(HttpDestination destination, int maxConnections, Callback requester, int maxMultiplex)
+    /**
+     * <p>Returns a function that computes the max multiplex value
+     * for a given {@link Connection}, if possible, otherwise returns
+     * the given {@code defaultMaxMultiplex} value.</p>
+     *
+     * @param defaultMaxMultiplex the default max multiplex value
+     * @return a function that computes the max multiplex value for a connection
+     */
+    public static ToIntFunction<Connection> newMaxMultiplexer(int defaultMaxMultiplex)
     {
-        this(destination, maxConnections, false, requester, maxMultiplex);
-    }
-
-    public MultiplexConnectionPool(HttpDestination destination, int maxConnections, boolean cache, Callback requester, int maxMultiplex)
-    {
-        this(destination, Pool.StrategyType.FIRST, maxConnections, cache, requester, maxMultiplex);
-    }
-
-    public MultiplexConnectionPool(HttpDestination destination, Pool.StrategyType strategy, int maxConnections, boolean cache, Callback requester, int maxMultiplex)
-    {
-        super(destination, new Pool<>(strategy, maxConnections, cache)
+        return connection ->
         {
-            @Override
-            protected int getMaxUsageCount(Connection connection)
-            {
-                int maxUsage = (connection instanceof MaxUsable)
-                    ? ((MaxUsable)connection).getMaxUsageCount()
-                    : super.getMaxUsageCount(connection);
-                return maxUsage > 0 ? maxUsage : -1;
-            }
-
-            @Override
-            protected int getMaxMultiplex(Connection connection)
-            {
-                int multiplex = (connection instanceof Multiplexable)
-                    ? ((Multiplexable)connection).getMaxMultiplex()
-                    : super.getMaxMultiplex(connection);
-                return multiplex > 0 ? multiplex : 1;
-            }
-        }, requester);
-        setMaxMultiplex(maxMultiplex);
+            int maxMultiplex = defaultMaxMultiplex;
+            if (connection instanceof MaxMultiplexable maxMultiplexable)
+                maxMultiplex = maxMultiplexable.getMaxMultiplex();
+            return maxMultiplex;
+        };
     }
 
-    @Deprecated
-    public MultiplexConnectionPool(HttpDestination destination, Pool<Connection> pool, Callback requester, int maxMultiplex)
+    public MultiplexConnectionPool(Destination destination, int maxConnections, int initialMaxMultiplex)
     {
-        super(destination, pool, requester);
-        setMaxMultiplex(maxMultiplex);
+        this(destination, () -> new ConcurrentPool<>(ConcurrentPool.StrategyType.FIRST, maxConnections, newMaxMultiplexer(initialMaxMultiplex)), initialMaxMultiplex);
+    }
+
+    protected MultiplexConnectionPool(Destination destination, Pool.Factory<Connection> poolFactory, int initialMaxMultiplex)
+    {
+        super(destination, poolFactory, initialMaxMultiplex);
     }
 
     @Override
-    @ManagedAttribute(value = "The multiplexing factor of connections")
-    public int getMaxMultiplex()
+    @ManagedAttribute(value = "The initial multiplexing factor of connections")
+    public int getInitialMaxMultiplex()
     {
-        return super.getMaxMultiplex();
+        return super.getInitialMaxMultiplex();
     }
 
     @Override
-    public void setMaxMultiplex(int maxMultiplex)
+    public void setInitialMaxMultiplex(int initialMaxMultiplex)
     {
-        super.setMaxMultiplex(maxMultiplex);
-    }
-
-    @Override
-    @ManagedAttribute(value = "The maximum amount of times a connection is used before it gets closed")
-    public int getMaxUsageCount()
-    {
-        return super.getMaxUsageCount();
-    }
-
-    @Override
-    public void setMaxUsageCount(int maxUsageCount)
-    {
-        super.setMaxUsageCount(maxUsageCount);
+        super.setInitialMaxMultiplex(initialMaxMultiplex);
     }
 }

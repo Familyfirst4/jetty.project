@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -117,7 +117,6 @@ public class SSLSelectChannelConnectorLoadTest
             tasks[i] = threadPool.submit(workers[i]);
         }
 
-        long start = TimeUnit.NANOSECONDS.toMillis(System.nanoTime());
         while (true)
         {
             Thread.sleep(1000);
@@ -126,13 +125,9 @@ public class SSLSelectChannelConnectorLoadTest
             {
                 done &= task.isDone();
             }
-            //System.err.print("\rIterations: " + Worker.totalIterations.get() + "/" + clients * iterations);
             if (done)
                 break;
         }
-        long end = TimeUnit.NANOSECONDS.toMillis(System.nanoTime());
-        //System.err.println();
-        //System.err.println("Elapsed time: " + TimeUnit.MILLISECONDS.toSeconds(end - start) + "s");
 
         for (Worker worker : workers)
         {
@@ -169,7 +164,6 @@ public class SSLSelectChannelConnectorLoadTest
             tasks[i] = threadPool.submit(workers[i]);
         }
 
-        long start = TimeUnit.NANOSECONDS.toMillis(System.nanoTime());
         while (true)
         {
             Thread.sleep(1000);
@@ -178,13 +172,9 @@ public class SSLSelectChannelConnectorLoadTest
             {
                 done &= task.isDone();
             }
-            // System.err.print("\rIterations: " + Worker.totalIterations.get() + "/" + clients * iterations);
             if (done)
                 break;
         }
-        long end = TimeUnit.NANOSECONDS.toMillis(System.nanoTime());
-        // System.err.println();
-        // System.err.println("Elapsed time: " + TimeUnit.MILLISECONDS.toSeconds(end - start) + "s");
 
         threadPool.shutdown();
 
@@ -257,7 +247,7 @@ public class SSLSelectChannelConnectorLoadTest
                     out.write("POST / HTTP/1.1\r\n".getBytes());
                     out.write("Host: localhost\r\n".getBytes());
                     out.write(("Content-Length: " + contentSize + "\r\n").getBytes());
-                    out.write("Content-Type: application/octect-stream\r\n".getBytes());
+                    out.write("Content-Type: application/octet-stream\r\n".getBytes());
                     if (closeConnection)
                         out.write("Connection: close\r\n".getBytes());
                     out.write("\r\n".getBytes());
@@ -326,18 +316,14 @@ public class SSLSelectChannelConnectorLoadTest
         }
     }
 
-    private static class TestHandler extends Handler.Processor
+    private static class TestHandler extends Handler.Abstract
     {
-        public TestHandler()
-        {
-            super(InvocationType.BLOCKING);
-        }
-
         @Override
-        public void process(Request request, Response response, Callback callback) throws Exception
+        public boolean handle(Request request, Response response, Callback callback) throws Exception
         {
             ByteBuffer input = Content.Source.asByteBuffer(request);
             response.write(true, BufferUtil.toBuffer(String.valueOf(input.remaining()).getBytes()), callback);
+            return true;
         }
     }
 }

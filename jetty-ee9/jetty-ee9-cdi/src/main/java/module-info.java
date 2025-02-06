@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -11,6 +11,11 @@
 // ========================================================================
 //
 
+import jakarta.servlet.ServletContainerInitializer;
+import org.eclipse.jetty.ee9.cdi.CdiConfiguration;
+import org.eclipse.jetty.ee9.cdi.CdiServletContainerInitializer;
+import org.eclipse.jetty.ee9.webapp.Configuration;
+
 module org.eclipse.jetty.ee9.cdi
 {
     requires org.eclipse.jetty.ee9.annotations;
@@ -18,4 +23,7 @@ module org.eclipse.jetty.ee9.cdi
     requires transitive org.eclipse.jetty.ee9.webapp;
 
     exports org.eclipse.jetty.ee9.cdi;
-} 
+
+    provides ServletContainerInitializer with CdiServletContainerInitializer;
+    provides Configuration with CdiConfiguration;
+}

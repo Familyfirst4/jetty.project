@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -21,15 +21,13 @@ import java.util.stream.Stream;
 
 import org.eclipse.jetty.ee9.nested.ContextHandler;
 import org.eclipse.jetty.ee9.nested.ResourceHandler;
+import org.eclipse.jetty.ee9.nested.ServletConstraint;
 import org.eclipse.jetty.ee9.nested.SessionHandler;
 import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.server.Connector;
-import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.LocalConnector;
 import org.eclipse.jetty.server.Server;
-import org.eclipse.jetty.server.handler.DefaultHandler;
 import org.eclipse.jetty.toolchain.test.MavenTestingUtils;
-import org.eclipse.jetty.util.security.Constraint;
 import org.eclipse.jetty.util.security.Password;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -75,10 +73,7 @@ public class AliasedConstraintTest
         context.setContextPath("/ctx");
         context.setResourceBase(MavenTestingUtils.getTargetFile("test-classes/docroot").getAbsolutePath());
 
-        Handler.Collection handlers = new Handler.Collection();
-        handlers.addHandler(context);
-        handlers.addHandler(new DefaultHandler());
-        server.setHandler(handlers);
+        server.setHandler(context);
 
         context.setHandler(session);
 
@@ -91,7 +86,7 @@ public class AliasedConstraintTest
 
         List<ConstraintMapping> constraints = new ArrayList<>();
 
-        Constraint constraint0 = new Constraint();
+        ServletConstraint constraint0 = new ServletConstraint();
         constraint0.setAuthenticate(true);
         constraint0.setName("forbid");
         ConstraintMapping mapping0 = new ConstraintMapping();

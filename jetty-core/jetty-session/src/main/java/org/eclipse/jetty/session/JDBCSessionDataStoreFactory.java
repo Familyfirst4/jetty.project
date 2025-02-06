@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -41,6 +41,7 @@ public class JDBCSessionDataStoreFactory extends AbstractSessionDataStoreFactory
     }
 
     /**
+     * Set the {@link DatabaseAdaptor} to set.
      * @param adaptor the {@link DatabaseAdaptor} to set
      */
     public void setDatabaseAdaptor(DatabaseAdaptor adaptor)
@@ -49,6 +50,7 @@ public class JDBCSessionDataStoreFactory extends AbstractSessionDataStoreFactory
     }
 
     /**
+     * Set the {@link JDBCSessionDataStoreFactory} to set.
      * @param schema the {@link JDBCSessionDataStoreFactory} to set
      */
     public void setSessionTableSchema(JDBCSessionDataStore.SessionTableSchema schema)

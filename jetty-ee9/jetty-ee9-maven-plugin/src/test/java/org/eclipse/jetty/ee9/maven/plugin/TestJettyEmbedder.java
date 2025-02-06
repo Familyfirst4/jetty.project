@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -14,17 +14,20 @@
 package org.eclipse.jetty.ee9.maven.plugin;
 
 import java.nio.file.Path;
-import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
+import org.eclipse.jetty.ee9.servlet.ListenerHolder;
+import org.eclipse.jetty.maven.MavenServerConnector;
+import org.eclipse.jetty.maven.ServerSupport;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.handler.ContextHandler;
 import org.eclipse.jetty.server.handler.ContextHandlerCollection;
 import org.eclipse.jetty.toolchain.test.MavenTestingUtils;
 import org.eclipse.jetty.toolchain.test.jupiter.WorkDir;
 import org.eclipse.jetty.toolchain.test.jupiter.WorkDirExtension;
-import org.eclipse.jetty.util.resource.Resource;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -32,19 +35,19 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 @Disabled
 @ExtendWith(WorkDirExtension.class)
 public class TestJettyEmbedder
 {
-    public WorkDir workDir;
 
     @Test
-    public void testJettyEmbedderFromDefaults() throws Exception
+    public void testJettyEmbedderFromDefaults(WorkDir workDir) throws Exception
     {
         Path baseResource = workDir.getEmptyPathDir();
         MavenWebAppContext webApp = new MavenWebAppContext();
-        webApp.setBaseResource(Resource.newResource(baseResource));
+        webApp.setBaseResource(webApp.getResourceFactory().newResource(baseResource));
         MavenServerConnector connector = new MavenServerConnector();
         connector.setPort(0);
 
@@ -57,7 +60,7 @@ public class TestJettyEmbedder
         jetty.setJettyXmlFiles(null);
         jetty.setJettyProperties(null);
         jetty.setLoginServices(null);
-        jetty.setContextXml(MavenTestingUtils.getTestResourceFile("embedder-context.xml").getAbsolutePath());
+        jetty.setContextXml(MavenTestingUtils.getTargetPath("test-classes/embedder-context.xml").toFile().getAbsolutePath());
         jetty.setWebApp(webApp);
 
         try
@@ -77,19 +80,19 @@ public class TestJettyEmbedder
     }
 
     @Test
-    public void testJettyEmbedder()
+    public void testJettyEmbedder(WorkDir workDir)
         throws Exception
     {
-        MavenWebAppContext webApp = new MavenWebAppContext();
         Path baseResource = workDir.getEmptyPathDir();
-        webApp.setBaseResource(Resource.newResource(baseResource));
+        MavenWebAppContext webApp = new MavenWebAppContext();
+        webApp.setBaseResource(webApp.getResourceFactory().newResource(baseResource));
         Server server = new Server();
         Map<String, String> jettyProperties = new HashMap<>();
         jettyProperties.put("jetty.server.dumpAfterStart", "false");
 
         ContextHandler otherHandler = new ContextHandler();
         otherHandler.setContextPath("/other");
-        otherHandler.setBaseResource(Resource.newResource(MavenTestingUtils.getTestResourceDir("root")));
+        otherHandler.setBaseResource(webApp.getResourceFactory().newResource(MavenTestingUtils.getTargetPath("test-classes/root")));
 
         MavenServerConnector connector = new MavenServerConnector();
         connector.setPort(0);
@@ -98,12 +101,12 @@ public class TestJettyEmbedder
         jetty.setHttpConnector(connector);
         jetty.setExitVm(false);
         jetty.setServer(server);
-        jetty.setContextHandlers(Arrays.asList(otherHandler));
+        jetty.setContextHandlers(List.of(otherHandler));
         jetty.setRequestLog(null);
-        jetty.setJettyXmlFiles(Arrays.asList(MavenTestingUtils.getTestResourceFile("embedder-jetty.xml")));
+        jetty.setJettyXmlFiles(Collections.singletonList(MavenTestingUtils.getTargetFile("test-classes/embedder-jetty.xml")));
         jetty.setJettyProperties(jettyProperties);
         jetty.setLoginServices(null);
-        jetty.setContextXml(MavenTestingUtils.getTestResourceFile("embedder-context.xml").getAbsolutePath());
+        jetty.setContextXml(MavenTestingUtils.getTargetFile("test-classes/embedder-context.xml").getAbsolutePath());
         jetty.setWebApp(webApp);
 
         try
@@ -118,6 +121,37 @@ public class TestJettyEmbedder
             assertNotNull(contexts);
             assertTrue(contexts.contains(otherHandler));
             assertTrue(contexts.contains(webApp));
+
+            //stop the webapp and check durable listener retained
+            jetty.stopWebApp();
+            boolean someListener = false;
+            for (ListenerHolder h : webApp.getServletHandler().getListeners())
+            {
+                if (h.getHeldClass() != null && "org.eclipse.jetty.ee9.maven.plugin.SomeListener".equalsIgnoreCase(h.getHeldClass().getName()))
+                {
+                    if (someListener)
+                        fail("Duplicate listeners");
+                    else
+                        someListener = true;
+                }
+            }
+
+
+            //restart the webapp
+            jetty.redeployWebApp();
+            someListener = false;
+
+            //ensure still only 1 listener
+            for (ListenerHolder h : webApp.getServletHandler().getListeners())
+            {
+                if (h.getHeldClass() != null && "org.eclipse.jetty.ee9.maven.plugin.SomeListener".equalsIgnoreCase(h.getHeldClass().getName()))
+                {
+                    if (someListener)
+                        fail("Duplicate listeners");
+                    else
+                        someListener = true;
+                }
+            }
         }
         finally
         {

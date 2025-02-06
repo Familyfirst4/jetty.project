@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -17,8 +17,8 @@ import org.eclipse.jetty.ee9.quickstart.QuickStartConfiguration;
 import org.eclipse.jetty.ee9.webapp.Configuration;
 import org.eclipse.jetty.ee9.webapp.WebAppContext;
 import org.eclipse.jetty.util.IO;
+import org.eclipse.jetty.util.resource.CombinedResource;
 import org.eclipse.jetty.util.resource.Resource;
-import org.eclipse.jetty.util.resource.ResourceCollection;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -47,13 +47,13 @@ public class MavenQuickStartConfiguration extends QuickStartConfiguration
             //Iterate over all of the resource bases and ignore any that were original bases, just
             //deleting the overlays
             Resource res = context.getBaseResource();
-            if (res instanceof ResourceCollection)
+            if (res instanceof CombinedResource)
             {
-                for (Resource r : ((ResourceCollection)res).getResources())
+                for (Resource r : ((CombinedResource)res).getResources())
                 {
                     if (originalBaseStr.contains(r.toString()))
                         continue;
-                    IO.delete(r.getFile());
+                    IO.delete(r.getPath());
                 }
             }
         }

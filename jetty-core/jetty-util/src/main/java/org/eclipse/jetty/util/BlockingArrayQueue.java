@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -608,13 +608,19 @@ public class BlockingArrayQueue<E> extends AbstractList<E> implements BlockingQu
             _headLock.lock();
             try
             {
+                if (_size.get() == 0)
+                    return 0;
+
                 final int head = _indexes[HEAD_OFFSET];
                 final int tail = _indexes[TAIL_OFFSET];
                 final int capacity = _elements.length;
 
                 int i = head;
-                while (i != tail && elements < maxElements)
+                while (elements < maxElements)
                 {
+                    if (i == tail && elements > 0)
+                        break;
+
                     elements++;
                     c.add((E)_elements[i]);
                     ++i;
@@ -755,6 +761,7 @@ public class BlockingArrayQueue<E> extends AbstractList<E> implements BlockingQu
     }
 
     /**
+     * Get the current capacity of this queue.
      * @return the current capacity of this queue
      */
     public int getCapacity()
@@ -771,6 +778,7 @@ public class BlockingArrayQueue<E> extends AbstractList<E> implements BlockingQu
     }
 
     /**
+     * Get the max capacity of this queue, or -1 if this queue is unbounded.
      * @return the max capacity of this queue, or -1 if this queue is unbounded
      */
     public int getMaxCapacity()

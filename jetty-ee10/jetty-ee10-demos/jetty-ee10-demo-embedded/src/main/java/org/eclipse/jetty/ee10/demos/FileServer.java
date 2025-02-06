@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -15,14 +15,13 @@ package org.eclipse.jetty.ee10.demos;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Arrays;
+import java.util.List;
 
-import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.handler.DefaultHandler;
 import org.eclipse.jetty.server.handler.ResourceHandler;
-import org.eclipse.jetty.util.resource.PathResource;
 import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.resource.ResourceFactory;
 
 /**
  * Simple Jetty FileServer.
@@ -36,6 +35,7 @@ public class FileServer
         // then a randomly available port will be assigned that you can either look in the logs for the port,
         // or programmatically obtain it for use in test cases.
         Server server = new Server(port);
+        server.setDefaultHandler(new DefaultHandler());
 
         // Create the ResourceHandler. It is the object that will actually handle the request for a given file. It is
         // a Jetty Handler object so it is suitable for chaining with other handlers as you will see in other examples.
@@ -44,11 +44,11 @@ public class FileServer
         // Configure the ResourceHandler. Setting the resource base indicates where the files should be served out of.
         // In this example it is the current directory but it can be configured to anything that the jvm has access to.
         resourceHandler.setDirAllowed(true);
-        resourceHandler.setWelcomeFiles(Arrays.asList(new String[]{"index.html"}));
-        resourceHandler.setBaseResource(baseResource.getPath());
+        resourceHandler.setWelcomeFiles(List.of("index.html"));
+        resourceHandler.setBaseResource(baseResource);
 
         // Add the ResourceHandler to the server.
-        server.setHandler(new Handler.Collection(resourceHandler, new DefaultHandler()));
+        server.setHandler(resourceHandler);
 
         return server;
     }
@@ -57,7 +57,7 @@ public class FileServer
     {
         int port = ExampleUtil.getPort(args, "jetty.http.port", 8080);
         Path userDir = Paths.get(System.getProperty("user.dir"));
-        PathResource pathResource = new PathResource(userDir);
+        Resource pathResource = ResourceFactory.root().newResource(userDir);
 
         Server server = createServer(port, pathResource);
 

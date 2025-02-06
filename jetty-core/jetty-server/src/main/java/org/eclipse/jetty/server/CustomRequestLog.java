@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -16,6 +16,7 @@ package org.eclipse.jetty.server;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
+import java.security.Principal;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -23,19 +24,24 @@ import java.util.Locale;
 import java.util.TimeZone;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BiPredicate;
+import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import org.eclipse.jetty.http.HttpCookie;
 import org.eclipse.jetty.http.HttpFields;
+import org.eclipse.jetty.http.HttpURI;
 import org.eclipse.jetty.http.QuotedCSV;
 import org.eclipse.jetty.http.pathmap.PathMappings;
 import org.eclipse.jetty.util.DateCache;
+import org.eclipse.jetty.util.NanoTime;
 import org.eclipse.jetty.util.StringUtil;
+import org.eclipse.jetty.util.URIUtil;
 import org.eclipse.jetty.util.annotation.ManagedAttribute;
 import org.eclipse.jetty.util.annotation.ManagedObject;
 import org.eclipse.jetty.util.component.ContainerLifeCycle;
+import org.eclipse.jetty.util.resource.Resource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -71,21 +77,18 @@ import static java.lang.invoke.MethodType.methodType;
  * <th>Format String</th>
  * <th>Description</th>
  * </tr>
- *
  * <tr>
  * <td>X</td>
  * <td>
  * <p>The X character.</p>
  * </td>
  * </tr>
- *
  * <tr>
  * <td>%%</td>
  * <td>
  * <p>The percent character.</p>
  * </td>
  * </tr>
- *
  * <tr>
  * <td>%{format}a</td>
  * <td>
@@ -97,7 +100,6 @@ import static java.lang.invoke.MethodType.methodType;
  * the end-user and the server.</p>
  * </td>
  * </tr>
- *
  * <tr>
  * <td>%{format}p</td>
  * <td>
@@ -109,7 +111,6 @@ import static java.lang.invoke.MethodType.methodType;
  * the end-user and the server.</p>
  * </td>
  * </tr>
- *
  * <tr>
  * <td>%{CLF}I</td>
  * <td>
@@ -119,7 +120,6 @@ import static java.lang.invoke.MethodType.methodType;
  * when no bytes are present.</p>
  * </td>
  * </tr>
- *
  * <tr>
  * <td>%{CLF}O</td>
  * <td>
@@ -129,7 +129,6 @@ import static java.lang.invoke.MethodType.methodType;
  * when no bytes are present.</p>
  * </td>
  * </tr>
- *
  * <tr>
  * <td>%{CLF}S</td>
  * <td>
@@ -139,7 +138,6 @@ import static java.lang.invoke.MethodType.methodType;
  * when no bytes are present.</p>
  * </td>
  * </tr>
- *
  * <tr>
  * <td>%{VARNAME}C</td>
  * <td>
@@ -149,42 +147,36 @@ import static java.lang.invoke.MethodType.methodType;
  * When the parameter is missing, all request cookies will be logged.</p>
  * </td>
  * </tr>
- *
  * <tr>
  * <td>%D</td>
  * <td>
  * <p>The time taken to serve the request, in microseconds.</p>
  * </td>
  * </tr>
- *
  * <tr>
  * <td>%{VARNAME}e</td>
  * <td>
  * <p>The value of the environment variable VARNAME.</p>
  * </td>
  * </tr>
- *
  * <tr>
  * <td>%f</td>
  * <td>
  * <p>The file system path of the requested resource.</p>
  * </td>
  * </tr>
- *
  * <tr>
  * <td>%H</td>
  * <td>
  * <p>The name and version of the request protocol, such as "HTTP/1.1".</p>
  * </td>
  * </tr>
- *
  * <tr>
  * <td>%{VARNAME}i</td>
  * <td>
  * <p>The value of the VARNAME request header.</p>
  * </td>
  * </tr>
- *
  * <tr>
  * <td>%k</td>
  * <td>
@@ -193,50 +185,42 @@ import static java.lang.invoke.MethodType.methodType;
  * yields the value 1, the second request on the same connection yields the value 2, etc.</p>
  * </td>
  * </tr>
- *
  * <tr>
  * <td>%m</td>
  * <td>
  * <p>The HTTP request method.</p>
  * </td>
  * </tr>
- *
  * <tr>
  * <td>%{VARNAME}o</td>
  * <td>
  * <p>The value of the VARNAME response header.</p>
  * </td>
  * </tr>
- *
  * <tr>
  * <td>%q</td>
  * <td>
  * <p>The query string, prepended with a ? if a query string exists, otherwise an empty string.</p>
  * </td>
  * </tr>
- *
- * // TODO ATTRIBUTE LOGGING
  * <tr>
  * <td>%r</td>
  * <td>
  * <p>First line of an HTTP/1.1 request (or equivalent information for HTTP/2 or later).</p>
  * </td>
  * </tr>
- *
  * <tr>
  * <td>%R</td>
  * <td>
  * <p>The name of the Handler or Servlet generating the response (if any).</p>
  * </td>
  * </tr>
- *
  * <tr>
  * <td>%s</td>
  * <td>
  * <p>The HTTP response status code.</p>
  * </td>
  * </tr>
- *
  * <tr>
  * <td>%{format|timeZone|locale}t</td>
  * <td>
@@ -255,7 +239,6 @@ import static java.lang.invoke.MethodType.methodType;
  * </dl>
  * </td>
  * </tr>
- *
  * <tr>
  * <td>%{UNIT}T</td>
  * <td>
@@ -265,7 +248,6 @@ import static java.lang.invoke.MethodType.methodType;
  * <code>%{us}T</code> is identical to {@code %D}.</p>
  * </td>
  * </tr>
- *
  * <tr>
  * <td>%{d}u</td>
  * <td>
@@ -275,14 +257,12 @@ import static java.lang.invoke.MethodType.methodType;
  * When the parameter value is "d", deferred authentication will also be checked.</p>
  * </td>
  * </tr>
- *
  * <tr>
  * <td>%U</td>
  * <td>
  * <p>The URL path requested, not including any query string.</p>
  * </td>
  * </tr>
- *
  * <tr>
  * <td>%X</td>
  * <td>
@@ -297,18 +277,49 @@ import static java.lang.invoke.MethodType.methodType;
  * </dl>
  * </td>
  * </tr>
- *
  * <tr>
  * <td>%{VARNAME}ti</td>
  * <td>
  * <p>The value of the VARNAME request trailer.</p>
  * </td>
  * </tr>
- *
  * <tr>
  * <td>%{VARNAME}to</td>
  * <td>
  * <p>The value of the VARNAME response trailer.</p>
+ * </td>
+ * </tr>
+ * <tr>
+ * <td>%{OPTION}uri</td>
+ * <td>
+ * <p>The request URI.</p>
+ * <p>The parameter is optional and may have the be one of the following options:</p>
+ * <dl>
+ * <dt>%uri</dt>
+ * <dd>The entire request URI.</dd>
+ * <dt>%{-query}uri</dt>
+ * <dd>The entire request URI without the query.</dd>
+ * <dt>%{-path,-query}uri</dt>
+ * <dd>The request URI without path or query (so just `scheme://authority`).</dd>
+ * <dt>%{scheme}uri</dt>
+ * <dd>The scheme of the request URI.</dd>
+ * <dt>%{authority}uri</dt>
+ * <dd>The authority of the request URI.</dd>
+ * <dt>%{path}uri</dt>
+ * <dd>The path of the request URI.</dd>
+ * <dt>%{query}uri</dt>
+ * <dd>The query of the request URI.</dd>
+ * <dt>%{host}uri</dt>
+ * <dd>The host of the request URI.</dd>
+ * <dt>%{port}uri</dt>
+ * <dd>The port of the request URI.</dd>
+ * </dl>
+ * </td>
+ * </tr>
+ * <tr>
+ * <td>%{attributeName}attr</td>
+ * <td>
+ * <p>The value of the request attribute with the given name.</p>
  * </td>
  * </tr>
  * </table>
@@ -317,12 +328,22 @@ import static java.lang.invoke.MethodType.methodType;
 @ManagedObject("Custom format request log")
 public class CustomRequestLog extends ContainerLifeCycle implements RequestLog
 {
-    protected static final Logger LOG = LoggerFactory.getLogger(CustomRequestLog.class);
+    /**
+     * Record holding extra detail for logging
+     * @param handlerName The name of the entity that handled the request
+     * @param realPath The real path on the filesystem represented by the request
+     */
+    public record LogDetail(String handlerName, String realPath)
+    {
+    }
 
     public static final String DEFAULT_DATE_FORMAT = "dd/MMM/yyyy:HH:mm:ss ZZZ";
     public static final String NCSA_FORMAT = "%{client}a - %u %t \"%r\" %s %O";
     public static final String EXTENDED_NCSA_FORMAT = NCSA_FORMAT + " \"%{Referer}i\" \"%{User-Agent}i\"";
+    public static final String LOG_DETAIL = CustomRequestLog.class.getName() + ".logDetail";
+    private static final Logger LOG = LoggerFactory.getLogger(CustomRequestLog.class);
     private static final ThreadLocal<StringBuilder> _buffers = ThreadLocal.withInitial(() -> new StringBuilder(256));
+    private static final Pattern PATTERN = Pattern.compile("^(?:%(?<MOD>!?[0-9,]+)?(?:\\{(?<ARG>[^}]+)})?(?<CODE>(?:(?:ti)|(?:to)|(?:uri)|(?:attr)|[a-zA-Z%]))|(?<LITERAL>[^%]+))(?<REMAINING>.*)", Pattern.DOTALL | Pattern.MULTILINE);
 
     private final RequestLog.Writer _requestLogWriter;
     private final MethodHandle _logHandle;
@@ -350,7 +371,7 @@ public class CustomRequestLog extends ContainerLifeCycle implements RequestLog
     {
         _formatString = formatString;
         _requestLogWriter = writer;
-        addBean(_requestLogWriter);
+        installBean(_requestLogWriter);
 
         try
         {
@@ -378,17 +399,12 @@ public class CustomRequestLog extends ContainerLifeCycle implements RequestLog
         return _requestLogWriter;
     }
 
-    /**
-     * Writes the request and response information to the output stream.
-     *
-     * @see org.eclipse.jetty.server.RequestLog#log(Request, Response)
-     */
     @Override
     public void log(Request request, Response response)
     {
         try
         {
-            if (_ignorePathMap != null && _ignorePathMap.getMatched(request.getHttpURI().toString()) != null)
+            if (_ignorePathMap != null && _ignorePathMap.getMatched(request.getHttpURI().getCanonicalPath()) != null)
                 return;
 
             if (_filter != null && !_filter.test(request, response))
@@ -406,27 +422,6 @@ public class CustomRequestLog extends ContainerLifeCycle implements RequestLog
         {
             LOG.warn("Unable to log request", e);
         }
-    }
-
-    /**
-     * Extract the user authentication
-     *
-     * @param request The request to extract from
-     * @param checkDeferred Whether to check for deferred authentication
-     * @return The string to log for authenticated user.
-     */
-    protected static String getAuthentication(Request request, boolean checkDeferred)
-    {
-        // TODO
-//        Authentication authentication = request.getAuthentication();
-//        if (checkDeferred && authentication instanceof Authentication.Deferred)
-//            authentication = ((Authentication.Deferred)authentication).authenticate(request);
-
-        String name = null;
-//        if (authentication instanceof Authentication.User)
-//            name = ((Authentication.User)authentication).getUserIdentity().getUserPrincipal().getName();
-//
-        return name;
     }
 
     /**
@@ -484,7 +479,7 @@ public class CustomRequestLog extends ContainerLifeCycle implements RequestLog
 
     private static void append(StringBuilder buf, String s)
     {
-        if (s == null || s.length() == 0)
+        if (s == null || s.isEmpty())
             buf.append('-');
         else
             buf.append(s);
@@ -529,8 +524,6 @@ public class CustomRequestLog extends ContainerLifeCycle implements RequestLog
             {PARAM} is an optional string parameter to the percent code.
             CODE is a 1 to 2 character string corresponding to a format code.
          */
-        final Pattern PATTERN = Pattern.compile("^(?:%(?<MOD>!?[0-9,]+)?(?:\\{(?<ARG>[^}]+)})?(?<CODE>(?:(?:ti)|(?:to)|[a-zA-Z%]))|(?<LITERAL>[^%]+))(?<REMAINING>.*)", Pattern.DOTALL | Pattern.MULTILINE);
-
         List<Token> tokens = new ArrayList<>();
         String remaining = formatString;
         while (remaining.length() > 0)
@@ -570,14 +563,14 @@ public class CustomRequestLog extends ContainerLifeCycle implements RequestLog
                 }
                 else
                 {
-                    throw new IllegalStateException("formatString parsing error");
+                    throw new IllegalStateException("formatString parsing error: " + formatString);
                 }
 
                 remaining = m.group("REMAINING");
             }
             else
             {
-                throw new IllegalArgumentException("Invalid format string");
+                throw new IllegalArgumentException("Invalid format string: " + formatString);
             }
         }
 
@@ -642,81 +635,42 @@ public class CustomRequestLog extends ContainerLifeCycle implements RequestLog
         MethodType logTypeArg = methodType(void.class, String.class, StringBuilder.class, Request.class, Response.class);
 
         //TODO should we throw IllegalArgumentExceptions when given arguments for codes which do not take them
-        MethodHandle specificHandle;
-        switch (code)
+        MethodHandle specificHandle = switch (code)
         {
-            case "%":
-            {
-                specificHandle = dropArguments(dropArguments(append.bindTo("%"), 1, Request.class), 2, Response.class);
-                break;
-            }
-
-            case "a":
+            case "%" -> dropArguments(dropArguments(append.bindTo("%"), 1, Request.class), 2, Response.class);
+            case "a" ->
             {
                 if (StringUtil.isEmpty(arg))
                     arg = "server";
 
-                String method;
-                switch (arg)
+                String method = switch (arg)
                 {
-                    case "server":
-                        method = "logServerHost";
-                        break;
+                    case "server" -> "logServerHost";
+                    case "client" -> "logClientHost";
+                    case "local" -> "logLocalHost";
+                    case "remote" -> "logRemoteHost";
+                    default -> throw new IllegalArgumentException("Invalid arg for %a");
+                };
 
-                    case "client":
-                        method = "logClientHost";
-                        break;
-
-                    case "local":
-                        method = "logLocalHost";
-                        break;
-
-                    case "remote":
-                        method = "logRemoteHost";
-                        break;
-
-                    default:
-                        throw new IllegalArgumentException("Invalid arg for %a");
-                }
-
-                specificHandle = lookup.findStatic(CustomRequestLog.class, method, logType);
-                break;
+                yield lookup.findStatic(CustomRequestLog.class, method, logType);
             }
-
-            case "p":
+            case "p" ->
             {
                 if (StringUtil.isEmpty(arg))
                     arg = "server";
 
-                String method;
-                switch (arg)
+                String method = switch (arg)
                 {
+                    case "server" -> "logServerPort";
+                    case "client" -> "logClientPort";
+                    case "local" -> "logLocalPort";
+                    case "remote" -> "logRemotePort";
+                    default -> throw new IllegalArgumentException("Invalid arg for %p");
+                };
 
-                    case "server":
-                        method = "logServerPort";
-                        break;
-
-                    case "client":
-                        method = "logClientPort";
-                        break;
-
-                    case "local":
-                        method = "logLocalPort";
-                        break;
-
-                    case "remote":
-                        method = "logRemotePort";
-                        break;
-
-                    default:
-                        throw new IllegalArgumentException("Invalid arg for %p");
-                }
-
-                specificHandle = lookup.findStatic(CustomRequestLog.class, method, logType);
-                break;
+                yield lookup.findStatic(CustomRequestLog.class, method, logType);
             }
-
-            case "I":
+            case "I" ->
             {
                 String method;
                 if (StringUtil.isEmpty(arg))
@@ -726,11 +680,9 @@ public class CustomRequestLog extends ContainerLifeCycle implements RequestLog
                 else
                     throw new IllegalArgumentException("Invalid argument for %I");
 
-                specificHandle = lookup.findStatic(CustomRequestLog.class, method, logType);
-                break;
+                yield lookup.findStatic(CustomRequestLog.class, method, logType);
             }
-
-            case "O":
+            case "O" ->
             {
                 String method;
                 if (StringUtil.isEmpty(arg))
@@ -740,11 +692,9 @@ public class CustomRequestLog extends ContainerLifeCycle implements RequestLog
                 else
                     throw new IllegalArgumentException("Invalid argument for %O");
 
-                specificHandle = lookup.findStatic(CustomRequestLog.class, method, logType);
-                break;
+                yield lookup.findStatic(CustomRequestLog.class, method, logType);
             }
-
-            case "S":
+            case "S" ->
             {
                 String method;
                 if (StringUtil.isEmpty(arg))
@@ -754,109 +704,49 @@ public class CustomRequestLog extends ContainerLifeCycle implements RequestLog
                 else
                     throw new IllegalArgumentException("Invalid argument for %S");
 
-                specificHandle = lookup.findStatic(CustomRequestLog.class, method, logType);
-                break;
+                yield lookup.findStatic(CustomRequestLog.class, method, logType);
             }
-
-            case "C":
+            case "C" ->
             {
                 if (StringUtil.isEmpty(arg))
                 {
-                    specificHandle = lookup.findStatic(CustomRequestLog.class, "logRequestCookies", logType);
+                    yield lookup.findStatic(CustomRequestLog.class, "logRequestCookies", logType);
                 }
                 else
                 {
-                    specificHandle = lookup.findStatic(CustomRequestLog.class, "logRequestCookie", logTypeArg);
-                    specificHandle = specificHandle.bindTo(arg);
+                    yield lookup.findStatic(CustomRequestLog.class, "logRequestCookie", logTypeArg).bindTo(arg);
                 }
-                break;
             }
-
-            case "D":
-            {
-                specificHandle = lookup.findStatic(CustomRequestLog.class, "logLatencyMicroseconds", logType);
-                break;
-            }
-
-            case "e":
+            case "D" -> lookup.findStatic(CustomRequestLog.class, "logLatencyMicroseconds", logType);
+            case "e" ->
             {
                 if (StringUtil.isEmpty(arg))
                     throw new IllegalArgumentException("No arg for %e");
 
-                specificHandle = lookup.findStatic(CustomRequestLog.class, "logEnvironmentVar", logTypeArg);
-                specificHandle = specificHandle.bindTo(arg);
-                break;
+                yield lookup.findStatic(CustomRequestLog.class, "logEnvironmentVar", logTypeArg).bindTo(arg);
             }
-
-            case "f":
-            {
-                specificHandle = lookup.findStatic(CustomRequestLog.class, "logFilename", logType);
-                break;
-            }
-
-            case "H":
-            {
-                specificHandle = lookup.findStatic(CustomRequestLog.class, "logRequestProtocol", logType);
-                break;
-            }
-
-            case "i":
+            case "f" -> lookup.findStatic(CustomRequestLog.class, "logFilename", logType);
+            case "H" -> lookup.findStatic(CustomRequestLog.class, "logRequestProtocol", logType);
+            case "i" ->
             {
                 if (StringUtil.isEmpty(arg))
                     throw new IllegalArgumentException("No arg for %i");
 
-                specificHandle = lookup.findStatic(CustomRequestLog.class, "logRequestHeader", logTypeArg);
-                specificHandle = specificHandle.bindTo(arg);
-                break;
+                yield lookup.findStatic(CustomRequestLog.class, "logRequestHeader", logTypeArg).bindTo(arg);
             }
-
-            case "k":
-            {
-                specificHandle = lookup.findStatic(CustomRequestLog.class, "logKeepAliveRequests", logType);
-                break;
-            }
-
-            case "m":
-            {
-                specificHandle = lookup.findStatic(CustomRequestLog.class, "logRequestMethod", logType);
-                break;
-            }
-
-            case "o":
+            case "k" -> lookup.findStatic(CustomRequestLog.class, "logKeepAliveRequests", logType);
+            case "m" -> lookup.findStatic(CustomRequestLog.class, "logRequestMethod", logType);
+            case "o" ->
             {
                 if (StringUtil.isEmpty(arg))
                     throw new IllegalArgumentException("No arg for %o");
-
-                specificHandle = lookup.findStatic(CustomRequestLog.class, "logResponseHeader", logTypeArg);
-                specificHandle = specificHandle.bindTo(arg);
-                break;
+                yield lookup.findStatic(CustomRequestLog.class, "logResponseHeader", logTypeArg).bindTo(arg);
             }
-
-            case "q":
-            {
-                specificHandle = lookup.findStatic(CustomRequestLog.class, "logQueryString", logType);
-                break;
-            }
-
-            case "r":
-            {
-                specificHandle = lookup.findStatic(CustomRequestLog.class, "logRequestFirstLine", logType);
-                break;
-            }
-
-            case "R":
-            {
-                specificHandle = lookup.findStatic(CustomRequestLog.class, "logRequestHandler", logType);
-                break;
-            }
-
-            case "s":
-            {
-                specificHandle = lookup.findStatic(CustomRequestLog.class, "logResponseStatus", logType);
-                break;
-            }
-
-            case "t":
+            case "q" -> lookup.findStatic(CustomRequestLog.class, "logQueryString", logType);
+            case "r" -> lookup.findStatic(CustomRequestLog.class, "logRequestFirstLine", logType);
+            case "R" -> lookup.findStatic(CustomRequestLog.class, "logRequestHandler", logType);
+            case "s" -> lookup.findStatic(CustomRequestLog.class, "logResponseStatus", logType);
+            case "t" ->
             {
                 String format = DEFAULT_DATE_FORMAT;
                 TimeZone timeZone = TimeZone.getTimeZone("GMT");
@@ -867,60 +757,43 @@ public class CustomRequestLog extends ContainerLifeCycle implements RequestLog
                     String[] args = arg.split("\\|");
                     switch (args.length)
                     {
-                        case 1:
-                            format = args[0];
-                            break;
-
-                        case 2:
+                        case 1 -> format = args[0];
+                        case 2 ->
+                        {
                             format = args[0];
                             timeZone = TimeZone.getTimeZone(args[1]);
-                            break;
-
-                        case 3:
+                        }
+                        case 3 ->
+                        {
                             format = args[0];
                             timeZone = TimeZone.getTimeZone(args[1]);
                             locale = Locale.forLanguageTag(args[2]);
-                            break;
-
-                        default:
-                            throw new IllegalArgumentException("Too many \"|\" characters in %t");
+                        }
+                        default -> throw new IllegalArgumentException("Too many \"|\" characters in %t");
                     }
                 }
 
                 DateCache logDateCache = new DateCache(format, locale, timeZone);
 
                 MethodType logTypeDateCache = methodType(void.class, DateCache.class, StringBuilder.class, Request.class, Response.class);
-                specificHandle = lookup.findStatic(CustomRequestLog.class, "logRequestTime", logTypeDateCache);
-                specificHandle = specificHandle.bindTo(logDateCache);
-                break;
+                yield lookup.findStatic(CustomRequestLog.class, "logRequestTime", logTypeDateCache).bindTo(logDateCache);
             }
-
-            case "T":
+            case "T" ->
             {
                 if (arg == null)
                     arg = "s";
 
-                String method;
-                switch (arg)
+                String method = switch (arg)
                 {
-                    case "s":
-                        method = "logLatencySeconds";
-                        break;
-                    case "us":
-                        method = "logLatencyMicroseconds";
-                        break;
-                    case "ms":
-                        method = "logLatencyMilliseconds";
-                        break;
-                    default:
-                        throw new IllegalArgumentException("Invalid arg for %T");
-                }
+                    case "s" -> "logLatencySeconds";
+                    case "us" -> "logLatencyMicroseconds";
+                    case "ms" -> "logLatencyMilliseconds";
+                    default -> throw new IllegalArgumentException("Invalid arg for %T");
+                };
 
-                specificHandle = lookup.findStatic(CustomRequestLog.class, method, logType);
-                break;
+                yield lookup.findStatic(CustomRequestLog.class, method, logType);
             }
-
-            case "u":
+            case "u" ->
             {
                 String method;
                 if (StringUtil.isEmpty(arg))
@@ -930,45 +803,52 @@ public class CustomRequestLog extends ContainerLifeCycle implements RequestLog
                 else
                     throw new IllegalArgumentException("Invalid arg for %u: " + arg);
 
-                specificHandle = lookup.findStatic(CustomRequestLog.class, method, logType);
-                break;
+                yield lookup.findStatic(CustomRequestLog.class, method, logType);
             }
-
-            case "U":
-            {
-                specificHandle = lookup.findStatic(CustomRequestLog.class, "logUrlRequestPath", logType);
-                break;
-            }
-
-            case "X":
-            {
-                specificHandle = lookup.findStatic(CustomRequestLog.class, "logConnectionStatus", logType);
-                break;
-            }
-
-            case "ti":
+            case "U" -> lookup.findStatic(CustomRequestLog.class, "logUrlRequestPath", logType);
+            case "X" -> lookup.findStatic(CustomRequestLog.class, "logConnectionStatus", logType);
+            case "ti" ->
             {
                 if (StringUtil.isEmpty(arg))
                     throw new IllegalArgumentException("No arg for %ti");
 
-                specificHandle = lookup.findStatic(CustomRequestLog.class, "logRequestTrailer", logTypeArg);
-                specificHandle = specificHandle.bindTo(arg);
-                break;
+                yield lookup.findStatic(CustomRequestLog.class, "logRequestTrailer", logTypeArg).bindTo(arg);
             }
-
-            case "to":
+            case "to" ->
             {
                 if (StringUtil.isEmpty(arg))
                     throw new IllegalArgumentException("No arg for %to");
 
-                specificHandle = lookup.findStatic(CustomRequestLog.class, "logResponseTrailer", logTypeArg);
-                specificHandle = specificHandle.bindTo(arg);
-                break;
+                yield lookup.findStatic(CustomRequestLog.class, "logResponseTrailer", logTypeArg).bindTo(arg);
+            }
+            case "uri" ->
+            {
+                if (arg == null)
+                    arg = "";
+                String method = switch (arg)
+                {
+                    case "" -> "logRequestHttpUri";
+                    case "-query" -> "logRequestHttpUriWithoutQuery";
+                    case "-path,-query" -> "logRequestHttpUriWithoutPathQuery";
+                    case "scheme" -> "logRequestScheme";
+                    case "authority" -> "logRequestAuthority";
+                    case "path" -> "logUrlRequestPath";
+                    case "query" -> "logQueryString";
+                    case "host" -> "logRequestHttpUriHost";
+                    case "port" -> "logRequestHttpUriPort";
+                    default -> throw new IllegalArgumentException("Invalid arg for %uri");
+                };
+
+                yield lookup.findStatic(CustomRequestLog.class, method, logType);
+            }
+            case "attr" ->
+            {
+                MethodType logRequestAttribute = methodType(void.class, String.class, StringBuilder.class, Request.class, Response.class);
+                yield lookup.findStatic(CustomRequestLog.class, "logRequestAttribute", logRequestAttribute).bindTo(arg);
             }
 
-            default:
-                throw new IllegalArgumentException("Unsupported code %" + code);
-        }
+            default -> throw new IllegalArgumentException("Unsupported code %" + code);
+        };
 
         if (modifiers != null && !modifiers.isEmpty())
         {
@@ -1045,8 +925,7 @@ public class CustomRequestLog extends ContainerLifeCycle implements RequestLog
     @SuppressWarnings("unused")
     private static void logResponseSize(StringBuilder b, Request request, Response response)
     {
-        long written = Response.getContentBytesWritten(response);
-        b.append(written);
+        b.append(Response.getContentBytesWritten(response));
     }
 
     @SuppressWarnings("unused")
@@ -1122,7 +1001,6 @@ public class CustomRequestLog extends ContainerLifeCycle implements RequestLog
                 }
             }
         }
-
         b.append('-');
     }
 
@@ -1131,7 +1009,9 @@ public class CustomRequestLog extends ContainerLifeCycle implements RequestLog
     {
         List<HttpCookie> cookies = Request.getCookies(request);
         if (cookies == null || cookies.size() == 0)
+        {
             b.append('-');
+        }
         else
         {
             for (int i = 0; i < cookies.size(); i++)
@@ -1154,17 +1034,25 @@ public class CustomRequestLog extends ContainerLifeCycle implements RequestLog
     @SuppressWarnings("unused")
     private static void logFilename(StringBuilder b, Request request, Response response)
     {
-        b.append('-');
-//      TODO UserIdentity.Scope scope = request.getUserIdentityScope();
-//        if (scope == null || scope.getContextHandler() == null)
-//            b.append('-');
-//        else
-//        {
-//            ContextHandler context = scope.getContextHandler();
-//            int lengthToStrip = scope.getContextPath().length() > 1 ? scope.getContextPath().length() : 0;
-//            String filename = context.getServletContext().getRealPath(request.getPathInfo().substring(lengthToStrip));
-//            append(b, filename);
-//        }
+        LogDetail logDetail = (LogDetail)request.getAttribute(LOG_DETAIL);
+        if (logDetail == null || logDetail.realPath == null)
+        {
+            Context context = request.getContext();
+            Resource baseResource = context.getBaseResource();
+            if (baseResource != null)
+            {
+                String fileName = baseResource.resolve(Request.getPathInContext(request)).getName();
+                append(b, fileName);
+            }
+            else
+            {
+                b.append("-");
+            }
+        }
+        else
+        {
+            b.append(logDetail.realPath);
+        }
     }
 
     @SuppressWarnings("unused")
@@ -1204,7 +1092,8 @@ public class CustomRequestLog extends ContainerLifeCycle implements RequestLog
     @SuppressWarnings("unused")
     private static void logQueryString(StringBuilder b, Request request, Response response)
     {
-        append(b, "?" + request.getHttpURI().getQuery());
+        String query = request.getHttpURI().getQuery();
+        append(b, (query == null) ? null : "?" + query);
     }
 
     @SuppressWarnings("unused")
@@ -1220,8 +1109,8 @@ public class CustomRequestLog extends ContainerLifeCycle implements RequestLog
     @SuppressWarnings("unused")
     private static void logRequestHandler(StringBuilder b, Request request, Response response)
     {
-        b.append('-');
-//      TODO append(b, request.getServletName());
+        LogDetail logDetail = (LogDetail)request.getAttribute(LOG_DETAIL);
+        append(b, logDetail == null ? null : logDetail.handlerName);
     }
 
     @SuppressWarnings("unused")
@@ -1234,46 +1123,46 @@ public class CustomRequestLog extends ContainerLifeCycle implements RequestLog
     private static void logRequestTime(DateCache dateCache, StringBuilder b, Request request, Response response)
     {
         b.append('[');
-        append(b, dateCache.format(request.getTimeStamp()));
+        append(b, dateCache.format(Request.getTimeStamp(request)));
         b.append(']');
     }
 
     @SuppressWarnings("unused")
     private static void logLatencyMicroseconds(StringBuilder b, Request request, Response response)
     {
-        long currentTime = System.currentTimeMillis();
-        long requestTime = request.getTimeStamp();
-
-        long latencyMs = currentTime - requestTime;
-        long latencyUs = TimeUnit.MILLISECONDS.toMicros(latencyMs);
-
-        b.append(latencyUs);
+        logLatency(b, request, TimeUnit.MICROSECONDS);
     }
 
     @SuppressWarnings("unused")
     private static void logLatencyMilliseconds(StringBuilder b, Request request, Response response)
     {
-        long latency = System.currentTimeMillis() - request.getTimeStamp();
-        b.append(latency);
+        logLatency(b, request, TimeUnit.MILLISECONDS);
     }
 
     @SuppressWarnings("unused")
     private static void logLatencySeconds(StringBuilder b, Request request, Response response)
     {
-        long latency = System.currentTimeMillis() - request.getTimeStamp();
-        b.append(TimeUnit.MILLISECONDS.toSeconds(latency));
+        logLatency(b, request, TimeUnit.SECONDS);
+    }
+
+    private static void logLatency(StringBuilder b, Request request, TimeUnit unit)
+    {
+        b.append(unit.convert(NanoTime.since(request.getBeginNanoTime()), TimeUnit.NANOSECONDS));
     }
 
     @SuppressWarnings("unused")
     private static void logRequestAuthentication(StringBuilder b, Request request, Response response)
     {
-        append(b, getAuthentication(request, false));
+        Request.AuthenticationState authenticationState = Request.getAuthenticationState(request);
+        Principal userPrincipal = authenticationState == null ? null : authenticationState.getUserPrincipal();
+        append(b, userPrincipal == null ? null : userPrincipal.getName());
     }
 
     @SuppressWarnings("unused")
     private static void logRequestAuthenticationWithDeferred(StringBuilder b, Request request, Response response)
     {
-        append(b, getAuthentication(request, true));
+        // TODO: deferred to be implemented.
+        logRequestAuthentication(b, request, response);
     }
 
     @SuppressWarnings("unused")
@@ -1293,7 +1182,7 @@ public class CustomRequestLog extends ContainerLifeCycle implements RequestLog
     @SuppressWarnings("unused")
     private static void logRequestTrailer(String arg, StringBuilder b, Request request, Response response)
     {
-        HttpFields trailers = response.getOrCreateTrailers();
+        HttpFields trailers = request.getTrailers();
         if (trailers != null)
             append(b, trailers.get(arg));
         else
@@ -1303,10 +1192,80 @@ public class CustomRequestLog extends ContainerLifeCycle implements RequestLog
     @SuppressWarnings("unused")
     private static void logResponseTrailer(String arg, StringBuilder b, Request request, Response response)
     {
-        b.append('-');
-        HttpFields trailers = response.getOrCreateTrailers();
+        Supplier<HttpFields> supplier = response.getTrailersSupplier();
+        HttpFields trailers = supplier == null ? null : supplier.get();
         if (trailers != null)
             append(b, trailers.get(arg));
+        else
+            b.append('-');
+    }
+
+    @SuppressWarnings("unused")
+    private static void logRequestAuthority(StringBuilder b, Request request, Response response)
+    {
+        HttpURI httpURI = request.getHttpURI();
+        if (httpURI.hasAuthority())
+            append(b, httpURI.getAuthority());
+        else
+            b.append('-');
+    }
+
+    @SuppressWarnings("unused")
+    private static void logRequestScheme(StringBuilder b, Request request, Response response)
+    {
+        append(b, request.getHttpURI().getScheme());
+    }
+
+    @SuppressWarnings("unused")
+    private static void logRequestHttpUri(StringBuilder b, Request request, Response response)
+    {
+        append(b, request.getHttpURI().toString());
+    }
+
+    @SuppressWarnings("unused")
+    private static void logRequestHttpUriWithoutQuery(StringBuilder b, Request request, Response response)
+    {
+        HttpURI.Mutable uri = HttpURI.build(request.getHttpURI()).query(null);
+        append(b, uri.toString());
+    }
+
+    @SuppressWarnings("unused")
+    private static void logRequestHttpUriWithoutPathQuery(StringBuilder b, Request request, Response response)
+    {
+        // HttpURI doesn't support null path so we do this manually.
+        HttpURI httpURI = request.getHttpURI();
+        if (httpURI.getScheme() != null)
+            b.append(httpURI.getScheme()).append(':');
+        if (httpURI.getHost() != null)
+        {
+            b.append("//");
+            if (httpURI.getUser() != null)
+                b.append(httpURI.getUser()).append('@');
+            b.append(httpURI.getHost());
+        }
+        int normalizedPort = URIUtil.normalizePortForScheme(httpURI.getScheme(), httpURI.getPort());
+        if (normalizedPort > 0)
+            b.append(':').append(normalizedPort);
+    }
+
+    @SuppressWarnings("unused")
+    private static void logRequestHttpUriHost(StringBuilder b, Request request, Response response)
+    {
+        append(b, request.getHttpURI().getHost());
+    }
+
+    @SuppressWarnings("unused")
+    private static void logRequestHttpUriPort(StringBuilder b, Request request, Response response)
+    {
+        b.append(request.getHttpURI().getPort());
+    }
+
+    @SuppressWarnings("unused")
+    private static void logRequestAttribute(String arg, StringBuilder b, Request request, Response response)
+    {
+        Object attribute = request.getAttribute(arg);
+        if (attribute != null)
+            append(b, attribute.toString());
         else
             b.append('-');
     }

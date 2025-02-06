@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -173,6 +173,7 @@ public class ServletContextHandler extends ContextHandler
         _servletHandler = servletHandler;
 
         _objFactory = new DecoratedObjectFactory();
+        installBean(_objFactory, true);
 
         // Link the handlers
         relinkHandlers();
@@ -210,23 +211,6 @@ public class ServletContextHandler extends ContextHandler
             return true;
         }
         return false;
-    }
-
-    @Override
-    public void setHandler(Handler handler)
-    {
-        if (handler instanceof SessionHandler)
-            setSessionHandler((SessionHandler)handler);
-        else if (handler instanceof SecurityHandler)
-            setSecurityHandler((SecurityHandler)handler);
-        else if (handler instanceof ServletHandler)
-            setServletHandler((ServletHandler)handler);
-        else
-        {
-            if (handler != null)
-                LOG.warn("ServletContextHandler.setHandler should not be called directly. Use insertHandler or setSessionHandler etc.");
-            super.setHandler(handler);
-        }
     }
 
     private void doSetHandler(HandlerWrapper wrapper, Handler handler)
@@ -682,6 +666,19 @@ public class ServletContextHandler extends ContextHandler
         relinkHandlers();
     }
 
+    @Override
+    public void setHandler(Handler handler)
+    {
+        if (handler instanceof SessionHandler)
+            setSessionHandler((SessionHandler)handler);
+        else if (handler instanceof SecurityHandler)
+            setSecurityHandler((SecurityHandler)handler);
+        else if (handler instanceof ServletHandler)
+            setServletHandler((ServletHandler)handler);
+        else
+            getServletHandler().setHandler(handler);
+    }
+
     /**
      * Insert a HandlerWrapper before the first Session, Security or ServletHandler
      * but after any other HandlerWrappers.
@@ -706,6 +703,8 @@ public class ServletContextHandler extends ContextHandler
                 throw new IllegalArgumentException("bad tail of inserted wrapper chain");
 
             // Skip any injected handlers
+            // This is not the best behavior, but is retained here for jetty-10/11 compatibility
+            // but is changed in ee10 and beyond
             HandlerWrapper h = this;
             while (h.getHandler() instanceof HandlerWrapper)
             {
@@ -1049,7 +1048,7 @@ public class ServletContextHandler extends ContextHandler
             if (holder == null)
             {
                 //new filter
-                holder = handler.newFilterHolder(Source.JAVAX_API);
+                holder = handler.newFilterHolder(Source.JAKARTA_API);
                 holder.setName(filterName);
                 holder.setHeldClass(filterClass);
                 handler.addFilter(holder);
@@ -1078,7 +1077,7 @@ public class ServletContextHandler extends ContextHandler
             if (holder == null)
             {
                 //new filter
-                holder = handler.newFilterHolder(Source.JAVAX_API);
+                holder = handler.newFilterHolder(Source.JAKARTA_API);
                 holder.setName(filterName);
                 holder.setClassName(className);
                 handler.addFilter(holder);
@@ -1107,7 +1106,7 @@ public class ServletContextHandler extends ContextHandler
             if (holder == null)
             {
                 //new filter
-                holder = handler.newFilterHolder(Source.JAVAX_API);
+                holder = handler.newFilterHolder(Source.JAKARTA_API);
                 holder.setName(filterName);
                 holder.setFilter(filter);
                 handler.addFilter(holder);
@@ -1137,7 +1136,7 @@ public class ServletContextHandler extends ContextHandler
             if (holder == null)
             {
                 //new servlet
-                holder = handler.newServletHolder(Source.JAVAX_API);
+                holder = handler.newServletHolder(Source.JAKARTA_API);
                 holder.setName(servletName);
                 holder.setHeldClass(servletClass);
                 handler.addServlet(holder);
@@ -1167,7 +1166,7 @@ public class ServletContextHandler extends ContextHandler
             if (holder == null)
             {
                 //new servlet
-                holder = handler.newServletHolder(Source.JAVAX_API);
+                holder = handler.newServletHolder(Source.JAKARTA_API);
                 holder.setName(servletName);
                 holder.setClassName(className);
                 handler.addServlet(holder);
@@ -1196,7 +1195,7 @@ public class ServletContextHandler extends ContextHandler
             ServletHolder holder = handler.getServlet(servletName);
             if (holder == null)
             {
-                holder = handler.newServletHolder(Source.JAVAX_API);
+                holder = handler.newServletHolder(Source.JAKARTA_API);
                 holder.setName(servletName);
                 holder.setServlet(servlet);
                 handler.addServlet(holder);
@@ -1223,7 +1222,7 @@ public class ServletContextHandler extends ContextHandler
             if (holder == null)
             {
                 //new servlet
-                holder = handler.newServletHolder(Source.JAVAX_API);
+                holder = handler.newServletHolder(Source.JAKARTA_API);
                 holder.setName(servletName);
                 holder.setForcedPath(jspFile);
                 handler.addServlet(holder);
@@ -1400,8 +1399,6 @@ public class ServletContextHandler extends ContextHandler
         @Override
         public int getSessionTimeout()
         {
-            if (!isStarting())
-                throw new IllegalStateException();
             if (!_enabled)
                 throw new UnsupportedOperationException();
 
@@ -1489,7 +1486,7 @@ public class ServletContextHandler extends ContextHandler
 
             checkListener(t.getClass());
 
-            ListenerHolder holder = getServletHandler().newListenerHolder(Source.JAVAX_API);
+            ListenerHolder holder = getServletHandler().newListenerHolder(Source.JAKARTA_API);
             holder.setListener(t);
             addProgrammaticListener(t);
             getServletHandler().addListener(holder);

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -70,16 +70,17 @@ public class RewriteRegexRuleTest extends AbstractRuleTest
     private void start(RewriteRegexRule rule) throws Exception
     {
         _rewriteHandler.addRule(rule);
-        start(new Handler.Processor()
+        start(new Handler.Abstract()
         {
             @Override
-            public void process(Request request, Response response, Callback callback)
+            public boolean handle(Request request, Response response, Callback callback)
             {
                 HttpURI httpURI = request.getHttpURI();
                 response.getHeaders().put("X-Path", httpURI.getPath());
                 if (httpURI.getQuery() != null)
                     response.getHeaders().put("X-Query", httpURI.getQuery());
                 callback.succeeded();
+                return true;
             }
         });
     }
@@ -94,7 +95,7 @@ public class RewriteRegexRuleTest extends AbstractRuleTest
         String request = """
             GET $T HTTP/1.1
             Host: localhost
-                        
+            
             """.replace("$T", scenario.pathQuery);
 
         HttpTester.Response response = HttpTester.parseResponse(_connector.getResponse(request));
@@ -128,7 +129,7 @@ public class RewriteRegexRuleTest extends AbstractRuleTest
         String request = """
             GET $T HTTP/1.1
             Host: localhost
-                        
+            
             """.replace("$T", target);
 
         HttpTester.Response response = HttpTester.parseResponse(_connector.getResponse(request));
@@ -141,7 +142,46 @@ public class RewriteRegexRuleTest extends AbstractRuleTest
         assertThat(result, is(expectedResult));
     }
 
-    private record Scenario(String pathQuery, String regex, String replacement, String expectedPath, String expectedQuery)
+    public static Stream<Arguments> matchPathOnlyWithQueries()
+    {
+        return Stream.of(
+            Arguments.of("/foo/bar", "/test?p2=bar&p1=foo"),
+            Arguments.of("/foo/bar/", "/test?p2=bar&p1=foo"),
+            Arguments.of("/foo/bar?", "/test?p2=bar&p1=foo"),
+            Arguments.of("/foo/bar/?", "/test?p2=bar&p1=foo"),
+            Arguments.of("/foo/bar?a=b", "/test?a=b&p2=bar&p1=foo"),
+            Arguments.of("/foo/bar/?a=b", "/test?a=b&p2=bar&p1=foo")
+        );
+    }
+
+    @ParameterizedTest
+    @MethodSource("matchPathOnlyWithQueries")
+    public void testMatchOnlyOnPathAddQueries(String target, String expectedResult) throws Exception
+    {
+        String regex = "^/([^/]*)/([^/]*)/?.*$";
+        String replacement = "/test?p2=$2&p1=$1";
+        RewriteRegexRule rule = new RewriteRegexRule(regex, replacement);
+        rule.setMatchQuery(false);
+        rule.setAddQueries(true);
+        start(rule);
+
+        String request = """
+            GET $T HTTP/1.1
+            Host: localhost
+            
+            """.replace("$T", target);
+
+        HttpTester.Response response = HttpTester.parseResponse(_connector.getResponse(request));
+        assertEquals(HttpStatus.OK_200, response.getStatus(), "Response status code");
+        String result = response.get("X-Path");
+        String query = response.get("X-Query");
+        if (StringUtil.isNotBlank(query))
+            result = result + '?' + query;
+
+        assertThat(result, is(expectedResult));
+    }
+
+    public record Scenario(String pathQuery, String regex, String replacement, String expectedPath, String expectedQuery)
     {
     }
 }

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,7 +13,7 @@
 
 package org.eclipse.jetty.ee10.maven.plugin;
 
-import java.io.File;
+import java.net.URI;
 
 import org.eclipse.jetty.ee10.webapp.Configuration;
 import org.eclipse.jetty.ee10.webapp.WebAppClassLoader;
@@ -24,7 +24,7 @@ import org.slf4j.LoggerFactory;
 
 /**
  * MavenWebInfConfiguration
- *
+ * <p>
  * WebInfConfiguration to take account of overlaid wars expressed as project dependencies and
  * potential configured via the maven-war-plugin.
  */
@@ -34,10 +34,11 @@ public class MavenWebInfConfiguration extends WebInfConfiguration
 
     public MavenWebInfConfiguration()
     {
-        hide("org.apache.maven.",
-            "org.codehaus.plexus.",
-            "jakarta.enterprise.",
-            "javax.decorator.");
+        super(new Builder()
+            .hide("org.apache.maven.",
+                "org.codehaus.plexus.",
+                "jakarta.enterprise.",
+                "javax.decorator."));
     }
 
     @Override
@@ -52,14 +53,13 @@ public class MavenWebInfConfiguration extends WebInfConfiguration
         MavenWebAppContext jwac = (MavenWebAppContext)context;
 
         //put the classes dir and all dependencies into the classpath
-        if (jwac.getClassPathFiles() != null && context.getClassLoader() instanceof WebAppClassLoader)
+        if (jwac.getClassPathUris() != null && context.getClassLoader() instanceof WebAppClassLoader loader)
         {
             if (LOG.isDebugEnabled())
                 LOG.debug("Setting up classpath ...");
-            WebAppClassLoader loader = (WebAppClassLoader)context.getClassLoader();
-            for (File classpath : jwac.getClassPathFiles())
+            for (URI uri : jwac.getClassPathUris())
             {
-                loader.addClassPath(classpath.getCanonicalPath());
+                loader.addClassPath(uri.toASCIIString());
             }
         }
 

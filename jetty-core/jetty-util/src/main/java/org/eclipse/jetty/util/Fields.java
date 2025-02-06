@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -17,30 +17,29 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /**
  * <p>A container for name/value pairs, known as fields.</p>
- * <p>A {@link Field} is composed of a name string that can be case-sensitive
+ * <p>A {@link Field} is immutable and is composed of a name string that can be case-sensitive
  * or case-insensitive (by specifying the option at the constructor) and
  * of a case-sensitive set of value strings.</p>
  * <p>The implementation of this class is not thread safe.</p>
  */
 public class Fields implements Iterable<Fields.Field>
 {
-    private final boolean caseSensitive;
+    public static final Fields EMPTY = new Fields(Collections.emptyMap());
+
     private final Map<String, Field> fields;
 
     /**
      * <p>Creates an empty, modifiable, case insensitive {@code Fields} instance.</p>
-     *
-     * @see #Fields(Fields, boolean)
      */
     public Fields()
     {
@@ -48,29 +47,50 @@ public class Fields implements Iterable<Fields.Field>
     }
 
     /**
-     * <p>Creates an empty, modifiable, case insensitive {@code Fields} instance.</p>
+     * <p>Creates an empty, modifiable, case insensitive {@code Fields} instance.</p>**
      *
      * @param caseSensitive whether this {@code Fields} instance must be case sensitive
-     * @see #Fields(Fields, boolean)
      */
     public Fields(boolean caseSensitive)
     {
-        this.caseSensitive = caseSensitive;
-        fields = new LinkedHashMap<>();
+        this(caseSensitive ? new LinkedHashMap<>() : new TreeMap<>(String::compareToIgnoreCase));
     }
 
-    /**
-     * <p>Creates a {@code Fields} instance by copying the fields from the given
-     * {@code Fields} and making it (im)mutable depending on the given {@code immutable} parameter</p>
-     *
-     * @param original the {@code Fields} to copy fields from
-     * @param immutable whether this instance is immutable
-     */
-    public Fields(Fields original, boolean immutable)
+    public Fields(MultiMap<String> params)
     {
-        this.caseSensitive = original.caseSensitive;
-        Map<String, Field> copy = new LinkedHashMap<>(original.fields);
-        fields = immutable ? Collections.unmodifiableMap(copy) : copy;
+        this(multiMapToMapOfFields(params));
+    }
+
+    public Fields(Map<String, Field> fields)
+    {
+        this.fields = fields;
+    }
+
+    public Fields(Fields fields)
+    {
+        if (fields.fields instanceof TreeMap<String, Field>)
+        {
+            this.fields = new TreeMap<>(String::compareToIgnoreCase);
+            this.fields.putAll(fields.fields);
+        }
+        else if (fields.fields instanceof LinkedHashMap<String, Field>)
+        {
+            this.fields = new LinkedHashMap<>(fields.fields);
+        }
+        else if (Collections.unmodifiableMap(fields.fields) == fields.fields)
+        {
+            this.fields = fields.fields;
+        }
+        else
+        {
+            throw new IllegalStateException("unknown case sensitivity");
+        }
+    }
+
+    public Fields asImmutable()
+    {
+        Map<String, Field> unmodifiable = Collections.unmodifiableMap(fields);
+        return unmodifiable == fields ? this : new Fields(unmodifiable);
     }
 
     @Override
@@ -78,21 +98,24 @@ public class Fields implements Iterable<Fields.Field>
     {
         if (this == obj)
             return true;
-        if (obj == null || getClass() != obj.getClass())
+        if (obj == null)
             return false;
-        Fields that = (Fields)obj;
-        if (getSize() != that.getSize())
-            return false;
-        if (caseSensitive != that.caseSensitive)
-            return false;
-        for (Map.Entry<String, Field> entry : fields.entrySet())
+        if (obj instanceof Fields that)
         {
-            String name = entry.getKey();
-            Field value = entry.getValue();
-            if (!value.equals(that.get(name), caseSensitive))
+            if (getSize() != that.getSize())
                 return false;
+            if (!fields.getClass().equals(that.fields.getClass()))
+                return false;
+            for (Map.Entry<String, Field> entry : fields.entrySet())
+            {
+                String name = entry.getKey();
+                Field value = entry.getValue();
+                if (!value.equals(that.get(name)))
+                    return false;
+            }
+            return true;
         }
-        return true;
+        return false;
     }
 
     @Override
@@ -106,22 +129,12 @@ public class Fields implements Iterable<Fields.Field>
      */
     public Set<String> getNames()
     {
-        Set<String> result = new LinkedHashSet<>();
-        for (Field field : fields.values())
-        {
-            result.add(field.getName());
-        }
-        return result;
+        return fields.keySet();
     }
 
     public Stream<Field> stream()
     {
         return fields.values().stream();
-    }
-
-    protected String normalizeName(String name)
-    {
-        return caseSensitive ? name : name.toLowerCase(Locale.ENGLISH);
     }
 
     /**
@@ -130,7 +143,7 @@ public class Fields implements Iterable<Fields.Field>
      */
     public Field get(String name)
     {
-        return fields.get(normalizeName(name));
+        return fields.get(name);
     }
 
     /**
@@ -158,6 +171,18 @@ public class Fields implements Iterable<Fields.Field>
     }
 
     /**
+     * @param name the field name
+     * @return the values of the field with the given name, or empty list if no such field exists
+     */
+    public List<String> getValuesOrEmpty(String name)
+    {
+        Field field = get(name);
+        if (field == null)
+            return Collections.emptyList();
+        return field.getValues();
+    }
+
+    /**
      * <p>Inserts or replaces the given name/value pair as a single-valued {@link Field}.</p>
      *
      * @param name the field name
@@ -166,8 +191,8 @@ public class Fields implements Iterable<Fields.Field>
     public void put(String name, String value)
     {
         // Preserve the case for the field name
-        Field field = new Field(name, value);
-        fields.put(normalizeName(name), field);
+        Field field = new Field(name, StringUtil.nonNull(value));
+        fields.put(name, field);
     }
 
     /**
@@ -178,7 +203,10 @@ public class Fields implements Iterable<Fields.Field>
     public void put(Field field)
     {
         if (field != null)
-            fields.put(normalizeName(field.getName()), field);
+        {
+            String s = field.getName();
+            fields.put(s, field);
+        }
     }
 
     /**
@@ -190,15 +218,39 @@ public class Fields implements Iterable<Fields.Field>
      */
     public void add(String name, String value)
     {
-        String key = normalizeName(name);
-        fields.compute(key, (k, f) ->
+        fields.compute(name, (k, f) ->
         {
             if (f == null)
                 // Preserve the case for the field name
-                return new Field(name, value);
+                return new Field(name, StringUtil.nonNull(value));
             else
-                return new Field(f.getName(), f.getValues(), value);
+                return new Field(f.getName(), f.getValues(), StringUtil.nonNull(value));
         });
+    }
+
+    /**
+     * <p>Adds the given value to a field with the given name,
+     * creating a {@link Field} is none exists for the given name.</p>
+     *
+     * @param name the field name
+     * @param values the field values to add
+     */
+    public void add(String name, String... values)
+    {
+        if (values == null || values.length == 0)
+            return;
+        if (values.length == 1)
+            add(name, values[0]);
+        else
+        {
+            fields.compute(name, (k, f) ->
+            {
+                if (f == null)
+                    return new Field(name, StringUtil.toListNonNull(values));
+                else
+                    return new Field(f.getName(), f.getValues(), StringUtil.toListNonNull(values));
+            });
+        }
     }
 
     /**
@@ -209,7 +261,7 @@ public class Fields implements Iterable<Fields.Field>
      */
     public void add(Field field)
     {
-        String key = normalizeName(field.getName());
+        String key = field.getName();
         fields.compute(key, (k, f) ->
         {
             if (f == null)
@@ -217,6 +269,12 @@ public class Fields implements Iterable<Fields.Field>
             else
                 return new Field(f.getName(), f.getValues(), field.getValues());
         });
+    }
+
+    public void addAll(Fields fields)
+    {
+        for (Field field : fields)
+            add(field);
     }
 
     /**
@@ -227,7 +285,7 @@ public class Fields implements Iterable<Fields.Field>
      */
     public Field remove(String name)
     {
-        return fields.remove(normalizeName(name));
+        return fields.remove(name);
     }
 
     /**
@@ -249,6 +307,7 @@ public class Fields implements Iterable<Fields.Field>
     }
 
     /**
+     * Get the number of fields.
      * @return the number of fields
      */
     public int getSize()
@@ -270,23 +329,34 @@ public class Fields implements Iterable<Fields.Field>
      */
     public Map<String, String[]> toStringArrayMap()
     {
-        Map<String, String[]> result = new LinkedHashMap<>();
+        Map<String, String[]> result = new LinkedHashMap<>()
+        {
+            @Override
+            public String toString()
+            {
+                return TypeUtil.toString(this);
+            }
+        };
         fields.forEach((k, f) -> result.put(f.getName(), f.getValues().toArray(new String[0])));
         return result;
+    }
+
+    /**
+     * @return the fields (name and values) of this instance copied into a {@code MultiMap<String>}
+     */
+    public MultiMap<String> toMultiMap()
+    {
+        MultiMap<String> multiMap = new MultiMap<>();
+        fields.forEach((k, f) -> multiMap.addValues(k, f.getValues()));
+        return multiMap;
     }
 
     @Override
     public String toString()
     {
-        StringBuilder s = new StringBuilder();
-        char d = '[';
-        for (Field f : fields.values())
-        {
-            s.append(d).append(f.getName()).append('=').append(f.getValues());
-            d = ',';
-        }
-        s.append(']');
-        return s.toString();
+        return fields.values().stream()
+            .map(Field::toString)
+            .collect(Collectors.joining(",", "[", "]"));
     }
 
     /**
@@ -303,30 +373,75 @@ public class Fields implements Iterable<Fields.Field>
             this(name, List.of(value));
         }
 
-        private Field(String name, List<String> values, String... moreValues)
+        public Field(String name, List<String> values)
         {
-            this(name, values, List.of(moreValues));
+            this.name = name;
+            this.values = List.copyOf(values);
+        }
+
+        private Field(String name, List<String> values, String extraValue)
+        {
+            this(name, append(values, extraValue));
         }
 
         private Field(String name, List<String> values, List<String> moreValues)
         {
-            this.name = name;
-            List<String> list = new ArrayList<>(values.size() + moreValues.size());
-            list.addAll(values);
-            list.addAll(moreValues);
-            this.values = List.copyOf(list);
+            this(name, append(values, moreValues));
         }
 
-        @SuppressWarnings("ReferenceEquality")
-        public boolean equals(Field that, boolean caseSensitive)
+        private static List<String> append(List<String> values, String extraValue)
         {
-            if (this == that)
-                return true;
-            if (that == null)
-                return false;
-            if (caseSensitive)
-                return equals(that);
-            return name.equalsIgnoreCase(that.name) && values.equals(that.values);
+            return switch (values.size())
+            {
+                case 0 -> List.of(extraValue);
+                case 1 -> List.of(values.get(0), extraValue);
+                case 2 -> List.of(values.get(0), values.get(1), extraValue);
+                case 3 -> List.of(values.get(0), values.get(1), values.get(2), extraValue);
+                case 4 -> List.of(values.get(0), values.get(1), values.get(2), values.get(3), extraValue);
+                case 5 -> List.of(values.get(0), values.get(1), values.get(2), values.get(3), values.get(4), extraValue);
+                default ->
+                {
+                    List<String> list = new ArrayList<>(values.size() + 1);
+                    list.addAll(values);
+                    list.add(extraValue);
+                    yield list;
+                }
+            };
+        }
+
+        private static List<String> append(List<String> values, List<String> moreValues)
+        {
+            if (moreValues == null || moreValues.isEmpty())
+                return values;
+
+            if (moreValues.size() == 1)
+                return append(values, moreValues.get(0));
+
+            return switch (values.size())
+            {
+                case 0 -> moreValues;
+                case 1 -> switch (moreValues.size())
+                {
+                    case 2 -> List.of(values.get(0), moreValues.get(0), moreValues.get(1));
+                    case 3 -> List.of(values.get(0), moreValues.get(0), moreValues.get(1), moreValues.get(2));
+                    case 4 -> List.of(values.get(0), moreValues.get(0), moreValues.get(1), moreValues.get(2), moreValues.get(3));
+                    case 5 -> List.of(values.get(0), moreValues.get(0), moreValues.get(1), moreValues.get(2), moreValues.get(3), moreValues.get(4));
+                    default ->
+                    {
+                        List<String> list = new ArrayList<>(moreValues.size() + 1);
+                        list.add(values.get(0));
+                        list.addAll(moreValues);
+                        yield list;
+                    }
+                };
+                default ->
+                {
+                    List<String> list = new ArrayList<>(values.size() + moreValues.size());
+                    list.addAll(values);
+                    list.addAll(moreValues);
+                    yield list;
+                }
+            };
         }
 
         @Override
@@ -397,5 +512,36 @@ public class Fields implements Iterable<Fields.Field>
         {
             return String.format("%s=%s", name, values);
         }
+    }
+
+    /**
+     * <p>Combine two Fields</p>
+     * @param a The base Fields or null
+     * @param b The overlay Fields or null
+     * @return Fields, which may be empty, but never null.
+     */
+    public static Fields combine(Fields a, Fields b)
+    {
+        if (b == null || b.isEmpty())
+            return a == null ? EMPTY : a;
+
+        if (a == null || a.isEmpty())
+            return b;
+
+        Fields fields = new Fields(a.fields instanceof LinkedHashMap<String, Field>);
+        fields.addAll(a);
+        fields.addAll(b);
+        return fields;
+    }
+
+    private static Map<String, Field> multiMapToMapOfFields(MultiMap<String> params)
+    {
+        if (params.isEmpty())
+            return Collections.emptyMap();
+
+        Map<String, Field> fields = new LinkedHashMap<>();
+        for (Map.Entry<String, List<String>> entry : params.entrySet())
+            fields.put(entry.getKey(), new Field(entry.getKey(), entry.getValue()));
+        return fields;
     }
 }

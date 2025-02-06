@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -36,10 +36,9 @@ import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-@ExtendWith(WorkDirExtension.class)
+@ExtendWith(WorkDirExtension.class) 
 public class ConfigSourcesTest
 {
-    public WorkDir testdir;
 
     private void assertIdOrder(ConfigSources sources, String... expectedOrder)
     {
@@ -78,15 +77,16 @@ public class ConfigSourcesTest
     }
 
     @Test
-    public void testOrderBasicConfig() throws IOException
+    public void testOrderBasicConfig(WorkDir workDir) throws IOException
     {
+        Path testdir = workDir.getEmptyPathDir();
         // Create home
-        Path home = testdir.getPathFile("home");
+        Path home = testdir.resolve("home");
         FS.ensureEmpty(home);
         TestEnv.copyTestDir("dist-home", home);
 
         // Create base
-        Path base = testdir.getPathFile("base");
+        Path base = testdir.resolve("base");
         FS.ensureEmpty(base);
         TestEnv.makeFile(base, "start.ini",
             "jetty.http.host=127.0.0.1");
@@ -102,24 +102,25 @@ public class ConfigSourcesTest
     }
 
     @Test
-    public void testOrderWith1ExtraConfig() throws IOException
+    public void testOrderWith1ExtraConfig(WorkDir workDir) throws IOException
     {
+        Path testdir = workDir.getEmptyPathDir();
         // Create home
-        Path home = testdir.getPathFile("home");
+        Path home = testdir.resolve("home");
         FS.ensureEmpty(home);
         TestEnv.copyTestDir("dist-home", home);
 
         // Create common
-        Path common = testdir.getPathFile("common");
-        FS.ensureEmpty(common.toFile());
+        Path common = testdir.resolve("common");
+        FS.ensureEmpty(common);
         common = common.toRealPath();
 
         // Create base
-        Path base = testdir.getPathFile("base");
+        Path base = testdir.resolve("base");
         FS.ensureEmpty(base);
         TestEnv.makeFile(base, "start.ini",
             "jetty.http.host=127.0.0.1",
-            "--include-jetty-dir=" + common);
+            "--add-config-dir=" + common);
 
         ConfigSources sources = new ConfigSources();
 
@@ -132,20 +133,21 @@ public class ConfigSourcesTest
     }
 
     @Test
-    public void testCommandLine1ExtraFromSimpleProp() throws Exception
+    public void testCommandLine1ExtraFromSimpleProp(WorkDir workDir) throws Exception
     {
+        Path testdir = workDir.getEmptyPathDir();
         // Create home
-        Path home = testdir.getPathFile("home");
+        Path home = testdir.resolve("home");
         FS.ensureEmpty(home);
         TestEnv.copyTestDir("dist-home", home);
 
         // Create common
-        Path common = testdir.getPathFile("common");
+        Path common = testdir.resolve("common");
         FS.ensureEmpty(common);
         TestEnv.makeFile(common, "start.ini", "jetty.http.port=8080");
 
         // Create base
-        Path base = testdir.getPathFile("base");
+        Path base = testdir.resolve("base");
         FS.ensureEmpty(base);
         TestEnv.makeFile(base, "start.ini",
             "jetty.http.host=127.0.0.1");
@@ -158,7 +160,7 @@ public class ConfigSourcesTest
             // property
             "my.common=" + common,
             // reference via property
-            "--include-jetty-dir=${my.common}"
+            "--add-config-dir=${my.common}"
         };
 
         sources.add(new CommandLineConfigSource(cmdLine));
@@ -174,15 +176,16 @@ public class ConfigSourcesTest
     }
 
     @Test
-    public void testCommandLine1ExtraFromPropPrefix() throws Exception
+    public void testCommandLine1ExtraFromPropPrefix(WorkDir workDir) throws Exception
     {
+        Path testdir = workDir.getEmptyPathDir();
         // Create home
-        Path home = testdir.getPathFile("home");
+        Path home = testdir.resolve("home");
         FS.ensureEmpty(home);
         TestEnv.copyTestDir("dist-home", home);
 
         // Create opt
-        Path opt = testdir.getPathFile("opt");
+        Path opt = testdir.resolve("opt");
         FS.ensureEmpty(opt);
 
         // Create common
@@ -191,7 +194,7 @@ public class ConfigSourcesTest
         TestEnv.makeFile(common, "start.ini", "jetty.http.port=8080");
 
         // Create base
-        Path base = testdir.getPathFile("base");
+        Path base = testdir.resolve("base");
         FS.ensureEmpty(base);
         TestEnv.makeFile(base, "start.ini",
             "jetty.http.host=127.0.0.1");
@@ -205,7 +208,7 @@ public class ConfigSourcesTest
             // property to 'opt' dir
             "my.opt=" + opt,
             // reference via property prefix
-            "--include-jetty-dir=" + dirRef
+            "--add-config-dir=" + dirRef
         };
 
         sources.add(new CommandLineConfigSource(cmdLine));
@@ -221,15 +224,16 @@ public class ConfigSourcesTest
     }
 
     @Test
-    public void testCommandLine1ExtraFromCompoundProp() throws Exception
+    public void testCommandLine1ExtraFromCompoundProp(WorkDir workDir) throws Exception
     {
+        Path testdir = workDir.getEmptyPathDir();
         // Create home
-        Path home = testdir.getPathFile("home");
+        Path home = testdir.resolve("home");
         FS.ensureEmpty(home);
         TestEnv.copyTestDir("dist-home", home);
 
         // Create opt
-        Path opt = testdir.getPathFile("opt");
+        Path opt = testdir.resolve("opt");
         FS.ensureEmpty(opt);
 
         // Create common
@@ -238,7 +242,7 @@ public class ConfigSourcesTest
         TestEnv.makeFile(common, "start.ini", "jetty.http.port=8080");
 
         // Create base
-        Path base = testdir.getPathFile("base");
+        Path base = testdir.resolve("base");
         FS.ensureEmpty(base);
         TestEnv.makeFile(base, "start.ini",
             "jetty.http.host=127.0.0.1");
@@ -255,7 +259,7 @@ public class ConfigSourcesTest
             // property to common dir name
             "my.dir=common",
             // reference via property prefix
-            "--include-jetty-dir=" + dirRef
+            "--add-config-dir=" + dirRef
         };
 
         sources.add(new CommandLineConfigSource(cmdLine));
@@ -271,24 +275,25 @@ public class ConfigSourcesTest
     }
 
     @Test
-    public void testRefCommon() throws Exception
+    public void testRefCommon(WorkDir workDir) throws Exception
     {
+        Path testdir = workDir.getEmptyPathDir();
         // Create home
-        Path home = testdir.getPathFile("home");
+        Path home = testdir.resolve("home");
         FS.ensureEmpty(home);
         TestEnv.copyTestDir("dist-home", home);
 
         // Create common
-        Path common = testdir.getPathFile("common");
+        Path common = testdir.resolve("common");
         FS.ensureEmpty(common);
         TestEnv.makeFile(common, "start.ini", "jetty.http.port=8080");
 
         // Create base
-        Path base = testdir.getPathFile("base");
+        Path base = testdir.resolve("base");
         FS.ensureEmpty(base);
         TestEnv.makeFile(base, "start.ini",
             "jetty.http.host=127.0.0.1",
-            "--include-jetty-dir=" + common);
+            "--add-config-dir=" + common);
 
         ConfigSources sources = new ConfigSources();
 
@@ -306,29 +311,30 @@ public class ConfigSourcesTest
     }
 
     @Test
-    public void testRefCommonAndCorp() throws Exception
+    public void testRefCommonAndCorp(WorkDir workDir) throws Exception
     {
+        Path testdir = workDir.getEmptyPathDir();
         // Create home
-        Path home = testdir.getPathFile("home");
+        Path home = testdir.resolve("home");
         FS.ensureEmpty(home);
         TestEnv.copyTestDir("dist-home", home);
 
         // Create common
-        Path common = testdir.getPathFile("common");
+        Path common = testdir.resolve("common");
         FS.ensureEmpty(common);
         TestEnv.makeFile(common, "start.ini", "jetty.http.port=8080");
 
         // Create corp
-        Path corp = testdir.getPathFile("corp");
+        Path corp = testdir.resolve("corp");
         FS.ensureEmpty(corp);
 
         // Create base
-        Path base = testdir.getPathFile("base");
+        Path base = testdir.resolve("base");
         FS.ensureEmpty(base);
         TestEnv.makeFile(base, "start.ini",
             "jetty.http.host=127.0.0.1",
-            "--include-jetty-dir=" + common,
-            "--include-jetty-dir=" + corp.toString());
+            "--add-config-dir=" + common,
+            "--add-config-dir=" + corp.toString());
 
         ConfigSources sources = new ConfigSources();
 
@@ -349,32 +355,33 @@ public class ConfigSourcesTest
     }
 
     @Test
-    public void testRefCommonRefCorp() throws Exception
+    public void testRefCommonRefCorp(WorkDir workDir) throws Exception
     {
+        Path testdir = workDir.getEmptyPathDir();
         // Create home
-        Path home = testdir.getPathFile("home");
+        Path home = testdir.resolve("home");
         FS.ensureEmpty(home);
         TestEnv.copyTestDir("dist-home", home);
 
         // Create corp
-        Path corp = testdir.getPathFile("corp");
+        Path corp = testdir.resolve("corp");
         FS.ensureEmpty(corp);
         TestEnv.makeFile(corp, "start.ini",
             "jetty.http.port=9090");
 
         // Create common
-        Path common = testdir.getPathFile("common");
+        Path common = testdir.resolve("common");
         FS.ensureEmpty(common);
         TestEnv.makeFile(common, "start.ini",
-            "--include-jetty-dir=" + corp,
+            "--add-config-dir=" + corp,
             "jetty.http.port=8080");
 
         // Create base
-        Path base = testdir.getPathFile("base");
+        Path base = testdir.resolve("base");
         FS.ensureEmpty(base);
         TestEnv.makeFile(base, "start.ini",
             "jetty.http.host=127.0.0.1",
-            "--include-jetty-dir=" + common);
+            "--add-config-dir=" + common);
 
         ConfigSources sources = new ConfigSources();
 
@@ -395,34 +402,35 @@ public class ConfigSourcesTest
     }
 
     @Test
-    public void testRefCommonRefCorpFromSimpleProps() throws Exception
+    public void testRefCommonRefCorpFromSimpleProps(WorkDir workDir) throws Exception
     {
+        Path testdir = workDir.getEmptyPathDir();
         // Create home
-        Path home = testdir.getPathFile("home");
+        Path home = testdir.resolve("home");
         FS.ensureEmpty(home);
         TestEnv.copyTestDir("dist-home", home);
 
         // Create corp
-        Path corp = testdir.getPathFile("corp");
+        Path corp = testdir.resolve("corp");
         FS.ensureEmpty(corp);
         TestEnv.makeFile(corp, "start.ini",
             "jetty.http.port=9090");
 
         // Create common
-        Path common = testdir.getPathFile("common");
+        Path common = testdir.resolve("common");
         FS.ensureEmpty(common);
         TestEnv.makeFile(common, "start.ini",
             "my.corp=" + corp,
-            "--include-jetty-dir=${my.corp}",
+            "--add-config-dir=${my.corp}",
             "jetty.http.port=8080");
 
         // Create base
-        Path base = testdir.getPathFile("base");
+        Path base = testdir.resolve("base");
         FS.ensureEmpty(base);
         TestEnv.makeFile(base, "start.ini",
             "jetty.http.host=127.0.0.1",
             "my.common=" + common,
-            "--include-jetty-dir=${my.common}");
+            "--add-config-dir=${my.common}");
 
         ConfigSources sources = new ConfigSources();
 
@@ -444,45 +452,46 @@ public class ConfigSourcesTest
     }
 
     @Test
-    public void testRefCommonRefCorpCmdLineRef() throws Exception
+    public void testRefCommonRefCorpCmdLineRef(WorkDir workDir) throws Exception
     {
+        Path testdir = workDir.getEmptyPathDir();
         // Create home
-        Path home = testdir.getPathFile("home");
+        Path home = testdir.resolve("home");
         FS.ensureEmpty(home);
         TestEnv.copyTestDir("dist-home", home);
 
         // Create devops
-        Path devops = testdir.getPathFile("devops");
+        Path devops = testdir.resolve("devops");
         FS.ensureEmpty(devops);
         TestEnv.makeFile(devops, "start.ini",
-            "--module=logging",
+            "--modules=logging",
             "jetty.http.port=2222");
 
         // Create corp
-        Path corp = testdir.getPathFile("corp");
+        Path corp = testdir.resolve("corp");
         FS.ensureEmpty(corp);
         TestEnv.makeFile(corp, "start.ini",
             "jetty.http.port=9090");
 
         // Create common
-        Path common = testdir.getPathFile("common");
+        Path common = testdir.resolve("common");
         FS.ensureEmpty(common);
         TestEnv.makeFile(common, "start.ini",
-            "--include-jetty-dir=" + corp,
+            "--add-config-dir=" + corp,
             "jetty.http.port=8080");
 
         // Create base
-        Path base = testdir.getPathFile("base");
+        Path base = testdir.resolve("base");
         FS.ensureEmpty(base);
         TestEnv.makeFile(base, "start.ini",
             "jetty.http.host=127.0.0.1",
-            "--include-jetty-dir=" + common);
+            "--add-config-dir=" + common);
 
         ConfigSources sources = new ConfigSources();
 
         String[] cmdLine = new String[]{
             // command line provided include-jetty-dir ref
-            "--include-jetty-dir=" + devops
+            "--add-config-dir=" + devops
         };
         sources.add(new CommandLineConfigSource(cmdLine));
         sources.add(new JettyHomeConfigSource(home));
@@ -502,32 +511,33 @@ public class ConfigSourcesTest
     }
 
     @Test
-    public void testRefCommonRefCorpCmdLineProp() throws Exception
+    public void testRefCommonRefCorpCmdLineProp(WorkDir workDir) throws Exception
     {
+        Path testdir = workDir.getEmptyPathDir();
         // Create home
-        Path home = testdir.getPathFile("home");
+        Path home = testdir.resolve("home");
         FS.ensureEmpty(home);
         TestEnv.copyTestDir("dist-home", home);
 
         // Create corp
-        Path corp = testdir.getPathFile("corp");
+        Path corp = testdir.resolve("corp");
         FS.ensureEmpty(corp);
         TestEnv.makeFile(corp, "start.ini",
             "jetty.http.port=9090");
 
         // Create common
-        Path common = testdir.getPathFile("common");
+        Path common = testdir.resolve("common");
         FS.ensureEmpty(common);
         TestEnv.makeFile(common, "start.ini",
-            "--include-jetty-dir=" + corp,
+            "--add-config-dir=" + corp,
             "jetty.http.port=8080");
 
         // Create base
-        Path base = testdir.getPathFile("base");
+        Path base = testdir.resolve("base");
         FS.ensureEmpty(base);
         TestEnv.makeFile(base, "start.ini",
             "jetty.http.host=127.0.0.1",
-            "--include-jetty-dir=" + common);
+            "--add-config-dir=" + common);
 
         ConfigSources sources = new ConfigSources();
 
@@ -551,39 +561,40 @@ public class ConfigSourcesTest
     }
 
     @Test
-    public void testBadDoubleRef() throws Exception
+    public void testBadDoubleRef(WorkDir workDir) throws Exception
     {
+        Path testdir = workDir.getEmptyPathDir();
         // Create home
-        Path home = testdir.getPathFile("home");
+        Path home = testdir.resolve("home");
         FS.ensureEmpty(home);
         TestEnv.copyTestDir("dist-home", home);
 
         // Create common
-        Path common = testdir.getPathFile("common");
+        Path common = testdir.resolve("common");
         FS.ensureEmpty(common);
 
         // Create corp
-        Path corp = testdir.getPathFile("corp");
+        Path corp = testdir.resolve("corp");
         FS.ensureEmpty(corp);
         TestEnv.makeFile(corp, "start.ini",
             // standard property
             "jetty.http.port=9090",
             // INTENTIONAL BAD Reference (duplicate)
-            "--include-jetty-dir=" + common.toString());
+            "--add-config-dir=" + common.toString());
 
         // Populate common
         TestEnv.makeFile(common, "start.ini",
             // standard property
             "jetty.http.port=8080",
             // reference to corp
-            "--include-jetty-dir=" + corp);
+            "--add-config-dir=" + corp);
 
         // Create base
-        Path base = testdir.getPathFile("base");
+        Path base = testdir.resolve("base");
         FS.ensureEmpty(base);
         TestEnv.makeFile(base, "start.ini",
             "jetty.http.host=127.0.0.1",
-            "--include-jetty-dir=" + common);
+            "--add-config-dir=" + common);
 
         ConfigSources sources = new ConfigSources();
 

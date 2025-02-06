@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -21,10 +21,11 @@ import jakarta.servlet.http.HttpSession;
 import jakarta.servlet.http.HttpSessionActivationListener;
 import jakarta.servlet.http.HttpSessionBindingListener;
 import jakarta.servlet.http.HttpSessionEvent;
-import org.eclipse.jetty.ee9.nested.UserIdentity;
 import org.eclipse.jetty.ee9.security.AbstractUserAuthentication;
-import org.eclipse.jetty.ee9.security.LoginService;
+import org.eclipse.jetty.ee9.security.Authenticator;
 import org.eclipse.jetty.ee9.security.SecurityHandler;
+import org.eclipse.jetty.security.LoginService;
+import org.eclipse.jetty.security.UserIdentity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -76,7 +77,13 @@ public class SessionAuthentication extends AbstractUserAuthentication
             return;
         }
 
-        LoginService loginService = security.getLoginService();
+        LoginService loginService;
+        Authenticator authenticator = security.getAuthenticator();
+        if (authenticator instanceof LoginAuthenticator)
+            loginService = ((LoginAuthenticator)authenticator).getLoginService();
+        else
+            loginService = security.getLoginService();
+
         if (loginService == null)
         {
             if (LOG.isDebugEnabled())
@@ -84,7 +91,7 @@ public class SessionAuthentication extends AbstractUserAuthentication
             return;
         }
 
-        _userIdentity = loginService.login(_name, _credentials, null);
+        _userIdentity = loginService.login(_name, _credentials, null, null);
         LOG.debug("Deserialized and relogged in {}", this);
     }
 

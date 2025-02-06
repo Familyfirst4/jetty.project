@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -89,7 +89,6 @@ public class HttpHeaderAuthModule implements ServerAuthModule
     @Override
     public AuthStatus validateRequest(final MessageInfo messageInfo, final Subject client, final Subject serviceSubject) throws AuthException
     {
-
         // Take the request from the messageInfo structure.
         final HttpServletRequest req = (HttpServletRequest)messageInfo.getRequestMessage();
         try

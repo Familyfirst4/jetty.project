@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -60,6 +60,7 @@ public class GCloudSessionDataStoreFactory extends AbstractSessionDataStoreFacto
     }
 
     /**
+     * Get the namespace.
      * @return the namespace
      */
     public String getNamespace()
@@ -68,6 +69,7 @@ public class GCloudSessionDataStoreFactory extends AbstractSessionDataStoreFacto
     }
 
     /**
+     * Set the namespace to set.
      * @param namespace the namespace to set
      */
     public void setNamespace(String namespace)

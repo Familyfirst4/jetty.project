@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -68,7 +68,7 @@ import org.slf4j.LoggerFactory;
  * <p>
  * The check whether the timing header is set, will be performed only if
  * the user gets general access to the resource using the <b>allowedOrigins</b>.
- *
+ * </dd>
  * <dt>allowedMethods</dt>
  * <dd>a comma separated list of HTTP methods that
  * are allowed to be used when accessing the resources. Default value is
@@ -153,13 +153,13 @@ public class CrossOriginFilter implements Filter
     private boolean anyOriginAllowed;
     private boolean anyTimingOriginAllowed;
     private boolean anyHeadersAllowed;
-    private Set<String> allowedOrigins = new HashSet<String>();
-    private List<Pattern> allowedOriginPatterns = new ArrayList<Pattern>();
-    private Set<String> allowedTimingOrigins = new HashSet<String>();
-    private List<Pattern> allowedTimingOriginPatterns = new ArrayList<Pattern>();
-    private List<String> allowedMethods = new ArrayList<String>();
-    private List<String> allowedHeaders = new ArrayList<String>();
-    private List<String> exposedHeaders = new ArrayList<String>();
+    private final Set<String> allowedOrigins = new HashSet<>();
+    private final List<Pattern> allowedOriginPatterns = new ArrayList<>();
+    private final Set<String> allowedTimingOrigins = new HashSet<>();
+    private final List<Pattern> allowedTimingOriginPatterns = new ArrayList<>();
+    private final List<String> allowedMethods = new ArrayList<>();
+    private final List<String> allowedHeaders = new ArrayList<>();
+    private final List<String> exposedHeaders = new ArrayList<>();
     private int preflightMaxAge;
     private boolean allowCredentials;
     private boolean chainPreflight;
@@ -269,6 +269,7 @@ public class CrossOriginFilter implements Filter
 
     private void handle(HttpServletRequest request, HttpServletResponse response, FilterChain chain) throws IOException, ServletException
     {
+        response.addHeader("Vary", ORIGIN_HEADER);
         String origin = request.getHeader(ORIGIN_HEADER);
         // Is it a cross origin request ?
         if (origin != null && isEnabled(request))
@@ -319,12 +320,12 @@ public class CrossOriginFilter implements Filter
         // protocol that does not accept extra response headers on the upgrade response
         for (Enumeration<String> connections = request.getHeaders("Connection"); connections.hasMoreElements(); )
         {
-            String connection = (String)connections.nextElement();
+            String connection = connections.nextElement();
             if ("Upgrade".equalsIgnoreCase(connection))
             {
                 for (Enumeration<String> upgrades = request.getHeaders("Upgrade"); upgrades.hasMoreElements(); )
                 {
-                    String upgrade = (String)upgrades.nextElement();
+                    String upgrade = upgrades.nextElement();
                     if ("WebSocket".equalsIgnoreCase(upgrade))
                         return false;
                 }
@@ -381,16 +382,12 @@ public class CrossOriginFilter implements Filter
         String method = request.getMethod();
         if (!"OPTIONS".equalsIgnoreCase(method))
             return false;
-        if (request.getHeader(ACCESS_CONTROL_REQUEST_METHOD_HEADER) == null)
-            return false;
-        return true;
+        return request.getHeader(ACCESS_CONTROL_REQUEST_METHOD_HEADER) != null;
     }
 
     private void handleSimpleResponse(HttpServletRequest request, HttpServletResponse response, String origin)
     {
         response.setHeader(ACCESS_CONTROL_ALLOW_ORIGIN_HEADER, origin);
-        //W3C CORS spec http://www.w3.org/TR/cors/#resource-implementation
-        response.addHeader("Vary", ORIGIN_HEADER);
         if (allowCredentials)
             response.setHeader(ACCESS_CONTROL_ALLOW_CREDENTIALS_HEADER, "true");
         if (!exposedHeaders.isEmpty())
@@ -408,9 +405,6 @@ public class CrossOriginFilter implements Filter
         if (!headersAllowed)
             return;
         response.setHeader(ACCESS_CONTROL_ALLOW_ORIGIN_HEADER, origin);
-        //W3C CORS spec http://www.w3.org/TR/cors/#resource-implementation
-        if (!anyOriginAllowed)
-            response.addHeader("Vary", ORIGIN_HEADER);
         if (allowCredentials)
             response.setHeader(ACCESS_CONTROL_ALLOW_CREDENTIALS_HEADER, "true");
         if (preflightMaxAge > 0)
@@ -440,7 +434,7 @@ public class CrossOriginFilter implements Filter
         if (accessControlRequestHeaders == null)
             return Collections.emptyList();
 
-        List<String> requestedHeaders = new ArrayList<String>();
+        List<String> requestedHeaders = new ArrayList<>();
         String[] headers = StringUtil.csvSplit(accessControlRequestHeaders);
         for (String header : headers)
         {

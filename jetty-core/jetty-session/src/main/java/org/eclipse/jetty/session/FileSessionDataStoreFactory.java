@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -32,6 +32,7 @@ public class FileSessionDataStoreFactory extends AbstractSessionDataStoreFactory
     }
 
     /**
+     * Set the deleteUnrestorableFiles to set.
      * @param deleteUnrestorableFiles the deleteUnrestorableFiles to set
      */
     public void setDeleteUnrestorableFiles(boolean deleteUnrestorableFiles)
@@ -40,6 +41,7 @@ public class FileSessionDataStoreFactory extends AbstractSessionDataStoreFactory
     }
 
     /**
+     * Get the storeDir.
      * @return the storeDir
      */
     public File getStoreDir()
@@ -48,6 +50,7 @@ public class FileSessionDataStoreFactory extends AbstractSessionDataStoreFactory
     }
 
     /**
+     * Set the storeDir to set.
      * @param storeDir the storeDir to set
      */
     public void setStoreDir(File storeDir)

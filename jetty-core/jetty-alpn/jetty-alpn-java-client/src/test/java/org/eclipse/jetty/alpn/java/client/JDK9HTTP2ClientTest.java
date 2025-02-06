@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -25,9 +25,7 @@ import org.eclipse.jetty.http.MetaData;
 import org.eclipse.jetty.http2.api.Session;
 import org.eclipse.jetty.http2.api.Stream;
 import org.eclipse.jetty.http2.client.HTTP2Client;
-import org.eclipse.jetty.http2.frames.DataFrame;
 import org.eclipse.jetty.http2.frames.HeadersFrame;
-import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.FuturePromise;
 import org.eclipse.jetty.util.Jetty;
 import org.eclipse.jetty.util.Promise;
@@ -47,15 +45,14 @@ public class JDK9HTTP2ClientTest
 
         Assumptions.assumeTrue(canConnectTo(host, port));
 
-        HTTP2Client client = new HTTP2Client();
-        try
+        try (HTTP2Client client = new HTTP2Client())
         {
-            SslContextFactory sslContextFactory = new SslContextFactory.Client();
+            SslContextFactory.Client sslContextFactory = new SslContextFactory.Client();
             client.addBean(sslContextFactory);
             client.start();
 
             FuturePromise<Session> sessionPromise = new FuturePromise<>();
-            client.connect(sslContextFactory, new InetSocketAddress(host, port), new Session.Listener.Adapter(), sessionPromise);
+            client.connect(sslContextFactory, new InetSocketAddress(host, port), new Session.Listener() {}, sessionPromise);
             Session session = sessionPromise.get(15, TimeUnit.SECONDS);
 
             HttpFields.Mutable requestFields = HttpFields.build();
@@ -63,7 +60,7 @@ public class JDK9HTTP2ClientTest
             MetaData.Request metaData = new MetaData.Request("GET", HttpURI.from("https://" + host + ":" + port + "/"), HttpVersion.HTTP_2, requestFields);
             HeadersFrame headersFrame = new HeadersFrame(metaData, null, true);
             CountDownLatch latch = new CountDownLatch(1);
-            session.newStream(headersFrame, new Promise.Adapter<>(), new Stream.Listener.Adapter()
+            session.newStream(headersFrame, new Promise.Adapter<>(), new Stream.Listener()
             {
                 @Override
                 public void onHeaders(Stream stream, HeadersFrame frame)
@@ -71,23 +68,23 @@ public class JDK9HTTP2ClientTest
                     System.err.println(frame);
                     if (frame.isEndStream())
                         latch.countDown();
+                    stream.demand();
                 }
 
                 @Override
-                public void onData(Stream stream, DataFrame frame, Callback callback)
+                public void onDataAvailable(Stream stream)
                 {
-                    System.err.println(frame);
-                    callback.succeeded();
-                    if (frame.isEndStream())
+                    Stream.Data data = stream.readData();
+                    System.err.println(data);
+                    data.release();
+                    if (data.frame().isEndStream())
                         latch.countDown();
+                    else
+                        stream.demand();
                 }
             });
 
             latch.await(15, TimeUnit.SECONDS);
-        }
-        finally
-        {
-            client.stop();
         }
     }
 

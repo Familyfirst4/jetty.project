@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -19,6 +19,7 @@ import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
+import java.net.UnixDomainSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.ReadPendingException;
 import java.nio.channels.WritePendingException;
@@ -29,10 +30,10 @@ import java.util.Map;
 import org.eclipse.jetty.io.AbstractConnection;
 import org.eclipse.jetty.io.Connection;
 import org.eclipse.jetty.io.EndPoint;
-import org.eclipse.jetty.util.Attributes;
+import org.eclipse.jetty.io.RetainableByteBuffer;
 import org.eclipse.jetty.util.BufferUtil;
 import org.eclipse.jetty.util.Callback;
-import org.eclipse.jetty.util.TypeUtil;
+import org.eclipse.jetty.util.StringUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -41,11 +42,10 @@ import org.slf4j.LoggerFactory;
  * <p>This factory can be placed in front of any other connection factory
  * to process the proxy v1 or v2 line before the normal protocol handling</p>
  *
- * @see <a href="http://www.haproxy.org/download/1.5/doc/proxy-protocol.txt">http://www.haproxy.org/download/1.5/doc/proxy-protocol.txt</a>
+ * @see <a href="https://www.haproxy.org/download/2.8/doc/proxy-protocol.txt">PROXY protocol</a>
  */
 public class ProxyConnectionFactory extends DetectorConnectionFactory
 {
-    public static final String TLS_VERSION = "TLS_VERSION";
     private static final Logger LOG = LoggerFactory.getLogger(ProxyConnectionFactory.class);
 
     public ProxyConnectionFactory()
@@ -146,7 +146,7 @@ public class ProxyConnectionFactory extends DetectorConnectionFactory
 
             private final Connector _connector;
             private final ConnectionFactory _next;
-            private final ByteBuffer _buffer;
+            private final RetainableByteBuffer _buffer;
             private final StringBuilder _builder = new StringBuilder();
             private final String[] _fields = new String[6];
             private int _index;
@@ -170,12 +170,12 @@ public class ProxyConnectionFactory extends DetectorConnectionFactory
                     while (_index < LF_INDEX)
                     {
                         // Read data
-                        int fill = getEndPoint().fill(_buffer);
+                        int fill = getEndPoint().fill(_buffer.getByteBuffer());
                         if (LOG.isDebugEnabled())
                             LOG.debug("Proxy v1 filled buffer with {} bytes", fill);
                         if (fill < 0)
                         {
-                            _connector.getByteBufferPool().release(_buffer);
+                            _buffer.release();
                             getEndPoint().shutdownOutput();
                             return;
                         }
@@ -239,11 +239,12 @@ public class ProxyConnectionFactory extends DetectorConnectionFactory
                 if (_buffer.hasRemaining())
                 {
                     ByteBuffer unconsumed = ByteBuffer.allocateDirect(_buffer.remaining());
-                    unconsumed.put(_buffer);
+                    unconsumed.put(_buffer.getByteBuffer());
                     unconsumed.flip();
-                    _connector.getByteBufferPool().release(_buffer);
+                    _buffer.release();
                     return unconsumed;
                 }
+                _buffer.release();
                 return null;
             }
 
@@ -252,7 +253,7 @@ public class ProxyConnectionFactory extends DetectorConnectionFactory
             {
                 if (LOG.isDebugEnabled())
                     LOG.debug("Proxy v1 copying unconsumed buffer {}", BufferUtil.toDetailString(buffer));
-                BufferUtil.append(_buffer, buffer);
+                BufferUtil.append(_buffer.getByteBuffer(), buffer);
             }
 
             /**
@@ -261,13 +262,13 @@ public class ProxyConnectionFactory extends DetectorConnectionFactory
             private boolean parse() throws IOException
             {
                 if (LOG.isDebugEnabled())
-                    LOG.debug("Proxy v1 parsing {}", BufferUtil.toDetailString(_buffer));
+                    LOG.debug("Proxy v1 parsing {}", _buffer);
                 _length += _buffer.remaining();
 
                 // Parse fields
                 while (_buffer.hasRemaining())
                 {
-                    byte b = _buffer.get();
+                    byte b = _buffer.getByteBuffer().get();
                     if (_index < CR_INDEX)
                     {
                         if (b == ' ' || b == '\r')
@@ -310,7 +311,7 @@ public class ProxyConnectionFactory extends DetectorConnectionFactory
             {
                 if (LOG.isDebugEnabled())
                     LOG.debug("Proxy v1 releasing buffer and closing");
-                _connector.getByteBufferPool().release(_buffer);
+                _buffer.release();
                 close();
             }
 
@@ -378,6 +379,23 @@ public class ProxyConnectionFactory extends DetectorConnectionFactory
             0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A
         };
 
+        private static final int PP2_TYPE_ALPN = 0x01;
+        private static final int PP2_TYPE_AUTHORITY = 0x02;
+        private static final int PP2_TYPE_CRC32C = 0x03;
+        private static final int PP2_TYPE_NOOP = 0x04;
+        private static final int PP2_TYPE_UNIQUE_ID = 0x05;
+        private static final int PP2_TYPE_SSL = 0x20;
+        private static final int PP2_SUBTYPE_SSL_VERSION = 0x21;
+        private static final int PP2_SUBTYPE_SSL_CN = 0x22;
+        private static final int PP2_SUBTYPE_SSL_CIPHER = 0x23;
+        private static final int PP2_SUBTYPE_SSL_SIG_ALG = 0x24;
+        private static final int PP2_SUBTYPE_SSL_KEY_ALG = 0x25;
+        private static final int PP2_TYPE_NETNS = 0x30;
+
+        private static final int PP2_CLIENT_SSL = 0x01;
+        private static final int PP2_CLIENT_CERT_CONN = 0x02;
+        private static final int PP2_CLIENT_CERT_SESS = 0x04;
+
         private final String _nextProtocol;
         private int _maxProxyHeader = 1024;
 
@@ -439,7 +457,7 @@ public class ProxyConnectionFactory extends DetectorConnectionFactory
 
             private final Connector _connector;
             private final ConnectionFactory _next;
-            private final ByteBuffer _buffer;
+            private final RetainableByteBuffer _buffer;
             private boolean _local;
             private Family _family;
             private int _length;
@@ -458,7 +476,7 @@ public class ProxyConnectionFactory extends DetectorConnectionFactory
             {
                 if (LOG.isDebugEnabled())
                     LOG.debug("Proxy v2 copying unconsumed buffer {}", BufferUtil.toDetailString(buffer));
-                BufferUtil.append(_buffer, buffer);
+                BufferUtil.append(_buffer.getByteBuffer(), buffer);
             }
 
             @Override
@@ -501,12 +519,12 @@ public class ProxyConnectionFactory extends DetectorConnectionFactory
                     while (!_headerParsed)
                     {
                         // Read data
-                        int fill = getEndPoint().fill(_buffer);
+                        int fill = getEndPoint().fill(_buffer.getByteBuffer());
                         if (LOG.isDebugEnabled())
                             LOG.debug("Proxy v2 filled buffer with {} bytes", fill);
                         if (fill < 0)
                         {
-                            _connector.getByteBufferPool().release(_buffer);
+                            _buffer.release();
                             getEndPoint().shutdownOutput();
                             return;
                         }
@@ -520,17 +538,17 @@ public class ProxyConnectionFactory extends DetectorConnectionFactory
                     }
 
                     if (LOG.isDebugEnabled())
-                        LOG.debug("Proxy v2 onFillable header parsed, length = {}, buffer = {}", _length, BufferUtil.toDetailString(_buffer));
+                        LOG.debug("Proxy v2 onFillable header parsed, length = {}, buffer = {}", _length, _buffer);
 
                     while (_buffer.remaining() < _length)
                     {
                         // Read data
-                        int fill = getEndPoint().fill(_buffer);
+                        int fill = getEndPoint().fill(_buffer.getByteBuffer());
                         if (LOG.isDebugEnabled())
                             LOG.debug("Proxy v2 filled buffer with {} bytes", fill);
                         if (fill < 0)
                         {
-                            _connector.getByteBufferPool().release(_buffer);
+                            _buffer.release();
                             getEndPoint().shutdownOutput();
                             return;
                         }
@@ -558,11 +576,12 @@ public class ProxyConnectionFactory extends DetectorConnectionFactory
                 if (_buffer.hasRemaining())
                 {
                     ByteBuffer unconsumed = ByteBuffer.allocateDirect(_buffer.remaining());
-                    unconsumed.put(_buffer);
+                    unconsumed.put(_buffer.getByteBuffer());
                     unconsumed.flip();
-                    _connector.getByteBufferPool().release(_buffer);
+                    _buffer.release();
                     return unconsumed;
                 }
+                _buffer.release();
                 return null;
             }
 
@@ -570,17 +589,18 @@ public class ProxyConnectionFactory extends DetectorConnectionFactory
             {
                 int nonProxyRemaining = _buffer.remaining() - _length;
                 if (LOG.isDebugEnabled())
-                    LOG.debug("Proxy v2 parsing body, length = {}, buffer = {}", _length, BufferUtil.toHexSummary(_buffer));
+                    LOG.debug("Proxy v2 parsing body, length = {}, buffer = {}", _length, _buffer);
 
                 if (LOG.isDebugEnabled())
-                    LOG.debug("Proxy v2 body {} from {} for {}", _next, BufferUtil.toHexSummary(_buffer), this);
+                    LOG.debug("Proxy v2 body {} from {} for {}", _next, _buffer, this);
 
                 // Do we need to wrap the endpoint?
+                ByteBuffer byteBuffer = _buffer.getByteBuffer();
                 ProxyEndPoint proxyEndPoint;
                 EndPoint endPoint = getEndPoint();
                 if (_local)
                 {
-                    _buffer.position(_buffer.position() + _length);
+                    byteBuffer.position(byteBuffer.position() + _length);
                     proxyEndPoint = new ProxyEndPoint(endPoint, endPoint.getLocalSocketAddress(), endPoint.getRemoteSocketAddress());
                 }
                 else
@@ -589,87 +609,86 @@ public class ProxyConnectionFactory extends DetectorConnectionFactory
                     SocketAddress remote;
                     switch (_family)
                     {
-                        case INET:
+                        case INET ->
                         {
                             byte[] addr = new byte[4];
-                            _buffer.get(addr);
+                            byteBuffer.get(addr);
                             InetAddress srcAddr = Inet4Address.getByAddress(addr);
-                            _buffer.get(addr);
+                            byteBuffer.get(addr);
                             InetAddress dstAddr = Inet4Address.getByAddress(addr);
-                            int srcPort = _buffer.getChar();
-                            int dstPort = _buffer.getChar();
+                            int srcPort = byteBuffer.getChar();
+                            int dstPort = byteBuffer.getChar();
                             local = new InetSocketAddress(dstAddr, dstPort);
                             remote = new InetSocketAddress(srcAddr, srcPort);
-                            break;
                         }
-                        case INET6:
+                        case INET6 ->
                         {
                             byte[] addr = new byte[16];
-                            _buffer.get(addr);
+                            byteBuffer.get(addr);
                             InetAddress srcAddr = Inet6Address.getByAddress(addr);
-                            _buffer.get(addr);
+                            byteBuffer.get(addr);
                             InetAddress dstAddr = Inet6Address.getByAddress(addr);
-                            int srcPort = _buffer.getChar();
-                            int dstPort = _buffer.getChar();
+                            int srcPort = byteBuffer.getChar();
+                            int dstPort = byteBuffer.getChar();
                             local = new InetSocketAddress(dstAddr, dstPort);
                             remote = new InetSocketAddress(srcAddr, srcPort);
-                            break;
                         }
-                        case UNIX:
+                        case UNIX ->
                         {
                             byte[] addr = new byte[108];
-                            _buffer.get(addr);
-                            String src = UnixDomain.toPath(addr);
-                            _buffer.get(addr);
-                            String dst = UnixDomain.toPath(addr);
-                            local = UnixDomain.newSocketAddress(dst);
-                            remote = UnixDomain.newSocketAddress(src);
-                            break;
+                            byteBuffer.get(addr);
+                            String src = toUnixDomainPath(addr);
+                            byteBuffer.get(addr);
+                            String dst = toUnixDomainPath(addr);
+                            local = UnixDomainSocketAddress.of(dst);
+                            remote = UnixDomainSocketAddress.of(src);
                         }
-                        default:
-                        {
-                            throw new IllegalStateException("Unsupported family " + _family);
-                        }
+                        default -> throw new IllegalStateException("Unsupported family " + _family);
                     }
-                    proxyEndPoint = new ProxyEndPoint(endPoint, local, remote);
+
+                    int client = 0;
+                    String sslCipher = null;
+                    Map<Integer, byte[]> tlvs = null;
 
                     // Any additional info?
-                    while (_buffer.remaining() > nonProxyRemaining)
+                    while (byteBuffer.remaining() > nonProxyRemaining)
                     {
-                        int type = 0xff & _buffer.get();
-                        int length = _buffer.getChar();
+                        int type = 0xff & byteBuffer.get();
+                        int length = byteBuffer.getChar();
                         byte[] value = new byte[length];
-                        _buffer.get(value);
+                        byteBuffer.get(value);
 
                         if (LOG.isDebugEnabled())
-                            LOG.debug(String.format("Proxy v2 T=%x L=%d V=%s for %s", type, length, TypeUtil.toHexString(value), this));
+                            LOG.debug(String.format("Proxy v2 T=%x L=%d V=%s for %s", type, length, StringUtil.toHexString(value), this));
 
                         // PP2_TYPE_NOOP is only used for byte alignment, skip them.
-                        if (type != ProxyEndPoint.PP2_TYPE_NOOP)
-                            proxyEndPoint.putTLV(type, value);
-
-                        if (type == ProxyEndPoint.PP2_TYPE_SSL)
+                        if (type != PP2_TYPE_NOOP)
                         {
-                            int client = value[0] & 0xFF;
-                            if (client == ProxyEndPoint.PP2_TYPE_SSL_PP2_CLIENT_SSL)
+                            if (tlvs == null)
+                                tlvs = new HashMap<>();
+                            tlvs.put(type, value);
+                        }
+
+                        if (type == PP2_TYPE_SSL)
+                        {
+                            client = value[0] & 0xFF;
+                            sslCipher = null;
+                            int i = 5; // Index of the first sub_tlv, after verify.
+                            while (i < length)
                             {
-                                int i = 5; // Index of the first sub_tlv, after verify.
-                                while (i < length)
-                                {
-                                    int subType = value[i++] & 0xFF;
-                                    int subLength = (value[i++] & 0xFF) * 256 + (value[i++] & 0xFF);
-                                    byte[] subValue = new byte[subLength];
-                                    System.arraycopy(value, i, subValue, 0, subLength);
-                                    i += subLength;
-                                    if (subType == ProxyEndPoint.PP2_SUBTYPE_SSL_VERSION)
-                                    {
-                                        String tlsVersion = new String(subValue, StandardCharsets.US_ASCII);
-                                        proxyEndPoint.setAttribute(TLS_VERSION, tlsVersion);
-                                    }
-                                }
+                                int subType = value[i++] & 0xFF;
+                                int subLength = (value[i++] & 0xFF) * 256 + (value[i++] & 0xFF);
+                                byte[] subValue = new byte[subLength];
+                                System.arraycopy(value, i, subValue, 0, subLength);
+                                tlvs.put(subType, subValue);
+                                i += subLength;
+                                if (subType == PP2_SUBTYPE_SSL_CIPHER)
+                                    sslCipher = new String(subValue, StandardCharsets.US_ASCII);
                             }
                         }
                     }
+
+                    proxyEndPoint = new ProxyEndPoint(endPoint, local, remote, tlvs, client == 0 ? null : EndPoint.SslSessionData.from(null, null, sslCipher, null));
 
                     if (LOG.isDebugEnabled())
                         LOG.debug("Proxy v2 {} {}", endPoint, proxyEndPoint);
@@ -683,12 +702,14 @@ public class ProxyConnectionFactory extends DetectorConnectionFactory
             private void parseHeader() throws IOException
             {
                 if (LOG.isDebugEnabled())
-                    LOG.debug("Proxy v2 parsing fixed length packet part, buffer = {}", BufferUtil.toDetailString(_buffer));
+                    LOG.debug("Proxy v2 parsing fixed length packet part, buffer = {}", _buffer);
                 if (_buffer.remaining() < HEADER_LENGTH)
                     return;
 
                 if (LOG.isDebugEnabled())
-                    LOG.debug("Proxy v2 header {} for {}", BufferUtil.toHexSummary(_buffer), this);
+                    LOG.debug("Proxy v2 header {} for {}", _buffer, this);
+
+                ByteBuffer byteBuffer = _buffer.getByteBuffer();
 
                 // struct proxy_hdr_v2 {
                 //     uint8_t sig[12];  /* hex 0D 0A 0D 0A 00 0D 0A 51 55 49 54 0A */
@@ -698,51 +719,34 @@ public class ProxyConnectionFactory extends DetectorConnectionFactory
                 // };
                 for (byte signatureByte : SIGNATURE)
                 {
-                    if (_buffer.get() != signatureByte)
+                    if (byteBuffer.get() != signatureByte)
                         throw new IOException("Proxy v2 bad PROXY signature");
                 }
 
-                int versionAndCommand = 0xFF & _buffer.get();
+                int versionAndCommand = 0xFF & byteBuffer.get();
                 if ((versionAndCommand & 0xF0) != 0x20)
                     throw new IOException("Proxy v2 bad PROXY version");
                 _local = (versionAndCommand & 0xF) == 0x00;
 
-                int transportAndFamily = 0xFF & _buffer.get();
+                int transportAndFamily = 0xFF & byteBuffer.get();
                 switch (transportAndFamily >> 4)
                 {
-                    case 0:
-                        _family = Family.UNSPEC;
-                        break;
-                    case 1:
-                        _family = Family.INET;
-                        break;
-                    case 2:
-                        _family = Family.INET6;
-                        break;
-                    case 3:
-                        _family = Family.UNIX;
-                        break;
-                    default:
-                        throw new IOException("Proxy v2 bad PROXY family");
+                    case 0 -> _family = Family.UNSPEC;
+                    case 1 -> _family = Family.INET;
+                    case 2 -> _family = Family.INET6;
+                    case 3 -> _family = Family.UNIX;
+                    default -> throw new IOException("Proxy v2 bad PROXY family");
                 }
 
-                Transport transport;
-                switch (transportAndFamily & 0xF)
+                Transport transport = switch (transportAndFamily & 0xF)
                 {
-                    case 0:
-                        transport = Transport.UNSPEC;
-                        break;
-                    case 1:
-                        transport = Transport.STREAM;
-                        break;
-                    case 2:
-                        transport = Transport.DGRAM;
-                        break;
-                    default:
-                        throw new IOException("Proxy v2 bad PROXY family");
-                }
+                    case 0 -> Transport.UNSPEC;
+                    case 1 -> Transport.STREAM;
+                    case 2 -> Transport.DGRAM;
+                    default -> throw new IOException("Proxy v2 bad PROXY family");
+                };
 
-                _length = _buffer.getChar();
+                _length = byteBuffer.getChar();
 
                 if (!_local && (_family == Family.UNSPEC || transport != Transport.STREAM))
                     throw new IOException(String.format("Proxy v2 unsupported PROXY mode 0x%x,0x%x", versionAndCommand, transportAndFamily));
@@ -757,35 +761,52 @@ public class ProxyConnectionFactory extends DetectorConnectionFactory
 
             private void releaseAndClose()
             {
-                _connector.getByteBufferPool().release(_buffer);
+                if (LOG.isDebugEnabled())
+                    LOG.debug("Proxy v2 releasing buffer and closing");
+                _buffer.release();
                 close();
+            }
+
+            private static String toUnixDomainPath(byte[] bytes)
+            {
+                // Unix-Domain paths are zero-terminated.
+                int i = 0;
+                while (i < bytes.length)
+                {
+                    if (bytes[i++] == 0)
+                        break;
+                }
+                return new String(bytes, 0, i, StandardCharsets.US_ASCII).trim();
             }
         }
     }
 
-    public static class ProxyEndPoint extends Attributes.Lazy implements EndPoint, EndPoint.Wrapper
+    public static class ProxyEndPoint implements EndPoint, EndPoint.Wrapper
     {
-        private static final int PP2_TYPE_NOOP = 0x04;
-        private static final int PP2_TYPE_SSL = 0x20;
-        private static final int PP2_TYPE_SSL_PP2_CLIENT_SSL = 0x01;
-        private static final int PP2_SUBTYPE_SSL_VERSION = 0x21;
-
         private final EndPoint _endPoint;
         private final SocketAddress _local;
         private final SocketAddress _remote;
-        private Map<Integer, byte[]> _tlvs;
-
-        @Deprecated
-        public ProxyEndPoint(EndPoint endPoint, InetSocketAddress remote, InetSocketAddress local)
-        {
-            this(endPoint, (SocketAddress)local, remote);
-        }
+        private final Map<Integer, byte[]> _tlvs;
+        private final SslSessionData _sslSessionData;
 
         public ProxyEndPoint(EndPoint endPoint, SocketAddress local, SocketAddress remote)
+        {
+            this(endPoint, local, remote, null, null);
+        }
+
+        public ProxyEndPoint(EndPoint endPoint, SocketAddress local, SocketAddress remote, Map<Integer, byte[]> tlvs, SslSessionData sslSessionData)
         {
             _endPoint = endPoint;
             _local = local;
             _remote = remote;
+            _tlvs = tlvs;
+            _sslSessionData = sslSessionData;
+        }
+
+        @Override
+        public SslSessionData getSslSessionData()
+        {
+            return _sslSessionData;
         }
 
         public EndPoint unwrap()
@@ -794,22 +815,9 @@ public class ProxyConnectionFactory extends DetectorConnectionFactory
         }
         
         /**
-         * <p>Sets a TLV vector, see section 2.2.7 of the PROXY protocol specification.</p>
-         * 
-         * @param type the TLV type
-         * @param value the TLV value
-         */
-        private void putTLV(int type, byte[] value)
-        {
-            if (_tlvs == null)
-                _tlvs = new HashMap<>();
-            _tlvs.put(type, value);
-        }
-        
-        /**
          * <p>Gets a TLV vector, see section 2.2.7 of the PROXY protocol specification.</p>
          *
-         * @param type the TLV type
+         * @param type the TLV type or subtype
          * @return the TLV value or null if not present.
          */
         public byte[] getTLV(int type)
@@ -976,53 +984,6 @@ public class ProxyConnectionFactory extends DetectorConnectionFactory
         public void write(Callback callback, ByteBuffer... buffers) throws WritePendingException
         {
             _endPoint.write(callback, buffers);
-        }
-    }
-
-    private static class UnixDomain
-    {
-        private static final Class<?> unixDomainSocketAddress = probe();
-
-        private static Class<?> probe()
-        {
-            try
-            {
-                return ClassLoader.getPlatformClassLoader().loadClass("java.net.UnixDomainSocketAddress");
-            }
-            catch (Throwable x)
-            {
-                if (LOG.isDebugEnabled())
-                    LOG.debug("ignored", x);
-                return null;
-            }
-        }
-
-        private static SocketAddress newSocketAddress(String path)
-        {
-            try
-            {
-                if (unixDomainSocketAddress != null)
-                    return (SocketAddress)unixDomainSocketAddress.getMethod("of", String.class).invoke(null, path);
-                return null;
-            }
-            catch (Throwable x)
-            {
-                if (LOG.isDebugEnabled())
-                    LOG.debug("ignored", x);
-                return null;
-            }
-        }
-
-        private static String toPath(byte[] bytes)
-        {
-            // Unix-Domain paths are zero-terminated.
-            int i = 0;
-            while (i < bytes.length)
-            {
-                if (bytes[i++] == 0)
-                    break;
-            }
-            return new String(bytes, 0, i, StandardCharsets.US_ASCII).trim();
         }
     }
 }

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -51,7 +51,7 @@ public class DecoderTextStreamTest extends AbstractClientSessionTest
     {
         Decoder.TextStream<Quotes> decoder = new QuotesDecoder();
 
-        Path quotesPath = MavenTestingUtils.getTestResourcePath("quotes-ben.txt");
+        Path quotesPath = MavenTestingUtils.getTargetPath("test-classes/quotes-ben.txt");
         try (Reader reader = Files.newBufferedReader(quotesPath))
         {
             Quotes quotes = decoder.decode(reader);

@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -19,11 +19,6 @@ import javax.naming.Context;
 import javax.naming.InitialContext;
 import javax.naming.Name;
 
-import org.eclipse.jetty.ee10.plus.annotation.Injection;
-import org.eclipse.jetty.ee10.plus.annotation.InjectionCollection;
-import org.eclipse.jetty.ee10.plus.jndi.EnvEntry;
-import org.eclipse.jetty.ee10.plus.jndi.NamingEntryUtil;
-import org.eclipse.jetty.ee10.plus.jndi.Resource;
 import org.eclipse.jetty.ee10.webapp.Configuration;
 import org.eclipse.jetty.ee10.webapp.Descriptor;
 import org.eclipse.jetty.ee10.webapp.FragmentDescriptor;
@@ -31,11 +26,17 @@ import org.eclipse.jetty.ee10.webapp.Origin;
 import org.eclipse.jetty.ee10.webapp.WebAppClassLoader;
 import org.eclipse.jetty.ee10.webapp.WebAppContext;
 import org.eclipse.jetty.ee10.webapp.WebDescriptor;
-import org.eclipse.jetty.jndi.NamingUtil;
+import org.eclipse.jetty.plus.annotation.Injection;
+import org.eclipse.jetty.plus.annotation.InjectionCollection;
+import org.eclipse.jetty.plus.jndi.EnvEntry;
+import org.eclipse.jetty.plus.jndi.NamingEntryUtil;
+import org.eclipse.jetty.plus.jndi.Resource;
 import org.eclipse.jetty.util.IntrospectionUtil;
+import org.eclipse.jetty.util.jndi.NamingUtil;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.Isolated;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
@@ -51,6 +52,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 /**
  * PlusDescriptorProcessorTest
  */
+@Isolated("jndi entries")
 public class PlusDescriptorProcessorTest
 {
     protected static final Class<?>[] STRING_ARG = new Class[]{String.class};
@@ -127,7 +129,7 @@ public class PlusDescriptorProcessorTest
         context.setConfigurations(new Configuration[]{new PlusConfiguration(), new EnvConfiguration()});
         context.preConfigure();
         context.setClassLoader(new WebAppClassLoader(Thread.currentThread().getContextClassLoader(), context));
-        context.getServerClassMatcher().exclude("org.eclipse.jetty.ee10.plus.webapp."); //need visbility of the TestInjections class
+        context.getHiddenClassMatcher().exclude("org.eclipse.jetty.ee10.plus.webapp."); //need visbility of the TestInjections class
         ClassLoader oldLoader = Thread.currentThread().getContextClassLoader();
         Thread.currentThread().setContextClassLoader(context.getClassLoader());
         Context icontext = new InitialContext();
@@ -154,20 +156,20 @@ public class PlusDescriptorProcessorTest
         doEnvConfiguration(envCtx, vacuumStringEnvEntry);
 
         URL webXml = Thread.currentThread().getContextClassLoader().getResource("web.xml");
-        webDescriptor = new WebDescriptor(org.eclipse.jetty.util.resource.Resource.newResource(webXml));
+        webDescriptor = new WebDescriptor(context.getResourceFactory().newResource(webXml));
         webDescriptor.parse(WebDescriptor.getParser(false));
 
         URL frag1Xml = Thread.currentThread().getContextClassLoader().getResource("web-fragment-1.xml");
-        fragDescriptor1 = new FragmentDescriptor(org.eclipse.jetty.util.resource.Resource.newResource(frag1Xml));
+        fragDescriptor1 = new FragmentDescriptor(context.getResourceFactory().newResource(frag1Xml));
         fragDescriptor1.parse(WebDescriptor.getParser(false));
         URL frag2Xml = Thread.currentThread().getContextClassLoader().getResource("web-fragment-2.xml");
-        fragDescriptor2 = new FragmentDescriptor(org.eclipse.jetty.util.resource.Resource.newResource(frag2Xml));
+        fragDescriptor2 = new FragmentDescriptor(context.getResourceFactory().newResource(frag2Xml));
         fragDescriptor2.parse(WebDescriptor.getParser(false));
         URL frag3Xml = Thread.currentThread().getContextClassLoader().getResource("web-fragment-3.xml");
-        fragDescriptor3 = new FragmentDescriptor(org.eclipse.jetty.util.resource.Resource.newResource(frag3Xml));
+        fragDescriptor3 = new FragmentDescriptor(context.getResourceFactory().newResource(frag3Xml));
         fragDescriptor3.parse(WebDescriptor.getParser(false));
         URL frag4Xml = Thread.currentThread().getContextClassLoader().getResource("web-fragment-4.xml");
-        fragDescriptor4 = new FragmentDescriptor(org.eclipse.jetty.util.resource.Resource.newResource(frag4Xml));
+        fragDescriptor4 = new FragmentDescriptor(context.getResourceFactory().newResource(frag4Xml));
         fragDescriptor4.parse(WebDescriptor.getParser(false));
         Thread.currentThread().setContextClassLoader(oldLoader);
     }
@@ -177,7 +179,7 @@ public class PlusDescriptorProcessorTest
      * 
      * @param envCtx the java:comp/env context
      * @param envEntry the EnvEntry
-     * @throws Exception
+     * @throws Exception if there is an unspecified problem
      */
     private void doEnvConfiguration(Context envCtx, EnvEntry envEntry) throws Exception
     {

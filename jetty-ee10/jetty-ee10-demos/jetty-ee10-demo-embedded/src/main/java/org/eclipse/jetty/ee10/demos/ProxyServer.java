@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -13,12 +13,12 @@
 
 package org.eclipse.jetty.ee10.demos;
 
-import org.eclipse.jetty.ee10.proxy.ConnectHandler;
 import org.eclipse.jetty.ee10.proxy.ProxyServlet;
 import org.eclipse.jetty.ee10.servlet.ServletContextHandler;
 import org.eclipse.jetty.ee10.servlet.ServletHolder;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
+import org.eclipse.jetty.server.handler.ConnectHandler;
 
 public class ProxyServer
 {
@@ -36,8 +36,9 @@ public class ProxyServer
         server.setHandler(proxy);
 
         // Setup proxy servlet
-        ServletContextHandler context = new ServletContextHandler(proxy, "/",
+        ServletContextHandler context = new ServletContextHandler("/",
             ServletContextHandler.SESSIONS);
+        proxy.setHandler(context);
         ServletHolder proxyServlet = new ServletHolder(ProxyServlet.class);
         proxyServlet.setInitParameter("blackList", "www.eclipse.org");
         context.addServlet(proxyServlet, "/*");
