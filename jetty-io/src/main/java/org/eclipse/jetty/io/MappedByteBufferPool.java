@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -24,6 +24,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
 import org.eclipse.jetty.util.BufferUtil;
+import org.eclipse.jetty.util.NanoTime;
 import org.eclipse.jetty.util.annotation.ManagedAttribute;
 import org.eclipse.jetty.util.annotation.ManagedObject;
 import org.eclipse.jetty.util.component.Dumpable;
@@ -133,6 +134,12 @@ public class MappedByteBufferPool extends AbstractByteBufferPool implements Dump
         _newBucket = newBucket;
     }
 
+    @Override
+    protected RetainableByteBufferPool newRetainableByteBufferPool(int factor, int maxCapacity, int maxBucketSize, long retainedHeapMemory, long retainedDirectMemory)
+    {
+        return new Retained(factor, maxCapacity, maxBucketSize, retainedHeapMemory, retainedDirectMemory);
+    }
+
     private Bucket newBucket(int key, boolean direct)
     {
         return (_newBucket != null) ? _newBucket.apply(key) : new Bucket(capacityFor(key), getMaxBucketSize(), updateMemory(direct));
@@ -197,10 +204,10 @@ public class MappedByteBufferPool extends AbstractByteBufferPool implements Dump
             if (bucket.isEmpty())
                 continue;
 
-            long lastUpdate = bucket.getLastUpdate();
-            if (lastUpdate < oldest)
+            long lastUpdateNanoTime = bucket.getLastUpdate();
+            if (oldest == Long.MAX_VALUE || NanoTime.isBefore(lastUpdateNanoTime, oldest))
             {
-                oldest = lastUpdate;
+                oldest = lastUpdateNanoTime;
                 index = entry.getKey();
             }
         }
@@ -301,5 +308,31 @@ public class MappedByteBufferPool extends AbstractByteBufferPool implements Dump
             this.getClass().getSimpleName(), hashCode(),
             getMaxBucketSize(),
             getCapacityFactor());
+    }
+
+    protected class Retained extends ArrayRetainableByteBufferPool
+    {
+        public Retained(int factor, int maxCapacity, int maxBucketSize, long retainedHeapMemory, long retainedDirectMemory)
+        {
+            super(0, factor, maxCapacity, maxBucketSize, retainedHeapMemory, retainedDirectMemory);
+        }
+
+        @Override
+        protected ByteBuffer allocate(int capacity)
+        {
+            return MappedByteBufferPool.this.acquire(capacity, false);
+        }
+
+        @Override
+        protected ByteBuffer allocateDirect(int capacity)
+        {
+            return MappedByteBufferPool.this.acquire(capacity, true);
+        }
+
+        @Override
+        protected void removed(RetainableByteBuffer retainedBuffer)
+        {
+            MappedByteBufferPool.this.release(retainedBuffer.getBuffer());
+        }
     }
 }

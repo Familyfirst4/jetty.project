@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -22,6 +22,7 @@ import java.util.Objects;
 import java.util.stream.Collectors;
 
 import org.eclipse.jetty.util.BufferUtil;
+import org.eclipse.jetty.util.NanoTime;
 import org.eclipse.jetty.util.annotation.ManagedAttribute;
 import org.eclipse.jetty.util.annotation.ManagedObject;
 import org.eclipse.jetty.util.component.Dumpable;
@@ -208,10 +209,10 @@ public class ArrayByteBufferPool extends AbstractByteBufferPool implements Dumpa
             Bucket bucket = buckets[i];
             if (bucket.isEmpty())
                 continue;
-            long lastUpdate = bucket.getLastUpdate();
-            if (lastUpdate < oldest)
+            long lastUpdateNanoTime = bucket.getLastUpdate();
+            if (oldest == Long.MAX_VALUE || NanoTime.isBefore(lastUpdateNanoTime, oldest))
             {
-                oldest = lastUpdate;
+                oldest = lastUpdateNanoTime;
                 index = i;
             }
         }
@@ -336,6 +337,44 @@ public class ArrayByteBufferPool extends AbstractByteBufferPool implements Dumpa
         protected void removed(RetainableByteBuffer retainedBuffer)
         {
             ArrayByteBufferPool.this.release(retainedBuffer.getBuffer());
+        }
+    }
+
+    /**
+     * <p>A variant of {@link ArrayByteBufferPool} that tracks buffer
+     * acquires/releases of the retained buffers, useful to identify buffer leaks.</p>
+     * @see ArrayRetainableByteBufferPool.Tracking
+     */
+    public static class Tracking extends ArrayByteBufferPool
+    {
+        public Tracking()
+        {
+        }
+
+        public Tracking(int minCapacity, int factor, int maxCapacity)
+        {
+            super(minCapacity, factor, maxCapacity);
+        }
+
+        public Tracking(int minCapacity, int factor, int maxCapacity, int maxQueueLength)
+        {
+            super(minCapacity, factor, maxCapacity, maxQueueLength);
+        }
+
+        public Tracking(int minCapacity, int factor, int maxCapacity, int maxBucketSize, long maxHeapMemory, long maxDirectMemory)
+        {
+            super(minCapacity, factor, maxCapacity, maxBucketSize, maxHeapMemory, maxDirectMemory);
+        }
+
+        public Tracking(int minCapacity, int factor, int maxCapacity, int maxBucketSize, long maxHeapMemory, long maxDirectMemory, long retainedHeapMemory, long retainedDirectMemory)
+        {
+            super(minCapacity, factor, maxCapacity, maxBucketSize, maxHeapMemory, maxDirectMemory, retainedHeapMemory, retainedDirectMemory);
+        }
+
+        @Override
+        protected RetainableByteBufferPool newRetainableByteBufferPool(int factor, int maxCapacity, int maxBucketSize, long retainedHeapMemory, long retainedDirectMemory)
+        {
+            return new ArrayRetainableByteBufferPool.Tracking(0, factor, maxCapacity, maxBucketSize, retainedHeapMemory, retainedDirectMemory);
         }
     }
 }

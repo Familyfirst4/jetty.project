@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -12,6 +12,8 @@
 //
 
 package org.eclipse.jetty.io;
+
+import org.eclipse.jetty.util.NanoTime;
 
 /**
  * Extension of the {@link ArrayByteBufferPool} whose bucket sizes increase exponentially instead of linearly.
@@ -74,8 +76,8 @@ public class LogarithmicArrayByteBufferPool extends ArrayByteBufferPool
      * @param maxQueueLength the maximum ByteBuffer queue length
      * @param maxHeapMemory the max heap memory in bytes
      * @param maxDirectMemory the max direct memory in bytes
-     * @param retainedHeapMemory the max heap memory in bytes, -1 for unlimited retained memory or 0 to use default heuristic
-     * @param retainedDirectMemory the max direct memory in bytes, -1 for unlimited retained memory or 0 to use default heuristic
+     * @param retainedHeapMemory the max heap memory in bytes, -2 for no retained memory, -1 for unlimited retained memory or 0 to use default heuristic
+     * @param retainedDirectMemory the max direct memory in bytes, -2 for no retained memory, -1 for unlimited retained memory or 0 to use default heuristic
      */
     public LogarithmicArrayByteBufferPool(int minCapacity, int maxCapacity, int maxQueueLength, long maxHeapMemory, long maxDirectMemory, long retainedHeapMemory, long retainedDirectMemory)
     {
@@ -111,10 +113,10 @@ public class LogarithmicArrayByteBufferPool extends ArrayByteBufferPool
             Bucket bucket = buckets[i];
             if (bucket.isEmpty())
                 continue;
-            long lastUpdate = bucket.getLastUpdate();
-            if (lastUpdate < oldest)
+            long lastUpdateNanoTime = bucket.getLastUpdate();
+            if (oldest == Long.MAX_VALUE || NanoTime.isBefore(lastUpdateNanoTime, oldest))
             {
-                oldest = lastUpdate;
+                oldest = lastUpdateNanoTime;
                 index = i;
             }
         }
@@ -150,10 +152,11 @@ public class LogarithmicArrayByteBufferPool extends ArrayByteBufferPool
                 -1,
                 maxCapacity,
                 maxBucketSize,
-                maxHeapMemory,
-                maxDirectMemory,
                 c -> 32 - Integer.numberOfLeadingZeros(c - 1),
-                i -> 1 << i);
+                i -> 1 << i,
+                maxHeapMemory,
+                maxDirectMemory
+            );
         }
     }
 }

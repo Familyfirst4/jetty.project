@@ -1,6 +1,6 @@
 //
 // ========================================================================
-// Copyright (c) 1995-2022 Mort Bay Consulting Pty Ltd and others.
+// Copyright (c) 1995 Mort Bay Consulting Pty Ltd and others.
 //
 // This program and the accompanying materials are made available under the
 // terms of the Eclipse Public License v. 2.0 which is available at
@@ -377,10 +377,11 @@ public class ArrayRetainableByteBufferPoolTest
                 -1,
                 maxCapacity,
                 maxBucketSize,
-                maxHeapMemory,
-                maxDirectMemory,
                 c -> 32 - Integer.numberOfLeadingZeros(c - 1),
-                i -> 1 << i);
+                i -> 1 << i,
+                maxHeapMemory,
+                maxDirectMemory
+            );
         }
     }
 
